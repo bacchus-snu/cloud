@@ -1,10 +1,12 @@
 # cloudstack
 
-Apache CloudStack on the waiter cluster: container images and tooling that are
-not part of the cluster manifests (see `bacchus-snu/cd-manifests`).
+Apache CloudStack on the waiter cluster: container images, user documentation
+and tooling that are not part of the cluster manifests (see
+`bacchus-snu/cd-manifests`).
 
 ```
 images/<name>/   Dockerfile for ghcr.io/bacchus-snu/cloudstack/<name>
+docs/<lang>/     user documentation (mdBook), published at docs.cloud.snucse.org
 ```
 
 ## Building an image
@@ -21,3 +23,15 @@ $ git push origin main management/4.23.0.0
 
 - `management`: CloudStack management server 4.23.0.0 (Ubuntu 24.04, upstream
   packages pinned by SHA256, runs the server in the foreground without systemd).
+
+## Documentation
+
+`docs/ko/` is the Korean book. Preview it locally with mdBook:
+
+```console
+$ mdbook serve docs/ko
+```
+
+Pushing changes under `docs/` to `main` publishes the book to GitHub Pages
+(`.github/workflows/docs.yaml`), served as <https://docs.cloud.snucse.org>
+(CNAME in `bacchus-snu/infra`, custom domain in the repository's Pages settings).

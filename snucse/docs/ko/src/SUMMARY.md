@@ -11,7 +11,6 @@
 
 - [인스턴스 만들기](instance.md)
 - [인스턴스에 접속하기](access.md)
-- [프로젝트 (협업)](project.md)
 - [수업·연구실에서 쓰기](course.md)
 - [네트워크](network.md)
 - [GPU](gpu.md)

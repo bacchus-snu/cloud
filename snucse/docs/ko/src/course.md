@@ -12,14 +12,17 @@
 
 1. 학생들에게 **cloud.snucse.org에 한 번 로그인**하라고 안내하고 SNUCSE ID 유저명을 모읍니다. 로그인 전에는 계정이 없어서 아래 태그가 효력이 없습니다. SNUCSE ID가 없는 외부 참여자는 [이용 대상](account.md)을 참고하세요.
 2. 인스턴스 안에서 계정을 만듭니다. 사람마다 하나씩(`sudo adduser hong`) 또는 공용 계정 하나(`sudo adduser student`). sudo를 줄지, 홈 디스크를 어떻게 나눌지는 관리자가 정합니다.
-3. CloudStack UI에서 인스턴스를 열고 **Tags**에 계정마다 태그를 넣습니다. 키는 `ssh.account.<계정 이름>`, 값은 그 계정으로 들어올 SNUCSE ID 유저명을 쉼표로 나열합니다.
+3. CloudStack UI에서 **Compute → Instances**에서 인스턴스를 열고, 왼쪽 정보 카드를 맨 아래로 내리면 **Tags**가 있습니다. **New tag**를 누르면 키와 값 칸이 나옵니다. 키는 `ssh.account.<계정 이름>`, 값은 그 계정으로 들어올 SNUCSE ID 유저명을 쉼표로(공백 없이) 나열하고 체크 표시를 누릅니다.
+
+   ![Tags에서 New tag를 눌러 키와 값을 넣는 모습](images/tag-form.png)
 
    | Key | Value | 뜻 |
    | --- | --- | --- |
-   | `ssh.account.hong` | `hong` | hong은 자기 계정으로 |
-   | `ssh.account.student` | `kim,lee,park` | 세 명이 공용 계정 `student`로 |
+   | `ssh.account.yun` | `yun` | yun은 자기 계정으로 |
+   | `ssh.account.student` | `hong,kim,lee` | 세 명이 공용 계정 `student`로 |
+   | `ssh.account.student.1` | `park,choi` | 같은 계정, 이어서 두 명 더 |
 
-   값 하나에 20명 정도까지 들어갑니다. 계정이 수십 개면 CloudStack API(`createTags`)로 한 번에 넣을 수 있습니다. API 키는 오른쪽 위 프로필 → **Generate keys**에서 만듭니다.
+   값 한 칸에는 255자까지만 들어가므로(대략 SNUCSE ID 12~28개), 한 계정에 더 많은 사람을 넣으려면 같은 계정 이름 뒤에 `.1`, `.2`, … 번호를 붙인 키를 추가해 이어서 적습니다. 같은 키를 두 번 만들 수는 없습니다. 이름이 수십 명을 넘으면 아래 [CLI로 한 번에 등록하기](#cli로-한-번에-등록하기)를 쓰세요.
 4. 학생에게 접속 문자열을 알려 줍니다. 처음 접속 때 브라우저 로그인이 한 번 필요합니다([접속하기](access.md)).
 
    ```console
@@ -27,6 +30,68 @@
    ```
 
 태그를 넣고 1분 안에 접속이 됩니다. 학생은 인스턴스를 정지·삭제하거나 콘솔을 열 수 없고, 태그에 적힌 계정으로 SSH만 됩니다.
+
+## CLI로 한 번에 등록하기
+
+수강생이 수백 명이면 태그를 손으로 넣기 어렵습니다. CloudStack API를 쓰는 공식 CLI [cloudmonkey](https://github.com/apache/cloudstack-cloudmonkey/releases)(`cmk`)로 한 번에 넣을 수 있습니다.
+
+### API 키 만들기
+
+오른쪽 위의 본인 이름 → **Profile** → **API Key Pairs** 탭 → **Register API key pair**. 이름만 적고 OK를 누르면 표에 API key와 Secret key가 나타납니다. 둘 다 비밀번호처럼 다루세요. 이 키로는 본인 계정과 소속 프로젝트의 자원을 API로 다룰 수 있습니다.
+
+![API Key Pairs 탭](images/api-keys.png)
+
+![Register API key pair 대화상자](images/api-key-dialog.png)
+
+### cmk 설정
+
+```console
+$ cmk set profile snucse
+$ cmk set url https://cloud.snucse.org/client/api
+$ cmk set apikey <API key>
+$ cmk set secretkey <Secret key>
+$ cmk sync
+```
+
+인스턴스 ID를 찾습니다. 프로젝트 인스턴스는 프로젝트 ID를 함께 줘야 보입니다.
+
+```console
+$ cmk list projects filter=id,name
+$ cmk list virtualmachines projectid=<프로젝트 ID> filter=id,name
+```
+
+### 태그 넣기와 빼기
+
+키에 대괄호가 들어가므로 따옴표로 감쌉니다.
+
+```console
+$ cmk create tags resourceids=<인스턴스 ID> resourcetype=UserVm \
+    'tags[0].key=ssh.account.student' 'tags[0].value=kim,lee,park'
+$ cmk delete tags resourceids=<인스턴스 ID> resourcetype=UserVm \
+    'tags[0].key=ssh.account.student' 'tags[1].key=ssh.account.student.1'
+```
+
+SNUCSE ID를 한 줄에 하나씩 적은 파일(`ids.txt`)이 있으면, 아래 스크립트(bash)가 255자 단위로 `ssh.account.student`, `ssh.account.student.1`, `.2`…로 나눠 한 번에 넣습니다. 300명이면 태그 16개 정도가 됩니다.
+
+```bash
+#!/bin/bash
+set -f   # 대괄호가 파일 이름 패턴으로 풀리지 않게
+VM=<인스턴스 ID>; ACCOUNT=student
+n=0; args=""; chunk=""
+while read -r id; do
+  [ -z "$id" ] && continue
+  if [ $(( ${#chunk} + ${#id} + 1 )) -gt 255 ]; then
+    key=$ACCOUNT; [ $n -gt 0 ] && key="$ACCOUNT.$n"
+    args="$args tags[$n].key=ssh.account.$key tags[$n].value=$chunk"; n=$((n+1)); chunk=""
+  fi
+  chunk="${chunk:+$chunk,}$id"
+done < ids.txt
+key=$ACCOUNT; [ $n -gt 0 ] && key="$ACCOUNT.$n"
+args="$args tags[$n].key=ssh.account.$key tags[$n].value=$chunk"
+cmk create tags resourceids=$VM resourcetype=UserVm $args
+```
+
+이미 같은 키가 있으면 오류가 나므로, 명단을 바꿀 때는 먼저 `cmk delete tags`로 지우고 다시 넣습니다. 태그가 반영되면 1분 안에 접속이 열립니다.
 
 ## 학기가 끝나면
 

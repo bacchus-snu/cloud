@@ -51,7 +51,7 @@ $ scp data.tar.gz my-vm:
 
 게스트로 적을 사람은 **cloud.snucse.org에 한 번은 로그인한 적이 있어야** 합니다. 로그인 때 계정이 만들어지고, 그 계정이 있어야 태그의 이름이 효력을 가집니다. 수업이나 연구실 단위로 여러 사람에게 계정을 나눠 주는 절차는 [조교·관리자 가이드](course.md)에 있습니다.
 
-접속 게이트웨이의 키는 우리가 제공하는 템플릿으로 만든 인스턴스에 자동으로 들어갑니다(`/etc/ssh/warpgate_keys`, 모든 로컬 계정에 적용). cloud-init이 없는 이미지(ISO로 직접 설치한 시스템 등)를 쓴다면 콘솔로 들어가 그 파일과 `/etc/ssh/sshd_config.d/50-warpgate.conf`(`AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/warpgate_keys`)를 직접 만들어 주세요. 키 내용은 우리 템플릿으로 만든 아무 인스턴스의 `/etc/ssh/warpgate_keys`에서 복사하면 됩니다.
+접속 게이트웨이의 키는 인스턴스가 처음 부팅할 때 자동으로 들어갑니다(`/etc/ssh/warpgate_keys`, 모든 로컬 계정에 적용). 지우거나 sshd 설정을 바꾸면 접속이 끊기니 그대로 두세요.
 
 ## 웹 콘솔
 

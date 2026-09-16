@@ -6,6 +6,8 @@
 
 순서대로 템플릿(운영체제), 컴퓨트 오퍼링(CPU·메모리·GPU), 데이터 디스크(선택), 이름을 고르면 됩니다. 네트워크는 하나뿐이라 자동으로 선택됩니다.
 
+루트 디스크는 기본 20 GB입니다. 컴퓨트 오퍼링 아래의 **Override root disk offering**을 켜면 50 GB, 100 GB 또는 직접 입력한 크기로 바꿀 수 있고, 데이터 디스크도 같은 목록에서 고릅니다. 디스크는 나중에 늘릴 수 있지만 줄일 수는 없습니다.
+
 ![인스턴스 만들기: 템플릿, 컴퓨트 오퍼링, 데이터 디스크](images/add-instance.png)
 
 템플릿과 ISO는 운영진이 등록한 것만 쓸 수 있고 직접 올릴 수는 없습니다. 필요한 운영체제나 이미지가 있으면 <contact@bacchus.snucse.org>로 요청해 주세요. **컴퓨트 오퍼링은 정식 오픈 때 정해서 공지합니다.**
@@ -26,11 +28,9 @@
 | Debian 13 | `debian` | |
 | Debian 12 | `debian` | |
 | Fedora 44 | `fedora` | |
-| Fedora 43 | `fedora` | |
 | Rocky Linux 9 | `rocky` | |
 | AlmaLinux 10 | `almalinux` | |
 | AlmaLinux 9 | `almalinux` | |
-| openSUSE Leap 16.0 | `opensuse` | |
 | openSUSE Leap 15.6 | `opensuse` | |
 | Arch Linux | `arch` | |
 | Alpine Linux 3.22 | `alpine` | 첫 부팅이 2~3분 더 걸립니다(cloud-init이 다른 클라우드를 먼저 탐색) |

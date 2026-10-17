@@ -8,7 +8,7 @@
 $ ssh -p 2222 <SNUCSE ID 유저명>:<인스턴스 이름>@cloud.snucse.org
 ```
 
-처음 접속하면 터미널에 로그인 링크가 나옵니다. 그 링크를 브라우저로 열고 **SNUCSE ID**를 눌러 로그인하면 접속이 이어집니다(Username·Password 칸은 쓰지 않습니다).
+처음 접속하면 터미널에 로그인 링크가 나옵니다. 그 링크를 브라우저로 열고 **SNUCSE ID**를 눌러 로그인하면 접속이 이어집니다.
 
 ![접속 게이트웨이의 로그인 화면: SNUCSE ID 버튼](images/warpgate-login.png)
 
@@ -43,6 +43,8 @@ $ scp data.tar.gz my-vm:
 2. <https://login.cloud.snucse.org/@warpgate#/profile/credentials>를 열고 **SNUCSE ID**를 눌러 로그인합니다(로그인 뒤 오른쪽 위의 유저명 → **Credentials**로도 갑니다). **Public keys**의 **Add key**를 누릅니다.
 
    ![접속 게이트웨이의 Credentials 페이지](images/warpgate-credentials.png)
+
+   같은 페이지의 Password는 정해도 쓰이지 않습니다. 접속 게이트웨이의 로그인은 SNUCSE ID로만 합니다.
 
    Label에 이름(예: 노트북)을, 아래 칸에 `~/.ssh/id_ed25519.pub`의 내용(`ssh-ed25519 AAAA… 이름`)을 붙여 넣고 **Save**를 누릅니다.
 

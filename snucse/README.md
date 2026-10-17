@@ -1,6 +1,6 @@
 # cloudstack
 
-Apache CloudStack on the waiter cluster: container images, user documentation
+Apache CloudStack on the atrium cluster: container images, user documentation
 and tooling that are not part of the cluster manifests (see
 `bacchus-snu/cd-manifests`).
 

@@ -10,10 +10,10 @@
 ## 로그인
 
 1. <https://cloud.snucse.org>에 접속합니다.
-2. 아이디와 비밀번호 칸은 쓰지 않습니다. **External** 탭을 열고 **Sign in with Keycloak**을 누릅니다(Domain 칸은 비워 둡니다). 이 버튼이 SNUCSE ID로 연결됩니다.
+2. 아래쪽의 **SNUCSE ID로 로그인** 버튼을 누릅니다. 위의 아이디·비밀번호 칸은 관리용이라 쓰지 않습니다.
 3. SNUCSE ID에 로그인하고, 처음 한 번 뜨는 권한 요청을 승인합니다.
 
-![SNUCSE Cloud 로그인 화면: External 탭의 Sign in with Keycloak](images/login.png)
+![SNUCSE Cloud 로그인 화면: 아래쪽의 SNUCSE ID로 로그인 버튼](images/login.png)
 
 첫 로그인에서 계정이 자동으로 만들어집니다. 계정 이름은 SNUCSE ID 유저명과 같습니다.
 

@@ -52,6 +52,8 @@ $ cmk set secretkey <Secret key>
 $ cmk sync
 ```
 
+cmk는 API를 POST로 보냅니다. cmk 대신 직접 만든 스크립트로 인스턴스를 만들거나 고칠 때(`deployVirtualMachine`, `updateVirtualMachine`, `resetUserDataForVirtualMachine`)도 POST로 보내세요. 모든 템플릿에 붙는 초기 설정 스크립트(user data)가 GET 요청의 한도(4 KB)를 넘어 GET으로는 `User data is too long for http GET request` 오류가 납니다.
+
 인스턴스 ID를 찾습니다.
 
 ```console

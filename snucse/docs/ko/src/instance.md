@@ -19,19 +19,21 @@
 
 ## 템플릿
 
-각 배포판의 공식 클라우드 이미지를 그대로 씁니다. 템플릿은 학기마다 새 이미지로 갱신하고, 인스턴스 안의 패키지는 배포판의 패키지 관리자(`apt`, `dnf`, `zypper`, `pacman`, `apk`)로 직접 업데이트하세요. SSH와 웹 콘솔은 아래 기본 사용자로 들어가며, 이 사용자는 `sudo`를 쓸 수 있습니다.
+각 배포판의 공식 클라우드 이미지를 그대로 씁니다. 템플릿은 학기마다 새 이미지로 갱신하고, 인스턴스 안의 패키지는 배포판의 패키지 관리자(`apt`, `dnf`, `zypper`, `pacman`, `apk`)로 직접 업데이트하세요. SSH와 웹 콘솔은 아래 기본 사용자로 들어가며, 이 사용자는 관리자 권한을 쓸 수 있습니다(Alpine은 `doas`, 나머지는 `sudo`).
 
 | 템플릿 | 기본 사용자 | 비고 |
 | --- | --- | --- |
 | Ubuntu 26.04 LTS | `ubuntu` | 기본 선택 |
-| Ubuntu 24.04 LTS | `ubuntu` | |
-| Debian 13 | `debian` | |
-| Debian 12 | `debian` | |
+| Ubuntu 24.04 LTS | `ubuntu` | 첫 부팅 후 접속까지 2~3분 |
+| Debian 13 | `debian` | 첫 부팅 후 접속까지 2~3분 |
+| Debian 12 | `debian` | 첫 부팅 후 접속까지 2~3분 |
 | Fedora 44 | `fedora` | |
 | Rocky Linux 9 | `rocky` | |
 | AlmaLinux 10 | `almalinux` | |
 | AlmaLinux 9 | `almalinux` | |
 | openSUSE Leap 15.6 | `opensuse` | |
-| Arch Linux | `arch` | |
-| Alpine Linux 3.22 | `alpine` | 첫 부팅이 2~3분 더 걸립니다(cloud-init이 다른 클라우드를 먼저 탐색) |
-| Alpine Linux 3.21 | `alpine` | 위와 같음 |
+| Arch Linux | `arch` | 첫 부팅 후 접속까지 2~3분 |
+| Alpine Linux 3.22 | `alpine` | 관리자 권한은 `doas` |
+| Alpine Linux 3.21 | `alpine` | 관리자 권한은 `doas` |
+
+"첫 부팅 후 접속까지 2~3분"인 템플릿은 인스턴스를 처음 만들거나 재설치한 뒤 네트워크 설정이 끝날 때까지 SSH 접속과 콘솔 로그인이 되지 않습니다. 기다리면 접속됩니다. 두 번째 부팅부터는 바로 접속됩니다.

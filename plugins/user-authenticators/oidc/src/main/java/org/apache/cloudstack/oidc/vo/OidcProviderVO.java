@@ -55,7 +55,7 @@ public class OidcProviderVO implements Identity, InternalIdentity {
     @Column(name = "label")
     private String label;
 
-    @Column(name = "issuer")
+    @Column(name = "issuer", length = 1024)
     private String issuer;
 
     @Column(name = "ca_certificate", length = 65535)
@@ -65,13 +65,13 @@ public class OidcProviderVO implements Identity, InternalIdentity {
     private String clientId;
 
     @Encrypt
-    @Column(name = "client_secret")
+    @Column(name = "client_secret", length = 65535)
     private String clientSecret;
 
-    @Column(name = "scopes")
+    @Column(name = "scopes", length = 1024)
     private String scopes = DEFAULT_SCOPES;
 
-    @Column(name = "authorize_params")
+    @Column(name = "authorize_params", length = 65535)
     private String authorizeParams;
 
     @Column(name = "username_claim")
@@ -80,22 +80,22 @@ public class OidcProviderVO implements Identity, InternalIdentity {
     @Column(name = "lowercase_username")
     private boolean lowercaseUsername;
 
-    @Column(name = "username_pattern")
+    @Column(name = "username_pattern", length = 1024)
     private String usernamePattern;
 
     @Column(name = "require_verified_email")
     private boolean requireVerifiedEmail;
 
-    @Column(name = "admission")
+    @Column(name = "admission", length = 65535)
     private String admission;
 
-    @Column(name = "refusal")
+    @Column(name = "refusal", length = 65535)
     private String refusal;
 
     @Column(name = "jit")
     private boolean jit = true;
 
-    @Column(name = "end_session_url")
+    @Column(name = "end_session_url", length = 1024)
     private String endSessionUrl;
 
     @Column(name = "end_session_label")
@@ -107,11 +107,11 @@ public class OidcProviderVO implements Identity, InternalIdentity {
     @Column(name = "role_id")
     private long roleId;
 
-    @Column(name = "membership_source")
+    @Column(name = "membership_source", length = 65535)
     private String membershipSource;
 
     @Encrypt
-    @Column(name = "membership_secret")
+    @Column(name = "membership_secret", length = 65535)
     private String membershipSecret;
 
     @Column(name = "enabled")

@@ -57,6 +57,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.persistence.Column;
 import javax.servlet.http.HttpServletRequest;
@@ -1221,9 +1223,20 @@ public class OidcAuthManagerImplTest extends OidcTestBase {
                 Column column = field.getAnnotation(Column.class);
                 if (column != null) {
                     assertTrue(entry.getValue() + "." + column.name(), table.contains("`" + column.name() + "` "));
+                    if (field.getType() == String.class) {
+                        assertTrue(entry.getValue() + "." + column.name() + ": the DAO cuts a string to its @Column length",
+                                column.length() >= capacity(table, column.name()));
+                    }
                 }
             }
         }
         assertTrue("subjects compare case-sensitively", script.contains("`subject` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL"));
+    }
+
+    /** @return the characters a column of a CREATE TABLE holds: its char or varchar size, 65535 for text */
+    private static int capacity(String table, String column) {
+        Matcher type = Pattern.compile("`" + Pattern.quote(column) + "` (?:(?:var)?char\\((\\d+)\\)|text)").matcher(table);
+        assertTrue(column, type.find());
+        return type.group(1) != null ? Integer.parseInt(type.group(1)) : 65535;
     }
 }

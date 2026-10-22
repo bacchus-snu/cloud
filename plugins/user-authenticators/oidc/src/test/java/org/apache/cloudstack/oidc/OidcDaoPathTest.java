@@ -25,6 +25,7 @@ import static org.mockito.Mockito.when;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -65,9 +66,8 @@ public class OidcDaoPathTest extends OidcTestBase {
         return assigned;
     }
 
-    @Test
-    public void providerUpdateWritesTheChangedColumnsOfTheDaoEntity() throws Exception {
-        OidcProviderVO row = students();
+    /** @return a DAO whose findById returns the given provider as an entity the DAO produced, which records its changes */
+    private static OidcProviderDaoImpl daoOf(OidcProviderVO row) throws Exception {
         OidcProviderDaoImpl dao = spy(new OidcProviderDaoImpl());
         OidcProviderVO stored = dao.createForUpdate(row.getId());
         for (Field field : FieldUtils.getAllFieldsList(OidcProviderVO.class)) {
@@ -76,7 +76,13 @@ public class OidcDaoPathTest extends OidcTestBase {
             }
         }
         doReturn(stored).when(dao).findById(row.getId());
-        manager.providerDao = dao;
+        return dao;
+    }
+
+    @Test
+    public void providerUpdateWritesTheChangedColumnsOfTheDaoEntity() throws Exception {
+        OidcProviderVO row = students();
+        manager.providerDao = daoOf(row);
         UpdateOidcProviderCmd disable = parameters(UpdateOidcProviderCmd.class);
         when(disable.getId()).thenReturn(row.getId());
         when(disable.getEnabled()).thenReturn(false);
@@ -99,6 +105,24 @@ public class OidcDaoPathTest extends OidcTestBase {
 
     private static int order(String column) {
         return List.of("end_session_url", "end_session_label", "enabled").indexOf(column);
+    }
+
+    @Test
+    public void providerTextLongerThanAVarcharIsWrittenWhole() throws Exception {
+        OidcProviderVO row = students();
+        manager.providerDao = daoOf(row);
+        String refusal = "<p>" + "주전공 인증을 마친 뒤 다시 로그인하세요. ".repeat(30) + "</p>";
+        UpdateOidcProviderCmd update = parameters(UpdateOidcProviderCmd.class);
+        when(update.getId()).thenReturn(row.getId());
+        when(update.getRefusal()).thenReturn(refusal);
+
+        try (FakeJdbc db = new FakeJdbc(statement -> 1); TransactionLegacy txn = TransactionLegacy.open("providerText")) {
+            manager.updateProvider(update);
+            List<FakeJdbc.Statement> updates = db.executed.stream().filter(s -> s.sql.startsWith("UPDATE")).collect(Collectors.toList());
+            assertEquals(1, updates.size());
+            Object written = assignments(updates.get(0)).get("refusal");
+            assertEquals(refusal, written instanceof byte[] ? new String((byte[]) written, StandardCharsets.UTF_8) : written);
+        }
     }
 
     @Test

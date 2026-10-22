@@ -58,6 +58,8 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import javax.persistence.Column;
@@ -1138,6 +1140,12 @@ public class ResourceLimitRequestServiceImplTest {
             if (column != null) {
                 columns.add(column.name());
                 assertTrue(column.name(), table.contains("`" + column.name() + "` "));
+                if (field.getType() == String.class) {
+                    Matcher type = Pattern.compile("`" + Pattern.quote(column.name()) + "` (?:(?:var)?char\\((\\d+)\\)|text)").matcher(table);
+                    assertTrue(column.name(), type.find());
+                    int capacity = type.group(1) != null ? Integer.parseInt(type.group(1)) : 65535;
+                    assertTrue(column.name() + ": the DAO cuts a string to its @Column length", column.length() >= capacity);
+                }
             }
         }
         assertEquals(22, columns.size());

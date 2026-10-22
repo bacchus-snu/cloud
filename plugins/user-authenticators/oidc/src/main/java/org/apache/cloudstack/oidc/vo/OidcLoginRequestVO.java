@@ -57,7 +57,7 @@ public class OidcLoginRequestVO implements InternalIdentity {
     @Column(name = "binding_hash")
     private String bindingHash;
 
-    @Column(name = "redirect_uri")
+    @Column(name = "redirect_uri", length = 2048)
     private String redirectUri;
 
     @Column(name = "created")

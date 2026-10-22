@@ -130,7 +130,7 @@ export default {
   data () {
     return {
       diskOfferings: [],
-      autoMigrate: true,
+      autoMigrate: false,
       shrinkOk: false,
       selectedDiskOfferingId: null,
       size: null,

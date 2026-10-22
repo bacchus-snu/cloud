@@ -569,7 +569,8 @@ public class SharedFSServiceImpl extends ManagerBase implements SharedFSService,
         Long newMaxIops = cmd.getMaxIops();
         DataCenter zone = validateAndGetZone(sharedFS.getDataCenterId());
         validateDiskOffering(diskOfferingId, newSize, newMinIops, newMaxIops, zone);
-        volumeApiService.changeDiskOfferingForVolumeInternal(sharedFS.getVolumeId(), diskOfferingId, newSize, newMinIops, newMaxIops, true, false);
+        volumeApiService.changeDiskOfferingForVolumeInternal(sharedFS.getVolumeId(), diskOfferingId, newSize, newMinIops, newMaxIops,
+                volumeApiService.callerMayAutoMigrate(), false);
         return sharedFS;
     }
 

@@ -36,6 +36,7 @@ import java.util.stream.Collectors;
 import javax.inject.Inject;
 
 import com.cloud.storage.clvm.ClvmPoolManager;
+import org.apache.cloudstack.acl.RoleType;
 import org.apache.cloudstack.api.ApiConstants;
 import org.apache.cloudstack.api.ApiErrorCode;
 import org.apache.cloudstack.api.InternalIdentity;
@@ -1231,6 +1232,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
         Integer newHypervisorSnapshotReserve = null;
         boolean shrinkOk = cmd.isShrinkOk();
         boolean autoMigrateVolume = cmd.getAutoMigrate();
+        checkCallerMayAutoMigrate(autoMigrateVolume);
 
         VolumeVO volume = _volsDao.findById(cmd.getEntityId());
         if (volume == null) {
@@ -1432,6 +1434,10 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
             StoragePoolVO storagePool = _storagePoolDao.findById(volume.getPoolId());
             if (!storageMgr.storagePoolHasEnoughSpaceForResize(storagePool, currentSize, newSize)) {
                 if (!autoMigrateVolume) {
+                    if (!callerMayAutoMigrate()) {
+                        throw new InvalidParameterValueException(String.format("The storage pool of volume %s does not have the space for the new size; %s, "
+                                + "and resize it there", volume.getUuid(), APPROVED_MOVE));
+                    }
                     throw new CloudRuntimeException(String.format("Failed to resize volume %s since the storage pool does not have enough space to accommodate new size for the volume %s, try with automigrate set to true in order to check in the other suitable pools for the new size and then migrate & resize volume there.", volume.getUuid(), volume.getName()));
                 }
                 Pair<List<? extends StoragePool>, List<? extends StoragePool>> poolsPair = managementService.listStoragePoolsForSystemMigrationOfVolume(volume.getId(), newDiskOfferingId, currentSize, newMinIops, newMaxIops, true, false);
@@ -2214,8 +2220,26 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
         return changeDiskOfferingForVolumeInternal(cmd.getId(), newDiskOfferingId, newSize, newMinIops, newMaxIops, autoMigrateVolume, shrinkOk);
     }
 
+    /** Where a disk that has to change storage pools goes instead: the owner's approved move. */
+    private static final String APPROVED_MOVE = "a disk moves to another storage pool only in its owner's approved move: check the placement "
+            + "(checkPlacement), then start the instance or attach the volume with the placement token";
+
+    @Override
+    public void checkCallerMayAutoMigrate(boolean autoMigrate) {
+        if (autoMigrate && !callerMayAutoMigrate()) {
+            throw new PermissionDeniedException(String.format("Only the Root Admin role may move a volume to another storage pool (automigrate); %s",
+                    APPROVED_MOVE));
+        }
+    }
+
+    @Override
+    public boolean callerMayAutoMigrate() {
+        return Long.valueOf(RoleType.Admin.getId()).equals(CallContext.current().getCallingAccount().getRoleId());
+    }
+
     @Override
     public Volume changeDiskOfferingForVolumeInternal(Long volumeId, Long newDiskOfferingId, Long newSize, Long newMinIops, Long newMaxIops, boolean autoMigrateVolume, boolean shrinkOk) throws ResourceAllocationException {
+        checkCallerMayAutoMigrate(autoMigrateVolume);
 
         VolumeVO volume = _volsDao.findById(volumeId);
         if (volume == null) {
@@ -2293,6 +2317,10 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
             if (!suitableStoragePools.stream().anyMatch(p -> (p.getId() == existingStoragePool.getId()))) {
                 volumeMigrateRequired = true;
                 if (!autoMigrateVolume) {
+                    if (!callerMayAutoMigrate()) {
+                        throw new InvalidParameterValueException(String.format("Volume %s would have to move to another storage pool for the new disk offering; %s, "
+                                + "and change the offering there", volume.getUuid(), APPROVED_MOVE));
+                    }
                     throw new InvalidParameterValueException(String.format("Failed to change offering for volume %s since automigrate is set to false but volume needs to migrated", volume.getUuid()));
                 }
             }

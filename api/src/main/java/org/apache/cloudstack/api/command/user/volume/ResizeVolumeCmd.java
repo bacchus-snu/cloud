@@ -74,7 +74,8 @@ public class ResizeVolumeCmd extends BaseAsyncCmd implements UserCmd {
     private Long newDiskOfferingId;
 
     @Parameter(name = ApiConstants.AUTO_MIGRATE, type = CommandType.BOOLEAN, required = false,
-            description = "Flag to allow automatic migration of the volume to another suitable storage pool that accommodates the new size", since = "4.20.1")
+            description = "Flag to allow automatic migration of the volume to another suitable storage pool that accommodates the new size."
+                    + " Only the Root Admin role may turn it on; a move to another storage pool deletes the source copy.", since = "4.20.1")
     private Boolean autoMigrate;
 
     /////////////////////////////////////////////////////

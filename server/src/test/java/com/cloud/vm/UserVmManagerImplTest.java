@@ -82,9 +82,11 @@ import org.apache.cloudstack.api.command.user.vm.DestroyVMCmd;
 import org.apache.cloudstack.api.command.user.vm.ResetVMSSHKeyCmd;
 import org.apache.cloudstack.api.command.user.vm.ResetVMUserDataCmd;
 import org.apache.cloudstack.api.command.user.vm.RestoreVMCmd;
+import org.apache.cloudstack.api.command.user.vm.ScaleVMCmd;
 import org.apache.cloudstack.api.command.user.vm.StartVMCmd;
 import org.apache.cloudstack.api.command.user.vm.UpdateVMCmd;
 import org.apache.cloudstack.api.command.user.vm.UpdateVmNicCmd;
+import org.apache.cloudstack.api.command.user.vm.UpgradeVMCmd;
 import org.apache.cloudstack.api.command.user.volume.ResizeVolumeCmd;
 import org.apache.cloudstack.api.response.SystemVmResponse;
 import org.apache.cloudstack.api.response.UserVmResponse;
@@ -6348,5 +6350,32 @@ public class UserVmManagerImplTest {
         verify(virtualMachineManager, never()).findHostAndMigrate(any(), any(), any(), any());
         verify(virtualMachineManager, never()).reConfigureVm(any(), any(), any(), any(), anyBoolean());
         verify(resourceLimitMgr, times(2)).updateVmResourceCountForServiceOfferingChange(anyLong(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    public void upgradeAndScaleLeaveAutomigrateToTheVolumeService() {
+        UpgradeVMCmd upgrade = mock(UpgradeVMCmd.class);
+        when(upgrade.getDetails()).thenReturn(new HashMap<>(Map.of(ApiConstants.AUTO_MIGRATE, "true")));
+        ScaleVMCmd scale = mock(ScaleVMCmd.class);
+        when(scale.getDetails()).thenReturn(new HashMap<>(Map.of(ApiConstants.AUTO_MIGRATE, "true")));
+        doThrow(new PermissionDeniedException("refused")).when(volumeApiService).checkCallerMayAutoMigrate(true);
+        VMInstanceDao vmInstanceDao = mock(VMInstanceDao.class);
+        ReflectionTestUtils.setField(userVmManagerImpl, "_vmInstanceDao", vmInstanceDao);
+
+        assertThrows(PermissionDeniedException.class, () -> userVmManagerImpl.upgradeVirtualMachine(upgrade));
+        assertThrows(PermissionDeniedException.class, () -> userVmManagerImpl.upgradeVirtualMachine(scale));
+        verifyNoInteractions(vmInstanceDao);
+        verify(entityManager, never()).findById(eq(VirtualMachine.class), anyLong());
+    }
+
+    @Test
+    public void upgradeWithoutAutomigrateAsksForNoMove() {
+        UpgradeVMCmd upgrade = mock(UpgradeVMCmd.class);
+        when(upgrade.getDetails()).thenReturn(new HashMap<>());
+        VMInstanceDao vmInstanceDao = mock(VMInstanceDao.class);
+        ReflectionTestUtils.setField(userVmManagerImpl, "_vmInstanceDao", vmInstanceDao);
+
+        assertThrows(InvalidParameterValueException.class, () -> userVmManagerImpl.upgradeVirtualMachine(upgrade));
+        verify(volumeApiService).checkCallerMayAutoMigrate(false);
     }
 }

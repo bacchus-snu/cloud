@@ -105,7 +105,7 @@ export default {
       offerings: [],
       selectedOffering: {},
       selectedDiskOffering: {},
-      autoMigrate: true,
+      autoMigrate: false,
       total: 0,
       params: { id: this.resource.id },
       loading: false,
@@ -251,6 +251,7 @@ export default {
       if ('cpuspeed' in this.selectedOffering && this.selectedOffering.iscustomized) {
         delete this.params[this.cpuSpeedKey]
       }
+      this.params.automigrate = this.autoMigrate
 
       postAPI('scaleVirtualMachine', this.params).then(response => {
         const jobId = response.scalevirtualmachineresponse.jobid

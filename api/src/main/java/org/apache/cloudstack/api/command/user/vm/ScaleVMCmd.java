@@ -71,7 +71,7 @@ public class ScaleVMCmd extends BaseAsyncCmd implements UserCmd {
     private Long maxIops;
 
     @Parameter(name = ApiConstants.AUTO_MIGRATE, type = CommandType.BOOLEAN, required = false, description = "Flag for automatic migration of the root volume " +
-            "with new compute offering whenever migration is required to apply the offering", since = "4.17")
+            "with new compute offering whenever migration is required to apply the offering. Only the Root Admin role may turn it on; a move to another storage pool deletes the source copy.", since = "4.17")
     private Boolean autoMigrate;
 
     @Parameter(name = ApiConstants.SHRINK_OK, type = CommandType.BOOLEAN, required = false, description = "Verify OK to Shrink", since = "4.17")

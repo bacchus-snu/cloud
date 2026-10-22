@@ -42,8 +42,10 @@ import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 
 import org.apache.cloudstack.acl.ControlledEntity;
+import org.apache.cloudstack.acl.RoleType;
 import org.apache.cloudstack.acl.SecurityChecker.AccessType;
 import org.apache.cloudstack.api.command.user.volume.AttachVolumeCmd;
+import org.apache.cloudstack.api.command.user.volume.ChangeOfferingForVolumeCmd;
 import org.apache.cloudstack.api.command.user.volume.CheckAndRepairVolumeCmd;
 import org.apache.cloudstack.api.command.user.volume.CreateVolumeCmd;
 import org.apache.cloudstack.api.command.user.volume.DetachVolumeCmd;
@@ -2039,6 +2041,7 @@ public class VolumeApiServiceImplTest {
         ReflectionTestUtils.setField(cmd, "id", volumeMockId);
         ReflectionTestUtils.setField(cmd, "newDiskOfferingId", newDiskOfferingMockId);
         ReflectionTestUtils.setField(cmd, "autoMigrate", true);
+        callAs(RoleType.Admin.getId());
 
         testResizeVolumeSetup();
 
@@ -2054,6 +2057,8 @@ public class VolumeApiServiceImplTest {
 
             verify(volumeApiServiceImpl).migrateVolume(any());
             verify(volumeServiceMock).resize(any(VolumeInfo.class));
+        } finally {
+            CallContext.unregister();
         }
     }
 
@@ -3403,5 +3408,137 @@ public class VolumeApiServiceImplTest {
                 () -> volumeApiServiceImpl.reserveRootDiskOfferingChange(kept, encrypted, new ArrayList<>()));
         Assert.assertEquals(43L, (long) kept.getDiskOfferingId());
         verify(volumeDaoMock, Mockito.never()).update(Mockito.anyLong(), Mockito.any(VolumeVO.class));
+    }
+
+    // ---------------------------------------------------------------- moves to another storage pool
+
+    /** A role of the Admin type that is not the built-in Root Admin role. */
+    private static final long OTHER_ADMIN_ROLE = 100L;
+
+    private void callAs(long roleId) {
+        AccountVO account = new AccountVO("caller", 1L, "networkDomain", Account.Type.ADMIN, roleId, "caller-uuid");
+        UserVO user = new UserVO(2, "caller", "password", "firstname", "lastName", "email", "timezone", UUID.randomUUID().toString(), User.Source.UNKNOWN);
+        CallContext.register(user, account);
+    }
+
+    private ResizeVolumeCmd resizeCmd(boolean autoMigrate) {
+        ResizeVolumeCmd cmd = new ResizeVolumeCmd();
+        ReflectionTestUtils.setField(cmd, "id", volumeMockId);
+        ReflectionTestUtils.setField(cmd, "newDiskOfferingId", newDiskOfferingMockId);
+        if (autoMigrate) {
+            ReflectionTestUtils.setField(cmd, "autoMigrate", true);
+        }
+        return cmd;
+    }
+
+    /** A resize whose new size does not fit the volume's storage pool. */
+    private void resizeNeedsAnotherPool() {
+        lenient().when(volumeDaoMock.findById(volumeMockId)).thenReturn(volumeVoMock);
+        lenient().when(volumeDaoMock.getHypervisorType(volumeMockId)).thenReturn(HypervisorType.KVM);
+        lenient().when(volumeVoMock.getState()).thenReturn(Volume.State.Ready);
+        lenient().when(volumeVoMock.getDiskOfferingId()).thenReturn(diskOfferingMockId);
+        lenient().when(_diskOfferingDao.findById(diskOfferingMockId)).thenReturn(diskOfferingMock);
+        lenient().when(_diskOfferingDao.findById(newDiskOfferingMockId)).thenReturn(newDiskOfferingMock);
+        lenient().when(volumeVoMock.getVolumeType()).thenReturn(Type.DATADISK);
+        lenient().when(newDiskOfferingMock.getDiskSize()).thenReturn(newVolumeSizeMock);
+        VolumeInfo volInfo = mock(VolumeInfo.class);
+        lenient().when(volumeDataFactoryMock.getVolume(volumeMockId)).thenReturn(volInfo);
+        lenient().when(volInfo.getDataStore()).thenReturn(mock(DataStore.class));
+        lenient().when(storageMgr.storagePoolHasEnoughSpaceForResize(any(), nullable(Long.class), nullable(Long.class))).thenReturn(false);
+    }
+
+    /** An offering change whose new offering no pool of the volume's fits but another pool does. */
+    private void offeringChangeNeedsAnotherPool() {
+        lenient().when(volumeDaoMock.findById(volumeMockId)).thenReturn(volumeVoMock);
+        lenient().when(volumeVoMock.getDiskOfferingId()).thenReturn(diskOfferingMockId);
+        lenient().when(_diskOfferingDao.findByIdIncludingRemoved(diskOfferingMockId)).thenReturn(diskOfferingMock);
+        lenient().when(_diskOfferingDao.findById(newDiskOfferingMockId)).thenReturn(newDiskOfferingMock);
+        lenient().when(newDiskOfferingMock.getId()).thenReturn(newDiskOfferingMockId);
+        lenient().doAnswer(invocation -> {
+            ((Long[]) invocation.getArgument(3))[0] = volumeSizeMock;
+            return null;
+        }).when(volumeApiServiceImpl).validateVolumeResizeWithNewDiskOfferingAndLoad(any(), any(), any(), any(), any(), any(), any());
+        lenient().when(volumeDataFactoryMock.getVolume(volumeMockId)).thenReturn(mock(VolumeInfo.class));
+        lenient().when(volumeVoMock.getState()).thenReturn(Volume.State.Ready);
+        StoragePoolVO elsewhere = mock(StoragePoolVO.class);
+        lenient().when(elsewhere.getId()).thenReturn(storagePoolMockId + 1);
+        lenient().when(managementService.listStoragePoolsForSystemMigrationOfVolume(anyLong(), nullable(Long.class), anyLong(), nullable(Long.class),
+                nullable(Long.class), anyBoolean(), anyBoolean())).thenReturn(new Pair<>(List.of(elsewhere), List.of(elsewhere)));
+        lenient().when(storageMgr.storagePoolHasEnoughSpaceForResize(any(), nullable(Long.class), nullable(Long.class))).thenReturn(true);
+    }
+
+    private static void assertPointsToTheApprovedMove(Exception e) {
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("checkPlacement"));
+        Assert.assertFalse(e.getMessage(), e.getMessage().contains("automigrate set to true"));
+    }
+
+    @Test
+    public void resizeRefusesAutomigrateOutsideTheRootAdminRole() throws Exception {
+        callAs(OTHER_ADMIN_ROLE);
+        try {
+            PermissionDeniedException e = Assert.assertThrows(PermissionDeniedException.class, () -> volumeApiServiceImpl.resizeVolume(resizeCmd(true)));
+            assertPointsToTheApprovedMove(e);
+            verify(volumeApiServiceImpl, Mockito.never()).migrateVolume(any());
+        } finally {
+            CallContext.unregister();
+        }
+    }
+
+    @Test
+    public void resizeThatNeedsAnotherPoolPointsOutsideTheRootAdminRoleToTheApprovedMove() {
+        resizeNeedsAnotherPool();
+        InvalidParameterValueException e = Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.resizeVolume(resizeCmd(false)));
+        assertPointsToTheApprovedMove(e);
+    }
+
+    @Test
+    public void resizeOfTheRootAdminRoleKeepsTheStockRefusal() throws Exception {
+        resizeNeedsAnotherPool();
+        callAs(RoleType.Admin.getId());
+        try {
+            CloudRuntimeException e = Assert.assertThrows(CloudRuntimeException.class, () -> volumeApiServiceImpl.resizeVolume(resizeCmd(false)));
+            Assert.assertTrue(e.getMessage(), e.getMessage().contains("automigrate set to true"));
+        } finally {
+            CallContext.unregister();
+        }
+    }
+
+    @Test
+    public void offeringChangeRefusesAutomigrateOutsideTheRootAdminRole() throws Exception {
+        callAs(OTHER_ADMIN_ROLE);
+        try {
+            ChangeOfferingForVolumeCmd cmd = new ChangeOfferingForVolumeCmd(volumeMockId, newDiskOfferingMockId, null, null, true, false);
+            PermissionDeniedException e = Assert.assertThrows(PermissionDeniedException.class, () -> volumeApiServiceImpl.changeDiskOfferingForVolume(cmd));
+            assertPointsToTheApprovedMove(e);
+            verify(volumeApiServiceImpl, Mockito.never()).migrateVolume(any());
+        } finally {
+            CallContext.unregister();
+        }
+    }
+
+    @Test
+    public void offeringChangeThatNeedsAnotherPoolPointsOutsideTheRootAdminRoleToTheApprovedMove() {
+        offeringChangeNeedsAnotherPool();
+        ChangeOfferingForVolumeCmd cmd = new ChangeOfferingForVolumeCmd(volumeMockId, newDiskOfferingMockId, null, null, false, false);
+        InvalidParameterValueException e = Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.changeDiskOfferingForVolume(cmd));
+        assertPointsToTheApprovedMove(e);
+    }
+
+    @Test
+    public void offeringChangeOfTheRootAdminRoleMovesAsBefore() throws Exception {
+        offeringChangeNeedsAnotherPool();
+        callAs(RoleType.Admin.getId());
+        try {
+            ChangeOfferingForVolumeCmd stay = new ChangeOfferingForVolumeCmd(volumeMockId, newDiskOfferingMockId, null, null, false, false);
+            InvalidParameterValueException refused = Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.changeDiskOfferingForVolume(stay));
+            Assert.assertTrue(refused.getMessage(), refused.getMessage().contains("automigrate is set to false"));
+
+            Mockito.doThrow(new CloudRuntimeException("moved by the Root Admin role")).when(volumeApiServiceImpl).migrateVolume(any());
+            ChangeOfferingForVolumeCmd move = new ChangeOfferingForVolumeCmd(volumeMockId, newDiskOfferingMockId, null, null, true, false);
+            CloudRuntimeException moved = Assert.assertThrows(CloudRuntimeException.class, () -> volumeApiServiceImpl.changeDiskOfferingForVolume(move));
+            Assert.assertEquals("moved by the Root Admin role", moved.getCause().getMessage());
+        } finally {
+            CallContext.unregister();
+        }
     }
 }

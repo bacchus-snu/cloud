@@ -430,6 +430,15 @@ public class SharedFSServiceImplTest {
 
     @Test
     public void testChangeSharedFSDiskOffering() throws ResourceAllocationException {
+        changeSharedFSDiskOffering(true);
+    }
+
+    @Test
+    public void changeSharedFSDiskOfferingAsksForNoMoveForOtherRoles() throws ResourceAllocationException {
+        changeSharedFSDiskOffering(false);
+    }
+
+    private void changeSharedFSDiskOffering(boolean callerMayAutoMigrate) throws ResourceAllocationException {
         Long newSize = 200L;
         Long newMinIops = 2000L;
         Long newMaxIops = 4000L;
@@ -453,8 +462,11 @@ public class SharedFSServiceImplTest {
         when(diskOfferingDao.findById(newDiskOfferingId)).thenReturn(diskOfferingVO);
         when(diskOfferingVO.isCustomized()).thenReturn(true);
         when(diskOfferingVO.isCustomizedIops()).thenReturn(true);
+        sharedFS.setVolumeId(s_volumeId);
+        when(volumeApiService.callerMayAutoMigrate()).thenReturn(callerMayAutoMigrate);
 
         sharedFSServiceImpl.changeSharedFSDiskOffering(cmd);
+        verify(volumeApiService).changeDiskOfferingForVolumeInternal(s_volumeId, newDiskOfferingId, newSize, newMinIops, newMaxIops, callerMayAutoMigrate, false);
     }
 
     @Test(expected = InvalidParameterValueException.class)

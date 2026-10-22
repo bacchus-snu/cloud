@@ -116,6 +116,17 @@ public interface VolumeApiService {
     Volume changeDiskOfferingForVolumeInternal(Long volumeId, Long newDiskOfferingId, Long newSize, Long newMinIops, Long newMaxIops, boolean autoMigrateVolume, boolean shrinkOk) throws ResourceAllocationException;
 
     /**
+     * A volume that a resize or an offering change moves to another storage pool loses its source copy, so only the
+     * built-in Root Admin role may ask for that move; every other caller moves disks through the owner's approved move.
+     *
+     * @throws com.cloud.exception.PermissionDeniedException if a caller of another role asks for automatic migration
+     */
+    void checkCallerMayAutoMigrate(boolean autoMigrate);
+
+    /** @return whether the caller may ask for automatic migration (see {@link #checkCallerMayAutoMigrate(boolean)}) */
+    boolean callerMayAutoMigrate();
+
+    /**
      * @throws InsufficientCapacityException with {@link com.cloud.exception.VolumeMoveRequiredException} when the volume is on the local
      *         storage of another host than the running Instance's and the owner has not approved moving it
      */

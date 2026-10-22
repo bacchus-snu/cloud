@@ -1290,6 +1290,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
      */
     // This method will be deprecated as we use ScaleVMCmd for both stopped VMs and running VMs
     public UserVm upgradeVirtualMachine(UpgradeVMCmd cmd) throws ResourceAllocationException {
+        checkAutoMigrate(cmd.getDetails());
         Long vmId = cmd.getId();
         Long svcOffId = cmd.getServiceOfferingId();
         Account caller = CallContext.current().getCallingAccount();
@@ -2171,6 +2172,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
     public UserVm upgradeVirtualMachine(ScaleVMCmd cmd) throws ResourceUnavailableException, ConcurrentOperationException, ManagementServerException,
     VirtualMachineMigrationException {
 
+        checkAutoMigrate(cmd.getDetails());
         Long vmId = cmd.getId();
         Long newServiceOfferingId = cmd.getServiceOfferingId();
         VirtualMachine vm = (VirtualMachine) this._entityMgr.findById(VirtualMachine.class, vmId);
@@ -2444,6 +2446,11 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         }
 
         _volService.validateChangeDiskOfferingEncryptionType(currentServiceOffering.getDiskOfferingId(), newServiceOffering.getDiskOfferingId());
+    }
+
+    /** Automatic migration of the root volume is the volume service's to allow, before anything about the Instance changes. */
+    private void checkAutoMigrate(Map<String, String> details) {
+        _volumeService.checkCallerMayAutoMigrate(details != null && Boolean.parseBoolean(details.get(ApiConstants.AUTO_MIGRATE)));
     }
 
     private void changeDiskOfferingForRootVolume(Long vmId, DiskOfferingVO newDiskOffering, Map<String, String> customParameters, Long zoneId) throws ResourceAllocationException {

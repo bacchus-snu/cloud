@@ -127,6 +127,7 @@ import com.cloud.storage.dao.SnapshotDao;
 import com.cloud.storage.dao.StoragePoolTagsDao;
 import com.cloud.storage.dao.VMTemplateDao;
 import com.cloud.storage.dao.VolumeDao;
+import com.cloud.storage.dao.VolumeDetailsDao;
 import com.cloud.storage.snapshot.SnapshotManager;
 import com.cloud.user.Account;
 import com.cloud.user.AccountManager;
@@ -250,6 +251,8 @@ public class VolumeApiServiceImplTest {
     private VolumeVO volumeVoMock;
     @Mock
     private Account accountMock;
+    @Mock
+    private VolumeDetailsDao volumeDetailsDaoMock;
     @Mock
     private VolumeDataStoreVO volumeDataStoreVoMock;
     @Mock
@@ -2895,5 +2898,35 @@ public class VolumeApiServiceImplTest {
                     "Exception message must reference Stopped-state requirement, was: " + e.getMessage(),
                     e.getMessage() != null && e.getMessage().contains("VM should be in"));
         }
+    }
+
+    private VolumeVO copyOfAVolumeBeingMoved() {
+        VolumeVO copy = Mockito.mock(VolumeVO.class);
+        Mockito.lenient().when(copy.getId()).thenReturn(4242L);
+        Mockito.lenient().when(copy.getUuid()).thenReturn("copy-uuid");
+        Mockito.lenient().when(copy.getState()).thenReturn(Volume.State.Destroy);
+        Mockito.lenient().when(volumeDaoMock.findById(4242L)).thenReturn(copy);
+        Mockito.lenient().when(volumeDetailsDaoMock.findDetail(4242L, VolumeOrchestrationService.RELOCATION_OF))
+                .thenReturn(new VolumeDetailVO(4242L, VolumeOrchestrationService.RELOCATION_OF, "200", false));
+        Mockito.lenient().when(accountManagerMock.isAdmin(Mockito.anyLong())).thenReturn(true);
+        return copy;
+    }
+
+    @Test
+    public void copyOfAVolumeBeingMovedIsNotRecovered() {
+        copyOfAVolumeBeingMoved();
+
+        InvalidParameterValueException e = Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.recoverVolume(4242L));
+
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("copy-uuid"));
+        Mockito.verify(volumeDaoMock, Mockito.never()).detachVolume(Mockito.anyLong());
+    }
+
+    @Test
+    public void copyOfAVolumeBeingMovedIsNotDestroyed() {
+        VolumeVO copy = copyOfAVolumeBeingMoved();
+
+        Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.validateDestroyVolume(copy, accountMock, true, false));
+        Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.validateDestroyVolume(copy, accountMock, false, false));
     }
 }

@@ -18,6 +18,9 @@
 package org.apache.cloudstack.ca;
 
 import java.io.IOException;
+import java.io.StringReader;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.math.BigInteger;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
@@ -73,6 +76,20 @@ import org.apache.cloudstack.poll.BackgroundPollManager;
 import org.apache.cloudstack.poll.BackgroundPollTask;
 import org.apache.cloudstack.utils.identity.ManagementServerNode;
 import org.apache.cloudstack.utils.security.CertUtils;
+import org.bouncycastle.asn1.ASN1OctetString;
+import org.bouncycastle.asn1.pkcs.Attribute;
+import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers;
+import org.bouncycastle.asn1.x500.AttributeTypeAndValue;
+import org.bouncycastle.asn1.x500.RDN;
+import org.bouncycastle.asn1.x500.style.BCStyle;
+import org.bouncycastle.asn1.x500.style.IETFUtils;
+import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.asn1.x509.Extensions;
+import org.bouncycastle.asn1.x509.GeneralName;
+import org.bouncycastle.asn1.x509.GeneralNames;
+import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequest;
+import org.bouncycastle.util.io.pem.PemObject;
+import org.bouncycastle.util.io.pem.PemReader;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 
@@ -90,6 +107,7 @@ import com.cloud.host.Status;
 import com.cloud.host.dao.HostDao;
 import com.cloud.utils.component.ManagerBase;
 import com.cloud.utils.exception.CloudRuntimeException;
+import com.cloud.utils.net.NetUtils;
 import org.apache.commons.lang3.StringUtils;
 
 public class CAManagerImpl extends ManagerBase implements CAManager {
@@ -220,12 +238,129 @@ public class CAManagerImpl extends ManagerBase implements CAManager {
                 if (StringUtils.isEmpty(csr)) {
                     return false;
                 }
+                checkHostCertificateRequest(csr, host.getName(), host.getPrivateIpAddress());
             }
-            final Certificate certificate = issueCertificate(csr, Arrays.asList(host.getName(), host.getPrivateIpAddress()), Arrays.asList(host.getPrivateIpAddress(), host.getPublicIpAddress(), host.getStorageIpAddress()), CAManager.CertValidityPeriod.value(), caProvider);
+            final Certificate certificate = csr == null
+                    ? issueCertificate(null, Arrays.asList(host.getName(), host.getPrivateIpAddress()), Arrays.asList(host.getPrivateIpAddress(), host.getPublicIpAddress(), host.getStorageIpAddress()), CAManager.CertValidityPeriod.value(), caProvider)
+                    : issueHostCertificate(csr, host, caProvider);
             return deployCertificate(host, certificate, reconnect, null);
         } catch (final AgentUnavailableException | OperationTimedoutException e) {
             logger.error("Host/agent is not available or operation timed out, failed to setup keystore and generate CSR for host/agent {}, due to: ", host, e);
             throw new CloudRuntimeException(String.format("Failed to generate keystore and get CSR from the host/agent %s", host));
+        }
+    }
+
+    /**
+     * Certifies a registered host's key for the names and addresses it is registered with, and no others.
+     */
+    private Certificate issueHostCertificate(final String csr, final Host host, final String caProvider) {
+        return getCAProvider(caProvider).issueCertificateWithNames(csr, Arrays.asList(host.getName(), host.getPrivateIpAddress()),
+                Arrays.asList(host.getPrivateIpAddress(), host.getPublicIpAddress(), host.getStorageIpAddress()), CAManager.CertValidityPeriod.value());
+    }
+
+    /**
+     * A host's certificate request may name only that host, because TLS peers authorize hosts by the names in their
+     * certificates: its one CN must be the host's registered name, that name qualified by a domain, or its private
+     * address; a DNS alternative name must be that name or the CN; no name may be a wildcard, and no other kind of
+     * alternative name is taken. Neither the CN nor any alternative name may name or address another registered
+     * host. A host added by its address has no registered name yet; its CN must still not name another host.
+     */
+    protected void checkHostCertificateRequest(final String csr, final String hostName, final String hostIp) {
+        final JcaPKCS10CertificationRequest request;
+        try (PemReader reader = new PemReader(new StringReader(csr))) {
+            final PemObject pem = reader.readPemObject();
+            if (pem == null) {
+                throw new IOException("no PEM object");
+            }
+            request = new JcaPKCS10CertificationRequest(pem.getContent());
+        } catch (final IOException | RuntimeException e) {
+            throw new CloudRuntimeException(String.format("Unable to read the certificate request of host %s: %s", hostName, e.getMessage()));
+        }
+        String cn = null;
+        int cns = 0;
+        for (final RDN rdn : request.getSubject().getRDNs()) {
+            for (final AttributeTypeAndValue value : rdn.getTypesAndValues()) {
+                if (BCStyle.CN.equals(value.getType())) {
+                    if (rdn.isMultiValued()) {
+                        throw new CloudRuntimeException(String.format("The certificate request of host %s combines its CN with other attributes.", hostName));
+                    }
+                    cn = IETFUtils.valueToString(value.getValue());
+                    cns++;
+                }
+            }
+        }
+        if (cns != 1) {
+            throw new CloudRuntimeException(String.format("The certificate request of host %s does not name exactly one CN.", hostName));
+        }
+        if (cn.contains("*")) {
+            throw new CloudRuntimeException(String.format("The certificate request of host %s names the wildcard %s.", hostName, cn));
+        }
+        final boolean named = StringUtils.isNotBlank(hostName) && !isAddress(hostName);
+        final boolean qualified = named && !hostName.contains(".") && StringUtils.startsWithIgnoreCase(cn, hostName + ".");
+        if (named && !cn.equalsIgnoreCase(hostName) && !qualified && !cn.equals(hostIp)) {
+            throw new CloudRuntimeException(String.format("The certificate request of host %s names %s, which is not that host.", hostName, cn));
+        }
+        final List<String> claimed = new ArrayList<>(Collections.singletonList(cn));
+        for (final Attribute attribute : request.getAttributes(PKCSObjectIdentifiers.pkcs_9_at_extensionRequest)) {
+            final GeneralNames names = GeneralNames.fromExtensions(Extensions.getInstance(attribute.getAttrValues().getObjectAt(0)), Extension.subjectAlternativeName);
+            if (names == null) {
+                continue;
+            }
+            for (final GeneralName name : names.getNames()) {
+                if (name.getTagNo() == GeneralName.dNSName) {
+                    final String dnsName = name.getName().toString();
+                    if (!dnsName.equalsIgnoreCase(cn) && !(named && dnsName.equalsIgnoreCase(hostName))) {
+                        throw new CloudRuntimeException(String.format("The certificate request of host %s names %s, which is not that host.", hostName, dnsName));
+                    }
+                    claimed.add(dnsName);
+                } else if (name.getTagNo() == GeneralName.iPAddress) {
+                    try {
+                        claimed.add(InetAddress.getByAddress(ASN1OctetString.getInstance(name.getName()).getOctets()).getHostAddress());
+                    } catch (final UnknownHostException e) {
+                        throw new CloudRuntimeException(String.format("The certificate request of host %s has an invalid address.", hostName));
+                    }
+                } else {
+                    throw new CloudRuntimeException(String.format("The certificate request of host %s asks for an alternative name of a kind host certificates do not carry: %s",
+                            hostName, name));
+                }
+            }
+        }
+        for (final HostVO other : hostDao.listAll()) {
+            if (StringUtils.equals(other.getPrivateIpAddress(), hostIp)) {
+                continue;
+            }
+            for (final String name : claimed) {
+                if (identifies(name, other)) {
+                    throw new CloudRuntimeException(String.format("The certificate request of host %s names %s, which identifies host %s.", hostName, name,
+                            other.getName()));
+                }
+            }
+        }
+    }
+
+    private static boolean isAddress(final String name) {
+        return NetUtils.isValidIp4(name) || NetUtils.isValidIp6(name);
+    }
+
+    private static boolean identifies(final String name, final HostVO host) {
+        for (final String address : Arrays.asList(host.getPrivateIpAddress(), host.getPublicIpAddress(), host.getStorageIpAddress())) {
+            if (StringUtils.isNotBlank(address) && sameAddress(name, address)) {
+                return true;
+            }
+        }
+        final String hostName = host.getName();
+        return !isAddress(name) && StringUtils.isNotBlank(hostName) && !isAddress(hostName)
+                && StringUtils.substringBefore(name, ".").equalsIgnoreCase(StringUtils.substringBefore(hostName, "."));
+    }
+
+    private static boolean sameAddress(final String name, final String address) {
+        if (!isAddress(name) || !isAddress(address)) {
+            return false;
+        }
+        try {
+            return InetAddress.getByName(name).equals(InetAddress.getByName(address));
+        } catch (final UnknownHostException e) {
+            return false;
         }
     }
 
@@ -266,8 +401,12 @@ public class CAManagerImpl extends ManagerBase implements CAManager {
 
         // 2. Issue Certificate based on returned CSR
         final String csr = keystoreSetupResult.getStdOut();
-        final Certificate certificate = issueCertificate(csr, Arrays.asList(agentHostname, agentIp),
-                Collections.singletonList(agentIp), null, caProvider);
+        checkHostCertificateRequest(csr, agentHostname, agentIp);
+        final HostVO registered = hostDao.listAll().stream().filter(host -> StringUtils.equals(host.getPrivateIpAddress(), agentIp)).findFirst().orElse(null);
+        // A host being added has no registered identity yet; its request is certified as the one adding it vouches for it.
+        final Certificate certificate = registered == null
+                ? issueCertificate(csr, Arrays.asList(agentHostname, agentIp), Collections.singletonList(agentIp), null, caProvider)
+                : issueHostCertificate(csr, registered, caProvider);
 
         if (certificate == null || certificate.getClientCertificate() == null) {
             throw new CloudRuntimeException("Failed to issue certificates for host: " + agentIp);

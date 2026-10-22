@@ -96,6 +96,15 @@ public interface VolumeOrchestrationService {
             ConfigKey.Kind.Select,
             "random,firstfit,userdispersing,firstfitleastconsumed");
 
+    ConfigKey<Boolean> VolumeMoveKeepSource = new ConfigKey<>(Boolean.class, "volume.move.keep.source", ConfigKey.CATEGORY_ADVANCED, "true",
+            "Whether moving a volume from the local storage of one host to another keeps the copy at its previous location as a separate, detached volume of the "
+                    + "same owner, named <name>-previous-<yyyyMMdd>, which counts against the owner's storage quota until the owner deletes it. When false, "
+                    + "that copy is deleted as soon as the volume uses its new location, and the move needs no quota for it.",
+            true, ConfigKey.Scope.Domain, null);
+
+    /** The volume detail, on a volume that holds the copy of another volume being moved, naming that volume's id. */
+    String RELOCATION_OF = "relocation.of";
+
     VolumeInfo moveVolume(VolumeInfo volume, long destPoolDcId, Long destPoolPodId, Long destPoolClusterId, HypervisorType dataDiskHyperType)
         throws ConcurrentOperationException, StorageUnavailableException;
 
@@ -114,6 +123,25 @@ public interface VolumeOrchestrationService {
     Volume migrateVolume(Volume volume, StoragePool destPool) throws StorageUnavailableException;
 
     Volume liveMigrateVolume(Volume volume, StoragePool destPool);
+
+    /**
+     * Moves volumes from the local storage of their KVM hosts to the local storage pool of another KVM host by
+     * copying each file directly between the hosts, one volume after the other. Each volume keeps its id, uuid,
+     * device and Instance; only its location changes, for all of them together in one transaction once every copy
+     * is verified. The file at the previous location becomes a new volume of the same owner, or is deleted, as
+     * {@link #VolumeMoveKeepSource} says for the owner's domain. On failure nothing has moved and the copies are removed.
+     * <p>
+     * Runs within an async job. A volume attached to an Instance moves only while that Instance's own work item holds
+     * it in Migrating; a running Instance's volumes never move.
+     *
+     * @param inSwitch work done inside the transaction that repoints the volumes, or null
+     * @return the previous copies that are kept
+     */
+    List<Volume> relocateVolumes(List<? extends Volume> volumes, StoragePool destPool, Runnable inSwitch);
+
+    default List<Volume> relocateVolumes(List<? extends Volume> volumes, StoragePool destPool) {
+        return relocateVolumes(volumes, destPool, null);
+    }
 
     void cleanupStorageJobs();
 

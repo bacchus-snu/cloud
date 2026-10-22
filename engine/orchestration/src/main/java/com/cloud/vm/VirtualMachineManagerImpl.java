@@ -267,6 +267,7 @@ import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.DiskOfferingDao;
 import com.cloud.storage.dao.GuestOSCategoryDao;
 import com.cloud.storage.dao.GuestOSDao;
+import com.cloud.storage.StoragePoolHostVO;
 import com.cloud.storage.dao.StoragePoolHostDao;
 import com.cloud.storage.dao.VMTemplateDao;
 import com.cloud.storage.dao.VMTemplateZoneDao;
@@ -2885,6 +2886,127 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
                 String anotherMEssage = String.format("failed to change vm state of VM: %s", vmUuid);
                 logger.warn(anotherMEssage, e);
                 throw new CloudRuntimeException(anotherMEssage, e);
+            }
+        }
+    }
+
+    @Override
+    public void relocateStoppedVm(final String vmUuid, final List<Long> volumeIds, final long destPoolId) {
+        final AsyncJobExecutionContext jobContext = AsyncJobExecutionContext.getCurrentExecutionContext();
+        if (jobContext.isJobDispatchedBy(VmWorkConstants.VM_WORK_JOB_DISPATCHER)) {
+            final VirtualMachine vm = _vmDao.findByUuid(vmUuid);
+            VmWorkJobVO placeHolder = createPlaceHolderWork(vm.getId());
+            try {
+                orchestrateRelocateStoppedVm(vmUuid, volumeIds, destPoolId);
+            } finally {
+                if (placeHolder != null) {
+                    _workJobDao.expunge(placeHolder.getId());
+                }
+            }
+        } else {
+            final Outcome<VirtualMachine> outcome = relocateStoppedVmThroughJobQueue(vmUuid, volumeIds, destPoolId);
+            retrieveVmFromJobOutcome(outcome, vmUuid, "relocateStoppedVm");
+            try {
+                retrieveResultFromJobOutcomeAndThrowExceptionIfNeeded(outcome);
+            } catch (ResourceUnavailableException | InsufficientCapacityException ex) {
+                throw new CloudRuntimeException(String.format("Moving the volumes of Instance %s failed: %s", vmUuid, ex.getMessage()), ex);
+            }
+        }
+    }
+
+    private HostVO relocationDestinationHost(StoragePoolVO destPool) {
+        List<StoragePoolHostVO> hosts = destPool == null ? Collections.emptyList() : _poolHostDao.listByPoolId(destPool.getId());
+        if (destPool == null || destPool.getScope() != ScopeType.HOST || hosts.size() != 1) {
+            throw new InvalidParameterValueException("The destination is not the local storage pool of a host.");
+        }
+        return _hostDao.findById(hosts.get(0).getHostId());
+    }
+
+    protected List<VolumeVO> validateStoppedVmRelocation(VMInstanceVO vm, List<Long> volumeIds, HostVO destHost) {
+        if (vm == null) {
+            throw new InvalidParameterValueException("No such Instance.");
+        }
+        if (vm.getState() != State.Stopped) {
+            throw new InvalidParameterValueException(String.format("Instance %s is %s; only a stopped Instance's volumes move, the volumes of a running Instance never do.",
+                    vm.getUuid(), vm.getState()));
+        }
+        if (vm.getHypervisorType() != HypervisorType.KVM) {
+            throw new InvalidParameterValueException(String.format("Instance %s does not run on KVM.", vm.getUuid()));
+        }
+        if (CollectionUtils.isNotEmpty(_vmSnapshotDao.findByVm(vm.getId()))) {
+            throw new InvalidParameterValueException(String.format("Instance %s has Instance snapshots; delete them before its volumes move.", vm.getUuid()));
+        }
+        if (CollectionUtils.isEmpty(volumeIds)) {
+            throw new InvalidParameterValueException("No volume to move.");
+        }
+        List<VolumeVO> volumes = new ArrayList<>();
+        for (Long volumeId : volumeIds) {
+            VolumeVO volume = _volsDao.findById(volumeId);
+            if (volume == null || !Objects.equals(volume.getInstanceId(), vm.getId())) {
+                throw new InvalidParameterValueException(String.format("Volume %d does not belong to Instance %s.", volumeId, vm.getUuid()));
+            }
+            volumes.add(volume);
+        }
+        ServiceOfferingVO offering = _offeringDao.findById(vm.getId(), vm.getServiceOfferingId());
+        if (offering.getVgpuProfileId() != null && offering.getVgpuProfileId() > 0 && !_resourceMgr.isGPUDeviceAvailable(offering, destHost, vm.getId())) {
+            throw new CloudRuntimeException(String.format("Host %s has no free GPU group for Instance %s.", destHost.getName(), vm.getUuid()));
+        }
+        if (!_capacityMgr.checkIfHostHasCpuCapabilityAndCapacity(destHost, offering, false).second()) {
+            throw new CloudRuntimeException(String.format("Host %s does not have the capacity to start Instance %s.", destHost.getName(), vm.getUuid()));
+        }
+        return volumes;
+    }
+
+    private void orchestrateRelocateStoppedVm(final String vmUuid, final List<Long> volumeIds, final long destPoolId) {
+        final VMInstanceVO vm = _vmDao.findByUuid(vmUuid);
+        final StoragePoolVO destPool = _storagePoolDao.findById(destPoolId);
+        final HostVO destHost = relocationDestinationHost(destPool);
+        final List<VolumeVO> volumes = validateStoppedVmRelocation(vm, volumeIds, destHost);
+        final Long previousPodId = vm.getPodIdToDeployIn();
+        try {
+            if (!stateTransitTo(vm, Event.StorageMigrationRequested, null)) {
+                throw new CloudRuntimeException(String.format("Instance %s changed concurrently; its volumes were not moved.", vm.getUuid()));
+            }
+        } catch (final NoTransitionException e) {
+            throw new CloudRuntimeException(String.format("Instance %s cannot start moving its volumes: %s", vm.getUuid(), e.getMessage()), e);
+        }
+        boolean switched = false;
+        try {
+            volumeMgr.relocateVolumes(volumes, destPool, () -> {
+                VMInstanceVO moved = _vmDao.findById(vm.getId());
+                moved.setLastHostId(destHost.getId());
+                moved.setPodIdToDeployIn(destPool.getPodId());
+                _vmDao.update(moved.getId(), moved);
+                try {
+                    if (!stateTransitTo(moved, Event.AgentReportStopped, null)) {
+                        throw new CloudRuntimeException(String.format("Instance %s changed concurrently while its volumes moved.", vm.getUuid()));
+                    }
+                } catch (final NoTransitionException e) {
+                    throw new CloudRuntimeException(e);
+                }
+            });
+            switched = true;
+        } finally {
+            if (!switched) {
+                VMInstanceVO current = _vmDao.findById(vm.getId());
+                if (current != null && current.getState() == State.Migrating) {
+                    try {
+                        if (!stateTransitTo(current, Event.AgentReportStopped, null)) {
+                            logger.warn("Instance {} changed while it was being returned to Stopped; the recovery sweep looks at it again.", vm);
+                        }
+                    } catch (final NoTransitionException e) {
+                        logger.warn("Unable to return Instance {} to Stopped; the recovery sweep does: {}", vm, e.getMessage());
+                    }
+                }
+            }
+        }
+        if (!Objects.equals(previousPodId, destPool.getPodId())) {
+            final VirtualMachineProfileImpl profile = new VirtualMachineProfileImpl(_vmDao.findById(vm.getId()), null, null, null, null);
+            try {
+                _networkMgr.reallocate(profile, new DataCenterDeployment(vm.getDataCenterId(), destPool.getPodId(), null, null, null, null));
+            } catch (final InsufficientCapacityException | ConcurrentOperationException e) {
+                throw new CloudRuntimeException(String.format("The volumes of Instance %s moved to pod %d, but its networks were not reallocated there: %s",
+                        vm.getUuid(), destPool.getPodId(), e.getMessage()), e);
             }
         }
     }
@@ -5985,6 +6107,26 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
         return new VmJobVirtualMachineOutcome(workJob, vmId);
     }
 
+    public Outcome<VirtualMachine> relocateStoppedVmThroughJobQueue(final String vmUuid, final List<Long> volumeIds, final long destPoolId) {
+        String commandName = VmWorkRelocateStoppedVm.class.getName();
+        Pair<VmWorkJobVO, Long> pendingWorkJob = retrievePendingWorkJob(vmUuid, commandName);
+
+        VmWorkJobVO workJob = pendingWorkJob.first();
+        Long vmId = pendingWorkJob.second();
+
+        if (workJob == null) {
+            Pair<VmWorkJobVO, VmWork> newVmWorkJobAndInfo = createWorkJobAndWorkInfo(commandName, vmId);
+
+            workJob = newVmWorkJobAndInfo.first();
+            VmWorkRelocateStoppedVm workInfo = new VmWorkRelocateStoppedVm(newVmWorkJobAndInfo.second(), volumeIds, destPoolId);
+
+            setCmdInfoAndSubmitAsyncJob(workJob, workInfo, vmId);
+        }
+        AsyncJobExecutionContext.getCurrentExecutionContext().joinJob(workJob.getId());
+
+        return new VmJobVirtualMachineOutcome(workJob, vmId);
+    }
+
     public Outcome<VirtualMachine> addVmToNetworkThroughJobQueue(
             final VirtualMachine vm, final Network network, final NicProfile requested) {
         Long vmId = vm.getId();
@@ -6244,6 +6386,13 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
     private Pair<JobInfo.Status, String> orchestrateStorageMigration(final VmWorkStorageMigration work) throws Exception {
         VMInstanceVO vm = findVmById(work.getVmId());
         orchestrateStorageMigration(vm.getUuid(), work.getVolumeToPool());
+        return new Pair<>(JobInfo.Status.SUCCEEDED, null);
+    }
+
+    @ReflectionUse
+    private Pair<JobInfo.Status, String> orchestrateRelocateStoppedVm(final VmWorkRelocateStoppedVm work) throws Exception {
+        VMInstanceVO vm = findVmById(work.getVmId());
+        orchestrateRelocateStoppedVm(vm.getUuid(), work.getVolumeIds(), work.getDestPoolId());
         return new Pair<>(JobInfo.Status.SUCCEEDED, null);
     }
 

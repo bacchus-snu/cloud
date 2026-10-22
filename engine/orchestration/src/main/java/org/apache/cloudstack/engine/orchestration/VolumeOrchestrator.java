@@ -21,6 +21,7 @@ package org.apache.cloudstack.engine.orchestration;
 import static com.cloud.storage.resource.StorageProcessor.REQUEST_TEMPLATE_RELOAD;
 import static com.cloud.utils.NumbersUtil.toHumanReadableSize;
 
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -32,8 +33,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TimeZone;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import javax.inject.Inject;
@@ -84,7 +89,13 @@ import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.Configurable;
 import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
 import org.apache.cloudstack.framework.jobs.AsyncJobManager;
+import org.apache.cloudstack.framework.jobs.AsyncJob;
+import org.apache.cloudstack.framework.jobs.AsyncJobExecutionContext;
+import org.apache.cloudstack.framework.jobs.dao.VmWorkJobDao;
+import org.apache.cloudstack.framework.jobs.impl.VmWorkJobVO;
 import org.apache.cloudstack.framework.jobs.impl.AsyncJobVO;
+import org.apache.cloudstack.jobs.JobInfo;
+import org.apache.cloudstack.managed.context.ManagedContextRunnable;
 import org.apache.cloudstack.resourcedetail.DiskOfferingDetailVO;
 import org.apache.cloudstack.resourcedetail.dao.DiskOfferingDetailsDao;
 import org.apache.cloudstack.resourcelimit.Reserver;
@@ -113,9 +124,14 @@ import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.jetbrains.annotations.Nullable;
 
+import com.cloud.agent.api.Answer;
+import com.cloud.agent.api.Command;
+import com.cloud.agent.api.storage.AbortVolumeFileCopyCommand;
+import com.cloud.agent.api.storage.StopVolumeExportCommand;
 import com.cloud.agent.api.to.DataTO;
 import com.cloud.agent.api.to.DatadiskTO;
 import com.cloud.agent.api.to.DiskTO;
+import com.cloud.agent.api.to.StorageFilerTO;
 import com.cloud.agent.api.to.VirtualMachineTO;
 import com.cloud.agent.manager.allocator.PodAllocator;
 import com.cloud.cluster.ClusterManager;
@@ -140,6 +156,7 @@ import com.cloud.hypervisor.Hypervisor.HypervisorType;
 import com.cloud.offering.DiskOffering;
 import com.cloud.offering.ServiceOffering;
 import com.cloud.org.Cluster;
+import com.cloud.resource.ResourceState;
 import com.cloud.storage.DataStoreRole;
 import com.cloud.storage.ScopeType;
 import com.cloud.storage.Snapshot;
@@ -168,11 +185,14 @@ import com.cloud.user.ResourceLimitService;
 import com.cloud.uservm.UserVm;
 import com.cloud.utils.Pair;
 import com.cloud.utils.component.ManagerBase;
+import com.cloud.utils.concurrency.NamedThreadFactory;
 import com.cloud.utils.db.DB;
 import com.cloud.utils.db.EntityManager;
+import com.cloud.utils.db.GlobalLock;
 import com.cloud.utils.db.Transaction;
 import com.cloud.utils.db.TransactionCallback;
 import com.cloud.utils.db.TransactionCallbackNoReturn;
+import com.cloud.utils.db.TransactionCallbackWithException;
 import com.cloud.utils.db.TransactionStatus;
 import com.cloud.utils.db.UUIDManager;
 import com.cloud.utils.exception.CloudRuntimeException;
@@ -191,6 +211,7 @@ import com.cloud.vm.VirtualMachineProfileImpl;
 import com.cloud.vm.VmDetailConstants;
 import com.cloud.vm.VmWorkAttachVolume;
 import com.cloud.vm.VmWorkMigrateVolume;
+import com.cloud.vm.VmWorkRelocateStoppedVm;
 import com.cloud.vm.VmWorkSerializer;
 import com.cloud.vm.VmWorkTakeVolumeSnapshot;
 import com.cloud.vm.dao.SecondaryStorageVmDao;
@@ -305,6 +326,10 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
 
     @Inject
     private InternalBackupService internalBackupService;
+    @Inject
+    private VmWorkJobDao workJobDao;
+
+    private ScheduledExecutorService relocationSweeper;
 
     private final StateMachine2<Volume.State, Volume.Event, Volume> _volStateMachine;
     protected List<StoragePoolAllocator> _storagePoolAllocators;
@@ -1684,6 +1709,538 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
         }
     }
 
+    /** The async job doing the move; the recovery sweep leaves a move alone while it runs. */
+    static final String RELOCATION_JOB = "relocation.job";
+    /** True when the copy is counted against the owner's quota. */
+    static final String RELOCATION_QUOTA = "relocation.quota";
+    static final String RELOCATION_PHASE = "relocation.phase";
+    static final String PHASE_COPY = "copy";
+    static final String PHASE_DISCARD = "discard";
+    /** The move was undone: the volume is usable where it was, only the copy's removal is left. */
+    static final String PHASE_RESTORED = "restored";
+    static final String PREVIOUS_COPY_INFIX = "-previous-";
+    static final long RELOCATION_SWEEP_INTERVAL_SECONDS = 300L;
+    static final long STUCK_MIGRATING_VM_SECONDS = 600L;
+
+    /**
+     * A volume being moved and the volume that receives its copy. After the switch the latter holds the file at
+     * the previous location.
+     */
+    static final class Relocation {
+        final long volumeId;
+        final long copyId;
+        final boolean keepSource;
+
+        Relocation(long volumeId, long copyId, boolean keepSource) {
+            this.volumeId = volumeId;
+            this.copyId = copyId;
+            this.keepSource = keepSource;
+        }
+    }
+
+    @Override
+    public List<Volume> relocateVolumes(List<? extends Volume> volumes, StoragePool destPool, Runnable inSwitch) {
+        long jobId = currentJobId();
+        List<VolumeVO> sources = validateRelocation(volumes, destPool, jobId);
+        checkConcurrentRelocationsPerDatastore(destPool, sources.size());
+        List<Relocation> relocations = reserveRelocations(sources, destPool, jobId);
+        try {
+            for (Relocation relocation : relocations) {
+                copyForRelocation(relocation, destPool);
+            }
+            switchToCopies(relocations, inSwitch);
+        } catch (RuntimeException e) {
+            logger.warn("Moving volumes {} to storage pool {} failed; restoring them: {}", sources, destPool, e.getMessage());
+            for (Relocation relocation : relocations) {
+                try {
+                    failRelocation(relocation.copyId);
+                } catch (RuntimeException cleanup) {
+                    logger.warn("Unable to clean up the copy of volume {}; the recovery sweep retries: {}", relocation.volumeId, cleanup.getMessage());
+                }
+            }
+            throw e;
+        }
+        List<Volume> kept = new ArrayList<>();
+        for (Relocation relocation : relocations) {
+            if (relocation.keepSource) {
+                kept.add(_volsDao.findById(relocation.copyId));
+            } else {
+                discardPreviousCopy(relocation.copyId);
+            }
+        }
+        return kept;
+    }
+
+    protected long currentJobId() {
+        AsyncJobExecutionContext context = AsyncJobExecutionContext.getCurrentExecutionContext();
+        if (context == null || context.getJob() == null) {
+            throw new CloudRuntimeException("Volumes are moved between hosts only within an async job.");
+        }
+        return context.getJob().getId();
+    }
+
+    protected boolean keepSource(long domainId) {
+        return Boolean.TRUE.equals(VolumeMoveKeepSource.valueIn(domainId));
+    }
+
+    protected <T> T inTransaction(TransactionCallbackWithException<T, RuntimeException> callback) {
+        return Transaction.execute(callback);
+    }
+
+    /**
+     * @return the host owning a local file system pool, or null for any other pool
+     */
+    protected Long localPoolHostId(StoragePool pool) {
+        StoragePoolVO poolVO = pool == null ? null : _storagePoolDao.findById(pool.getId());
+        if (poolVO == null || poolVO.getPoolType() != Storage.StoragePoolType.Filesystem || poolVO.getScope() != ScopeType.HOST) {
+            return null;
+        }
+        List<StoragePoolHostVO> hosts = storagePoolHostDao.listByPoolId(poolVO.getId());
+        return hosts.size() == 1 ? hosts.get(0).getHostId() : null;
+    }
+
+    private HostVO requireKvmHost(Long hostId, boolean destination) {
+        HostVO host = hostId == null ? null : _hostDao.findById(hostId);
+        if (host == null || host.getHypervisorType() != HypervisorType.KVM) {
+            throw new InvalidParameterValueException("Volumes are moved directly only between KVM hosts.");
+        }
+        if (host.getStatus() != com.cloud.host.Status.Up || (destination && host.getResourceState() != ResourceState.Enabled)) {
+            throw new CloudRuntimeException(String.format("Host %s is %s/%s; volumes move only %s a host that is Up%s.", host.getName(), host.getStatus(),
+                    host.getResourceState(), destination ? "to" : "from", destination ? " and Enabled" : ""));
+        }
+        return host;
+    }
+
+    protected List<VolumeVO> validateRelocation(List<? extends Volume> volumes, StoragePool destPool, long jobId) {
+        if (CollectionUtils.isEmpty(volumes) || destPool == null) {
+            throw new InvalidParameterValueException("No volume or no destination storage pool to move to.");
+        }
+        Long destHostId = localPoolHostId(destPool);
+        if (destHostId == null) {
+            throw new InvalidParameterValueException(String.format("Storage pool %s is not the local storage of a host.", destPool.getName()));
+        }
+        requireKvmHost(destHostId, true);
+        List<String> poolTags = storageMgr.getStoragePoolTagList(destPool.getId());
+        List<VolumeVO> sources = new ArrayList<>();
+        Set<Long> seen = new HashSet<>();
+        long bytes = 0;
+        for (Volume volume : volumes) {
+            VolumeVO source = _volsDao.findById(volume.getId());
+            if (source == null || !seen.add(source.getId())) {
+                throw new InvalidParameterValueException(String.format("Volume %s is missing or listed twice.", volume.getUuid()));
+            }
+            if (source.getState() != Volume.State.Ready) {
+                throw new InvalidParameterValueException(String.format("Volume %s is %s; only a Ready volume is moved.", source.getUuid(), source.getState()));
+            }
+            Long srcHostId = localPoolHostId(_storagePoolDao.findById(source.getPoolId()));
+            if (srcHostId == null) {
+                throw new InvalidParameterValueException(String.format("Volume %s is not on the local storage of a host.", source.getUuid()));
+            }
+            if (srcHostId.equals(destHostId)) {
+                throw new InvalidParameterValueException(String.format("Volume %s is already on the destination host.", source.getUuid()));
+            }
+            requireKvmHost(srcHostId, false);
+            if (source.getPassphraseId() != null || source.getKmsKeyId() != null) {
+                throw new InvalidParameterValueException(String.format("Volume %s is encrypted; encrypted volumes are not moved between hosts.", source.getUuid()));
+            }
+            snapshotHelper.checkKvmVolumeSnapshotsOnlyInPrimaryStorage(source, HypervisorType.KVM);
+            if (source.getInstanceId() != null) {
+                VMInstanceVO vm = vmInstanceDao.findById(source.getInstanceId());
+                if (vm != null && vm.getState() != State.Migrating) {
+                    throw new InvalidParameterValueException(vm.getState() == State.Stopped
+                            ? String.format("Volume %s belongs to the stopped Instance %s and moves only as that Instance's own work item.", source.getUuid(), vm.getUuid())
+                            : String.format("Volume %s belongs to Instance %s, which is %s; the volumes of an Instance that may run never move.", source.getUuid(),
+                                    vm.getUuid(), vm.getState()));
+                }
+                if (vm != null && vm.getHostId() != null) {
+                    throw new InvalidParameterValueException(String.format("Instance %s is migrating on a host; its volumes do not move.", vm.getUuid()));
+                }
+                VmWorkJobVO work = workJobDao.findById(jobId);
+                if (vm != null && (work == null || work.getVmInstanceId() != vm.getId() || !VmWorkRelocateStoppedVm.class.getName().equals(work.getCmd()))) {
+                    throw new InvalidParameterValueException(String.format("Volume %s belongs to Instance %s and moves only as that Instance's own work item.",
+                            source.getUuid(), vm.getUuid()));
+                }
+            }
+            DiskOfferingVO offering = diskOfferingDao.findByIdIncludingRemoved(source.getDiskOfferingId());
+            List<String> volumeTags = offering == null ? null : com.cloud.utils.StringUtils.csvTagsToList(offering.getTags());
+            if (CollectionUtils.isNotEmpty(volumeTags) && (poolTags == null || !poolTags.containsAll(volumeTags))) {
+                throw new InvalidParameterValueException(String.format("Storage pool %s does not have the storage tags %s of volume %s.", destPool.getName(),
+                        volumeTags, source.getUuid()));
+            }
+            bytes += source.getSize() == null ? 0 : source.getSize();
+            sources.add(source);
+        }
+        if (!storageMgr.storagePoolHasEnoughSpace(bytes, destPool)) {
+            throw new CloudRuntimeException(String.format("Storage pool %s does not have room for %d bytes.", destPool.getName(), bytes));
+        }
+        return sources;
+    }
+
+    /**
+     * Bounds concurrent moves into one pool by {@link VolumeApiService#ConcurrentMigrationsThresholdPerDatastore}, counting the copies
+     * in progress from the database, so the bound holds across management servers.
+     */
+    protected void checkConcurrentRelocationsPerDatastore(StoragePool destPool, int adding) {
+        Long threshold = VolumeApiService.ConcurrentMigrationsThresholdPerDatastore.value();
+        if (threshold == null || threshold <= 0) {
+            return;
+        }
+        long running = 0;
+        for (VolumeDetailVO marker : _volDetailDao.findDetails(RELOCATION_OF)) {
+            VolumeVO copy = _volsDao.findById(marker.getResourceId());
+            if (copy != null && copy.getState() == Volume.State.Creating && Objects.equals(copy.getPoolId(), destPool.getId())) {
+                running++;
+            }
+        }
+        if (running + adding > threshold) {
+            throw new CloudRuntimeException(String.format("Storage pool %s already receives %d volume copies; the limit is %d. Please try again later.",
+                    destPool.getName(), running, threshold));
+        }
+    }
+
+    /**
+     * Holds each volume in Migrating and allocates the volume its copy goes to, in one transaction. A copy that is to
+     * be kept is counted against the owner's quota from here on, like any volume being created. Its quota is reserved
+     * before that transaction, where the reservation is visible to every other reserver, and released after it commits.
+     */
+    protected List<Relocation> reserveRelocations(List<VolumeVO> sources, StoragePool destPool, long jobId) {
+        Map<Long, Boolean> keepSource = new HashMap<>();
+        List<Reserver> reservations = new ArrayList<>();
+        try {
+            for (VolumeVO source : sources) {
+                boolean keep = keepSource(source.getDomainId());
+                keepSource.put(source.getId(), keep);
+                if (keep) {
+                    reservePreviousCopy(source, reservations);
+                }
+            }
+            return inTransaction(status -> allocateCopies(sources, destPool, jobId, keepSource));
+        } finally {
+            ReservationHelper.closeAll(reservations);
+        }
+    }
+
+    private List<Relocation> allocateCopies(List<VolumeVO> sources, StoragePool destPool, long jobId, Map<Long, Boolean> keepSource) {
+        List<Relocation> relocations = new ArrayList<>();
+        for (VolumeVO source : sources) {
+            boolean keep = keepSource.get(source.getId());
+            if (keep) {
+                _resourceLimitMgr.incrementVolumeResourceCount(source.getAccountId(), source.isDisplayVolume(), source.getSize(),
+                        diskOfferingDao.findByIdIncludingRemoved(source.getDiskOfferingId()));
+            }
+            transit(source, Volume.Event.MigrationRequested);
+            VolumeVO copy = allocateCopy(source, destPool, keep);
+            transit(copy, Volume.Event.MigrationCopyRequested);
+            _volDetailDao.addDetail(copy.getId(), RELOCATION_OF, String.valueOf(source.getId()), false);
+            _volDetailDao.addDetail(copy.getId(), RELOCATION_JOB, String.valueOf(jobId), false);
+            _volDetailDao.addDetail(copy.getId(), RELOCATION_QUOTA, String.valueOf(keep), false);
+            _volDetailDao.addDetail(copy.getId(), RELOCATION_PHASE, PHASE_COPY, false);
+            relocations.add(new Relocation(source.getId(), copy.getId(), keep));
+        }
+        return relocations;
+    }
+
+    private void reservePreviousCopy(VolumeVO source, List<Reserver> reservations) {
+        try {
+            _resourceLimitMgr.checkVolumeResourceLimit(_accountMgr.getAccount(source.getAccountId()), source.isDisplayVolume(), source.getSize(),
+                    diskOfferingDao.findByIdIncludingRemoved(source.getDiskOfferingId()), reservations);
+        } catch (ResourceAllocationException e) {
+            throw new CloudRuntimeException(String.format("Not enough storage quota to keep the previous copy of volume %s: %s", source.getUuid(), e.getMessage()), e);
+        }
+    }
+
+    private VolumeVO allocateCopy(VolumeVO source, StoragePool destPool, boolean keep) {
+        VolumeVO copy = new VolumeVO(source);
+        copy.setInstanceId(null);
+        copy.setChainInfo(null);
+        copy.setPoolId(destPool.getId());
+        copy.setPoolType(destPool.getPoolType());
+        copy.setPodId(destPool.getPodId());
+        copy.setFolder(destPool.getPath());
+        copy.setLastPoolId(source.getPoolId());
+        copy.setLastId(source.getId());
+        // The copy shows as a volume of the owner exactly while it counts against the owner's quota.
+        copy.setDisplayVolume(keep && source.isDisplayVolume());
+        // The copy's file is named after the copy, as volume files are, and recorded before any byte moves.
+        copy.setPath(copy.getUuid());
+        return _volsDao.persist(copy);
+    }
+
+    private void transit(Volume volume, Volume.Event event) {
+        try {
+            if (!stateTransitTo(volume, event)) {
+                throw new CloudRuntimeException(String.format("Volume %s changed concurrently while handling %s.", volume.getUuid(), event));
+            }
+        } catch (NoTransitionException e) {
+            throw new CloudRuntimeException(String.format("Volume %s cannot handle %s in state %s.", volume.getUuid(), event, volume.getState()), e);
+        }
+    }
+
+    protected void copyForRelocation(Relocation relocation, StoragePool destPool) {
+        VolumeInfo source = volFactory.getVolume(relocation.volumeId);
+        VolumeInfo copy = volFactory.getVolume(relocation.copyId);
+        VolumeApiResult result;
+        try {
+            result = volService.copyVolumeKeepingSource(source, copy).get();
+        } catch (InterruptedException | ExecutionException e) {
+            throw new CloudRuntimeException(String.format("Copying volume %s to storage pool %s was interrupted.", source.getUuid(), destPool.getName()), e);
+        }
+        if (result.isFailed()) {
+            throw new CloudRuntimeException(String.format("Copying volume %s to storage pool %s failed: %s", source.getUuid(), destPool.getName(), result.getResult()));
+        }
+    }
+
+    static String previousCopyName(String name, Date when) {
+        SimpleDateFormat format = new SimpleDateFormat("yyyyMMdd");
+        format.setTimeZone(TimeZone.getTimeZone("UTC"));
+        return name + PREVIOUS_COPY_INFIX + format.format(when);
+    }
+
+    /**
+     * In one transaction, every moved volume takes its copy's location, and each copy takes the location the volume
+     * leaves and becomes a detached data volume of the same owner and template. Only the copy becomes Ready from
+     * Creating, which records it as a new volume; the moved volume only leaves Migrating.
+     */
+    protected void switchToCopies(List<Relocation> relocations, Runnable inSwitch) {
+        Date now = new Date();
+        inTransaction(status -> {
+            for (Relocation relocation : relocations) {
+                VolumeVO volume = _volsDao.findById(relocation.volumeId);
+                VolumeVO copy = _volsDao.findById(relocation.copyId);
+                Long previousPoolId = volume.getPoolId();
+                Long previousPodId = volume.getPodId();
+                Storage.StoragePoolType previousPoolType = volume.getPoolType();
+                String previousPath = volume.getPath();
+                String previousFolder = volume.getFolder();
+                String previousChainInfo = volume.getChainInfo();
+
+                volume.setPath(copy.getPath());
+                volume.setPoolId(copy.getPoolId());
+                volume.setPodId(copy.getPodId());
+                volume.setPoolType(copy.getPoolType());
+                volume.setFolder(copy.getFolder());
+                volume.setChainInfo(copy.getChainInfo());
+                volume.setLastPoolId(previousPoolId);
+                _volsDao.update(volume.getId(), volume);
+
+                copy.setPath(previousPath);
+                copy.setPoolId(previousPoolId);
+                copy.setPodId(previousPodId);
+                copy.setPoolType(previousPoolType);
+                copy.setFolder(previousFolder);
+                copy.setChainInfo(previousChainInfo);
+                copy.setLastPoolId(volume.getPoolId());
+                copy.setName(previousCopyName(volume.getName(), now));
+                copy.setVolumeType(Volume.Type.DATADISK);
+                copy.setInstanceId(null);
+                copy.setDeviceId(null);
+                copy.setAttached(null);
+                _volsDao.update(copy.getId(), copy);
+
+                transit(copy, Volume.Event.MigrationCopySucceeded);
+                transit(volume, Volume.Event.OperationSucceeded);
+
+                if (relocation.keepSource) {
+                    _volDetailDao.removeDetails(copy.getId());
+                } else {
+                    _volDetailDao.removeDetail(copy.getId(), RELOCATION_PHASE);
+                    _volDetailDao.addDetail(copy.getId(), RELOCATION_PHASE, PHASE_DISCARD, false);
+                }
+            }
+            if (inSwitch != null) {
+                inSwitch.run();
+            }
+            return null;
+        });
+    }
+
+    /**
+     * Deletes a previous copy that is not kept, with its file at the previous location. Retried by the recovery sweep
+     * until it succeeds.
+     */
+    protected boolean discardPreviousCopy(long copyId) {
+        VolumeVO copy = _volsDao.findByIdIncludingRemoved(copyId);
+        if (copy == null || copy.getRemoved() != null) {
+            _volDetailDao.removeDetails(copyId);
+            return true;
+        }
+        try {
+            if (copy.getState() == Volume.State.Ready) {
+                transit(copy, Volume.Event.DestroyRequested);
+                transit(copy, Volume.Event.OperationSucceeded);
+            }
+            VolumeApiResult result = volService.expungeVolumeAsync(volFactory.getVolume(copyId)).get();
+            if (result.isFailed()) {
+                logger.warn("Unable to delete the previous copy {} of a moved volume: {}", copy.getUuid(), result.getResult());
+                return false;
+            }
+            _volDetailDao.removeDetails(copyId);
+            return true;
+        } catch (InterruptedException | ExecutionException | RuntimeException e) {
+            logger.warn("Unable to delete the previous copy {} of a moved volume: {}", copy.getUuid(), e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Undoes a move that did not switch: stops what the hosts may still be doing for it, puts the volume back to
+     * Ready where it is, uncounts and deletes the copy. The volume is restored once, at once, whether or not the
+     * hosts answer; deleting the copy is repeated by the recovery sweep until the destination host confirms that
+     * nothing of it is left there.
+     */
+    protected boolean failRelocation(long copyId) {
+        Map<String, String> marker = _volDetailDao.listDetailsKeyPairs(copyId);
+        String volumeId = marker.get(RELOCATION_OF);
+        if (volumeId == null) {
+            // Not the copy of a move: there is nothing to undo.
+            return true;
+        }
+        VolumeVO volume = _volsDao.findById(Long.parseLong(volumeId));
+        VolumeVO copy = _volsDao.findByIdIncludingRemoved(copyId);
+        boolean destinationClean = copy == null || stopTransfer(copy, volume);
+        if (!PHASE_RESTORED.equals(marker.get(RELOCATION_PHASE))) {
+            restoreRelocation(copyId, volume, Boolean.parseBoolean(marker.get(RELOCATION_QUOTA)));
+        }
+        if (!destinationClean) {
+            return false;
+        }
+        VolumeVO destroyed = _volsDao.findById(copyId);
+        if (destroyed != null) {
+            try {
+                VolumeApiResult result = volService.expungeVolumeAsync(volFactory.getVolume(copyId)).get();
+                if (result.isFailed()) {
+                    logger.warn("Unable to delete copy {} of volume {}: {}", destroyed.getUuid(), volumeId, result.getResult());
+                    return false;
+                }
+            } catch (InterruptedException | ExecutionException e) {
+                logger.warn("Unable to delete copy {} of volume {}: {}", destroyed.getUuid(), volumeId, e.getMessage());
+                return false;
+            }
+        }
+        _volDetailDao.removeDetails(copyId);
+        return true;
+    }
+
+    /**
+     * Puts the volume back to Ready and takes the copy out of the owner's volumes, in the one transaction that
+     * records the move as undone: the volume may be moved again afterwards, and nothing here may touch it then.
+     */
+    private void restoreRelocation(long copyId, VolumeVO volume, boolean counted) {
+        inTransaction(status -> {
+            VolumeVO current = _volsDao.findById(copyId);
+            if (current != null && (current.getState() == Volume.State.Creating || current.getState() == Volume.State.Allocated)) {
+                if (counted) {
+                    _resourceLimitMgr.decrementVolumeResourceCount(current.getAccountId(), current.isDisplayVolume(), current.getSize(),
+                            diskOfferingDao.findByIdIncludingRemoved(current.getDiskOfferingId()), null);
+                }
+                current.setDisplayVolume(false);
+                _volsDao.update(current.getId(), current);
+                if (current.getState() == Volume.State.Creating) {
+                    transit(current, Volume.Event.MigrationCopyFailed);
+                }
+                transit(current, Volume.Event.DestroyRequested);
+            }
+            VolumeVO moved = volume == null ? null : _volsDao.findById(volume.getId());
+            if (moved != null && moved.getState() == Volume.State.Migrating) {
+                transit(moved, Volume.Event.OperationFailed);
+            }
+            _volDetailDao.removeDetail(copyId, RELOCATION_PHASE);
+            _volDetailDao.addDetail(copyId, RELOCATION_PHASE, PHASE_RESTORED, false);
+            return null;
+        });
+    }
+
+    /**
+     * @return whether the destination host confirmed that no pull runs and no partial file is left
+     */
+    private boolean stopTransfer(VolumeVO copy, VolumeVO volume) {
+        StoragePool destPool = _storagePoolDao.findById(copy.getPoolId());
+        Long destHostId = localPoolHostId(destPool);
+        boolean stopped = true;
+        if (destHostId != null && copy.getPath() != null) {
+            Answer answer = sendQuietly(destHostId, new AbortVolumeFileCopyCommand(new StorageFilerTO(destPool), copy.getPath(), copy.getUuid()));
+            stopped = answer != null && answer.getResult();
+        }
+        Long srcHostId = volume == null ? null : localPoolHostId(_storagePoolDao.findById(volume.getPoolId()));
+        if (srcHostId != null) {
+            // An export nobody stops still ends at its own time limit.
+            sendQuietly(srcHostId, new StopVolumeExportCommand(copy.getUuid()));
+        }
+        return stopped;
+    }
+
+    private Answer sendQuietly(long hostId, Command command) {
+        try {
+            return _agentMgr.send(hostId, command);
+        } catch (Exception e) {
+            logger.warn("Unable to send {} to host {}: {}", command.getClass().getSimpleName(), hostId, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Recovers moves whose job ended without finishing them: one that had not switched is undone, a previous copy
+     * that was to be deleted is deleted. A stopped Instance left in Migrating by such a job, with no work item of its
+     * own pending, goes back to Stopped.
+     */
+    protected void sweepInterruptedRelocations() {
+        GlobalLock lock = sweepLock();
+        if (!lock.lock(5)) {
+            return;
+        }
+        try {
+            recoverInterruptedRelocations();
+        } finally {
+            lock.unlock();
+            lock.releaseRef();
+        }
+    }
+
+    protected GlobalLock sweepLock() {
+        return GlobalLock.getInternLock("volume.relocation.sweep");
+    }
+
+    protected void recoverInterruptedRelocations() {
+        for (VolumeDetailVO marker : _volDetailDao.findDetails(RELOCATION_OF)) {
+            long copyId = marker.getResourceId();
+            Map<String, String> details = _volDetailDao.listDetailsKeyPairs(copyId);
+            if (isJobRunning(details.get(RELOCATION_JOB))) {
+                continue;
+            }
+            try {
+                if (PHASE_DISCARD.equals(details.get(RELOCATION_PHASE))) {
+                    discardPreviousCopy(copyId);
+                } else {
+                    failRelocation(copyId);
+                }
+            } catch (RuntimeException e) {
+                logger.warn("Unable to recover the interrupted move with copy {}: {}", copyId, e.getMessage());
+            }
+        }
+        Date before = new Date(System.currentTimeMillis() - STUCK_MIGRATING_VM_SECONDS * 1000);
+        for (VMInstanceVO vm : vmInstanceDao.findVMInTransition(before, State.Migrating)) {
+            if (vm.getHostId() == null && CollectionUtils.isEmpty(workJobDao.listPendingWorkJobs(VirtualMachine.Type.Instance, vm.getId()))) {
+                try {
+                    if (VirtualMachine.State.getStateMachine().transitTo(vm, VirtualMachine.Event.AgentReportStopped, new Pair<Long, Long>(null, null), vmInstanceDao)) {
+                        logger.info("Instance {} was left in Migrating without a host or a pending work item; it is Stopped again.", vm);
+                    } else {
+                        logger.warn("Instance {} changed while it was being returned to Stopped; the next sweep looks at it again.", vm);
+                    }
+                } catch (NoTransitionException e) {
+                    logger.warn("Unable to return Instance {} to Stopped: {}", vm, e.getMessage());
+                }
+            }
+        }
+    }
+
+    private boolean isJobRunning(String jobId) {
+        if (jobId == null) {
+            return false;
+        }
+        AsyncJob job = _jobMgr.getAsyncJob(Long.parseLong(jobId));
+        return job != null && job.getStatus() == JobInfo.Status.IN_PROGRESS;
+    }
+
     @Override
     public void migrateVolumes(VirtualMachine vm, VirtualMachineTO vmTo, Host srcHost, Host destHost, Map<Volume, StoragePool> volumeToPool) {
         // Check if all the vms being migrated belong to the vm.
@@ -2427,7 +2984,7 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
     public ConfigKey<?>[] getConfigKeys() {
         return new ConfigKey<?>[] {
                 RecreatableSystemVmEnabled, MaxVolumeSize, StorageHAMigrationEnabled, StorageMigrationEnabled,
-                CustomDiskOfferingMaxSize, CustomDiskOfferingMinSize, VolumeUrlCheck, VolumeAllocationAlgorithm};
+                CustomDiskOfferingMaxSize, CustomDiskOfferingMinSize, VolumeUrlCheck, VolumeAllocationAlgorithm, VolumeMoveKeepSource};
     }
 
     @Override
@@ -2450,6 +3007,17 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
                 configurationDao.update(VolumeAllocationAlgorithm.key(), vmAllocationAlgo);
             }
         }
+        relocationSweeper = Executors.newScheduledThreadPool(1, new NamedThreadFactory("VolumeRelocationSweep"));
+        relocationSweeper.scheduleWithFixedDelay(new ManagedContextRunnable() {
+            @Override
+            protected void runInContext() {
+                try {
+                    sweepInterruptedRelocations();
+                } catch (RuntimeException e) {
+                    logger.warn("The sweep of interrupted volume moves failed: {}", e.getMessage(), e);
+                }
+            }
+        }, 60, RELOCATION_SWEEP_INTERVAL_SECONDS, TimeUnit.SECONDS);
         return true;
     }
 
@@ -2540,6 +3108,9 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
 
     @Override
     public boolean stop() {
+        if (relocationSweeper != null) {
+            relocationSweeper.shutdownNow();
+        }
         return true;
     }
 

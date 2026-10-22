@@ -190,6 +190,13 @@ public interface VirtualMachineManager extends Manager {
     void storageMigration(String vmUuid, Map<Long, Long> volumeToPool);
 
     /**
+     * Moves the given volumes of a stopped KVM Instance to the local storage pool of another host, as the Instance's
+     * own work item: the Instance is Migrating meanwhile and Stopped again afterwards, with that host as its last host.
+     * See {@link org.apache.cloudstack.engine.orchestration.service.VolumeOrchestrationService#relocateVolumes}.
+     */
+    void relocateStoppedVm(String vmUuid, List<Long> volumeIds, long destPoolId);
+
+    /**
      * @param vmInstance
      * @param newServiceOffering
      */

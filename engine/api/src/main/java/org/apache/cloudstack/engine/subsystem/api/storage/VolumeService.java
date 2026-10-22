@@ -88,6 +88,20 @@ public interface VolumeService {
 
     AsyncCallFuture<VolumeApiResult> copyVolume(VolumeInfo srcVolume, DataStore destStore);
 
+    /**
+     * Copies the file of srcVolume into destVolume, a volume allocated on another pool, leaving srcVolume and
+     * the states of both volumes as they are; the caller owns those.
+     */
+    AsyncCallFuture<VolumeApiResult> copyVolumeKeepingSource(VolumeInfo srcVolume, VolumeInfo destVolume);
+
+    /**
+     * Makes the template's base present on destStore, copying it from srcStore when the destination pool does
+     * not hold it Ready yet, under the template pool reference's lock.
+     *
+     * @return the base's install path on destStore
+     */
+    String ensureTemplateOnPool(long templateId, DataStore destStore, DataStore srcStore);
+
     AsyncCallFuture<VolumeApiResult> migrateVolume(VolumeInfo srcVolume, DataStore destStore);
 
     AsyncCallFuture<CommandResult> migrateVolumes(Map<VolumeInfo, DataStore> volumeMap, VirtualMachineTO vmTo, Host srcHost, Host destHost);

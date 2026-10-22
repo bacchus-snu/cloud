@@ -1072,7 +1072,8 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
           releaseVmCapacity(vm, false, false, oldHost);
         }
       } else if (oldState == State.Migrating) {
-        if (reportedStopped) {
+        // Migrating without a host is a stopped Instance whose volumes move; it holds no host capacity.
+        if (reportedStopped && oldHostId != null) {
                 /* Release capacity from original host */
           releaseVmCapacity(vm, false, false, lastHost);
           releaseVmCapacity(vm, false, false, oldHost);

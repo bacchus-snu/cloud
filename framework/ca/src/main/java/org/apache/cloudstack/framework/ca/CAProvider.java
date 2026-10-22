@@ -65,6 +65,14 @@ public interface CAProvider {
     Certificate issueCertificate(final String csr, final List<String> domainNames, final List<String> ipAddresses, final int validityDays);
 
     /**
+     * Issues a certificate to the key and subject of a CSR that certifies exactly the given domain names and
+     * addresses; the names the CSR itself asks for are not certified.
+     */
+    default Certificate issueCertificateWithNames(final String csr, final List<String> domainNames, final List<String> ipAddresses, final int validityDays) {
+        throw new UnsupportedOperationException(String.format("CA provider %s cannot issue a certificate for given names only.", getProviderName()));
+    }
+
+    /**
      * Revokes certificate using certificate serial and CN
      * @param certSerial
      * @param certCn

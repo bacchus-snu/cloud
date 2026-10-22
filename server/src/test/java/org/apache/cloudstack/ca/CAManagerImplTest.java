@@ -29,6 +29,16 @@ import org.apache.cloudstack.api.ServerApiException;
 import org.apache.cloudstack.framework.ca.CAProvider;
 import org.apache.cloudstack.framework.ca.Certificate;
 import org.apache.cloudstack.utils.security.CertUtils;
+import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.asn1.x509.ExtensionsGenerator;
+import org.bouncycastle.asn1.x509.GeneralName;
+import org.bouncycastle.asn1.x509.GeneralNames;
+import org.bouncycastle.openssl.jcajce.JcaPEMWriter;
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
+import org.bouncycastle.pkcs.PKCS10CertificationRequestBuilder;
+import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -40,6 +50,7 @@ import org.mockito.Mockito;
 import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnitRunner;
 
+import java.io.StringWriter;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.math.BigInteger;
@@ -133,15 +144,185 @@ public class CAManagerImplTest {
         Mockito.verify(caProvider, Mockito.times(1)).revokeCertificate(Mockito.any(BigInteger.class), anyString());
     }
 
+    /** A certificate request as a host's keystore-setup makes it: keytool's dname cn=..,ou=..,o=..,c=.. and its addresses as SANs. */
+    private static String hostCsr(String cn, List<String> ips) throws Exception {
+        return csr("C=cloudstack,O=cloudstack,OU=cloudstack,CN=" + cn, ips.stream().map(ip -> new GeneralName(GeneralName.iPAddress, ip)).toArray(GeneralName[]::new));
+    }
+
+    private static String csr(String subject, GeneralName... alternativeNames) throws Exception {
+        final KeyPair keyPair = CertUtils.generateRandomKeyPair(1024);
+        final PKCS10CertificationRequestBuilder builder = new JcaPKCS10CertificationRequestBuilder(new X500Name(subject), keyPair.getPublic());
+        if (alternativeNames.length > 0) {
+            final ExtensionsGenerator extensions = new ExtensionsGenerator();
+            extensions.addExtension(Extension.subjectAlternativeName, false, new GeneralNames(alternativeNames));
+            builder.addAttribute(PKCSObjectIdentifiers.pkcs_9_at_extensionRequest, extensions.generate());
+        }
+        final StringWriter pem = new StringWriter();
+        try (JcaPEMWriter writer = new JcaPEMWriter(pem)) {
+            writer.writeObject(builder.build(new JcaContentSignerBuilder("SHA256withRSA").build(keyPair.getPrivate())));
+        }
+        return pem.toString();
+    }
+
+    private static HostVO registeredHost(long id, String name, String privateIp) {
+        final HostVO host = Mockito.mock(HostVO.class);
+        Mockito.lenient().when(host.getId()).thenReturn(id);
+        Mockito.lenient().when(host.getName()).thenReturn(name);
+        Mockito.lenient().when(host.getPrivateIpAddress()).thenReturn(privateIp);
+        Mockito.lenient().when(host.getType()).thenReturn(Host.Type.Routing);
+        return host;
+    }
+
+    private void provisionsWith(String csr) throws Exception {
+        final KeyPair keyPair = CertUtils.generateRandomKeyPair(1024);
+        final X509Certificate certificate = CertUtils.generateV3Certificate(null, keyPair, keyPair.getPublic(), "CN=ca", "SHA256withRSA", 365, null, null);
+        Mockito.lenient().when(caProvider.issueCertificate(anyString(), anyList(), anyList(), anyInt()))
+                .thenReturn(new Certificate(certificate, null, Collections.singletonList(certificate)));
+        Mockito.lenient().when(caProvider.issueCertificateWithNames(anyString(), anyList(), anyList(), anyInt()))
+                .thenReturn(new Certificate(certificate, null, Collections.singletonList(certificate)));
+        Mockito.lenient().when(agentManager.send(anyLong(), any(SetupCertificateCommand.class))).thenReturn(new SetupCertificateAnswer(true));
+        Mockito.when(agentManager.send(anyLong(), any(SetupKeyStoreCommand.class))).thenReturn(new SetupKeystoreAnswer(csr));
+    }
+
+    @Test
+    public void hostCertificateRequestNamingAnotherHostRefused() throws Exception {
+        final HostVO hostA = registeredHost(1L, "hosta", "10.0.0.11");
+        final HostVO hostB = registeredHost(2L, "hostb", "10.0.0.12");
+        Mockito.lenient().when(hostDao.listAll()).thenReturn(List.of(hostA, hostB));
+        provisionsWith(hostCsr("hostb.example.org", List.of("10.0.0.11")));
+
+        final CloudRuntimeException e = Assert.assertThrows(CloudRuntimeException.class, () -> caManager.provisionCertificate(hostA, false, null, false));
+
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("hostb.example.org"));
+        Mockito.verify(caProvider, Mockito.never()).issueCertificate(anyString(), anyList(), anyList(), anyInt());
+    }
+
+    @Test
+    public void hostCertificateRequestWithAnotherHostsAddressRefused() throws Exception {
+        final HostVO hostA = registeredHost(1L, "hosta", "10.0.0.11");
+        final HostVO hostB = registeredHost(2L, "hostb", "10.0.0.12");
+        Mockito.when(hostDao.listAll()).thenReturn(List.of(hostA, hostB));
+        provisionsWith(hostCsr("hosta.example.org", List.of("10.0.0.11", "10.0.0.12")));
+
+        Assert.assertThrows(CloudRuntimeException.class, () -> caManager.provisionCertificate(hostA, false, null, false));
+
+        Mockito.verify(caProvider, Mockito.never()).issueCertificate(anyString(), anyList(), anyList(), anyInt());
+    }
+
+    @Test
+    public void hostCertificateRequestForItselfIsIssued() throws Exception {
+        final HostVO hostA = registeredHost(1L, "hosta", "10.0.0.11");
+        final HostVO hostB = registeredHost(2L, "hostb", "10.0.0.12");
+        Mockito.when(hostDao.listAll()).thenReturn(List.of(hostA, hostB));
+        provisionsWith(hostCsr("hosta.example.org", List.of("10.0.0.11", "192.168.122.1")));
+
+        Assert.assertTrue(caManager.provisionCertificate(hostA, false, null, false));
+
+        Mockito.verify(caProvider).issueCertificateWithNames(anyString(), anyList(), anyList(), anyInt());
+    }
+
+    @Test
+    public void everyCommonNameIsChecked() throws Exception {
+        final HostVO hostA = registeredHost(1L, "hosta", "10.0.0.11");
+        final HostVO hostB = registeredHost(2L, "hostb", "10.0.0.12");
+        Mockito.lenient().when(hostDao.listAll()).thenReturn(List.of(hostA, hostB));
+        for (String subject : List.of("C=cloudstack,O=cloudstack,OU=cloudstack,CN=hosta.example.org+CN=hostb.example.org",
+                "C=cloudstack,O=cloudstack,OU=cloudstack+CN=hostb.example.org,CN=hosta.example.org",
+                "C=cloudstack,O=cloudstack,OU=cloudstack,CN=hosta.example.org+O=other")) {
+            Assert.assertThrows(subject, CloudRuntimeException.class, () -> caManager.checkHostCertificateRequest(csr(subject), "hosta", "10.0.0.11"));
+        }
+    }
+
+    @Test
+    public void wildcardCommonNameRefused() throws Exception {
+        final HostVO hostB = registeredHost(2L, "hostb", "10.0.0.12");
+        Mockito.lenient().when(hostDao.listAll()).thenReturn(List.of(hostB));
+        Assert.assertThrows("a host added by its address names no wildcard either", CloudRuntimeException.class,
+                () -> caManager.checkHostCertificateRequest(csr("C=cloudstack,O=cloudstack,OU=cloudstack,CN=*.example.org"), "10.0.0.13", "10.0.0.13"));
+        Assert.assertThrows(CloudRuntimeException.class,
+                () -> caManager.checkHostCertificateRequest(csr("C=cloudstack,O=cloudstack,OU=cloudstack,CN=hosta.*"), "hosta", "10.0.0.11"));
+    }
+
+    @Test
+    public void alternativeNamesOtherThanTheHostsOwnRefused() throws Exception {
+        final HostVO hostA = registeredHost(1L, "hosta", "10.0.0.11");
+        final HostVO hostB = registeredHost(2L, "hostb", "10.0.0.12");
+        Mockito.lenient().when(hostDao.listAll()).thenReturn(List.of(hostA, hostB));
+        final String own = "C=cloudstack,O=cloudstack,OU=cloudstack,CN=hosta.example.org";
+        for (GeneralName name : List.of(new GeneralName(GeneralName.dNSName, "*.example.org"), new GeneralName(GeneralName.dNSName, "mail.example.org"),
+                new GeneralName(GeneralName.directoryName, new X500Name("CN=hostb.example.org")),
+                new GeneralName(GeneralName.uniformResourceIdentifier, "https://hostb.example.org/"))) {
+            Assert.assertThrows(name.toString(), CloudRuntimeException.class, () -> caManager.checkHostCertificateRequest(csr(own, name), "hosta", "10.0.0.11"));
+        }
+        caManager.checkHostCertificateRequest(csr(own, new GeneralName(GeneralName.dNSName, "hosta.example.org"), new GeneralName(GeneralName.dNSName, "hosta"),
+                new GeneralName(GeneralName.iPAddress, "10.0.0.11"), new GeneralName(GeneralName.iPAddress, "192.168.122.1")), "hosta", "10.0.0.11");
+    }
+
+    @Test
+    public void registeredHostIsCertifiedForItsRegisteredNamesAndAddressesOnly() throws Exception {
+        final HostVO hostA = registeredHost(1L, "hosta", "10.0.0.11");
+        Mockito.when(hostA.getPublicIpAddress()).thenReturn("10.0.1.11");
+        Mockito.when(hostA.getStorageIpAddress()).thenReturn("10.0.0.11");
+        Mockito.when(hostDao.listAll()).thenReturn(List.of(hostA));
+        provisionsWith(hostCsr("hosta.example.org", List.of("10.0.0.11", "147.46.240.204", "192.168.122.1")));
+
+        Assert.assertTrue(caManager.provisionCertificate(hostA, false, null, false));
+
+        Mockito.verify(caProvider).issueCertificateWithNames(anyString(), Mockito.eq(List.of("hosta", "10.0.0.11")),
+                Mockito.eq(List.of("10.0.0.11", "10.0.1.11", "10.0.0.11")), anyInt());
+        Mockito.verify(caProvider, Mockito.never()).issueCertificate(anyString(), anyList(), anyList(), anyInt());
+    }
+
+    @Test
+    public void registeredHostProvisionedOverSshIsCertifiedForItsRegisteredNamesOnly() throws Exception {
+        final Connection sshConnection = Mockito.mock(Connection.class);
+        final HostVO hostA = registeredHost(1L, "hosta", "10.0.0.11");
+        Mockito.when(hostDao.listAll()).thenReturn(List.of(hostA));
+        final KeyPair keyPair = CertUtils.generateRandomKeyPair(1024);
+        final X509Certificate x509 = CertUtils.generateV3Certificate(null, keyPair, keyPair.getPublic(), "CN=ca", "SHA256withRSA", 365, null, null);
+        Mockito.lenient().when(caProvider.issueCertificate(anyString(), anyList(), anyList(), anyInt())).thenReturn(new Certificate(x509, null, List.of(x509)));
+        Mockito.lenient().when(caProvider.issueCertificateWithNames(anyString(), anyList(), anyList(), anyInt())).thenReturn(new Certificate(x509, null, List.of(x509)));
+        try (MockedStatic<SSHCmdHelper> sshCmdHelperMock = Mockito.mockStatic(SSHCmdHelper.class)) {
+            sshCmdHelperMock.when(() -> SSHCmdHelper.sshExecuteCmdWithResult(Mockito.eq(sshConnection), Mockito.anyString()))
+                    .thenReturn(new SSHCmdHelper.SSHCmdResult(0, hostCsr("hosta.example.org", List.of("10.0.0.11", "147.46.240.204")), ""));
+
+            caManager.provisionCertificateViaSsh(sshConnection, "10.0.0.11", "hosta", "root");
+        }
+
+        Mockito.verify(caProvider).issueCertificateWithNames(anyString(), Mockito.eq(List.of("hosta", "10.0.0.11")),
+                Mockito.eq(java.util.Arrays.asList("10.0.0.11", null, null)), anyInt());
+        Mockito.verify(caProvider, Mockito.never()).issueCertificate(anyString(), anyList(), anyList(), anyInt());
+    }
+
+    @Test
+    public void hostCertificateRequestWithAnUnrelatedNameRefused() throws Exception {
+        final HostVO hostA = registeredHost(1L, "hosta", "10.0.0.11");
+        Mockito.lenient().when(hostDao.listAll()).thenReturn(List.of(hostA));
+        provisionsWith(hostCsr("mail.example.org", List.of("10.0.0.11")));
+
+        Assert.assertThrows(CloudRuntimeException.class, () -> caManager.provisionCertificate(hostA, false, null, false));
+    }
+
+    @Test
+    public void hostAddedByAddressMayNotNameAnotherHost() throws Exception {
+        final HostVO hostB = registeredHost(2L, "hostb", "10.0.0.12");
+        Mockito.when(hostDao.listAll()).thenReturn(List.of(hostB));
+        Assert.assertThrows(CloudRuntimeException.class,
+                () -> caManager.checkHostCertificateRequest(hostCsr("hostb.example.org", List.of("10.0.0.13")), "10.0.0.13", "10.0.0.13"));
+        caManager.checkHostCertificateRequest(hostCsr("hostc.example.org", List.of("10.0.0.13")), "10.0.0.13", "10.0.0.13");
+    }
+
     @Test
     public void testProvisionCertificate() throws Exception {
         final Host host = Mockito.mock(Host.class);
+        Mockito.when(host.getName()).thenReturn("host1");
         Mockito.when(host.getPrivateIpAddress()).thenReturn("1.2.3.4");
         final KeyPair keyPair = CertUtils.generateRandomKeyPair(1024);
         final X509Certificate certificate = CertUtils.generateV3Certificate(null, keyPair, keyPair.getPublic(), "CN=ca", "SHA256withRSA", 365, null, null);
-        Mockito.when(caProvider.issueCertificate(anyString(), anyList(), anyList(), anyInt())).thenReturn(new Certificate(certificate, null, Collections.singletonList(certificate)));
+        Mockito.lenient().when(caProvider.issueCertificate(anyString(), anyList(), anyList(), anyInt())).thenReturn(new Certificate(certificate, null, Collections.singletonList(certificate)));
+        Mockito.lenient().when(caProvider.issueCertificateWithNames(anyString(), anyList(), anyList(), anyInt())).thenReturn(new Certificate(certificate, null, Collections.singletonList(certificate)));
         Mockito.when(agentManager.send(anyLong(), any(SetupCertificateCommand.class))).thenReturn(new SetupCertificateAnswer(true));
-        Mockito.when(agentManager.send(anyLong(), any(SetupKeyStoreCommand.class))).thenReturn(new SetupKeystoreAnswer("someCsr"));
+        Mockito.when(agentManager.send(anyLong(), any(SetupKeyStoreCommand.class))).thenReturn(new SetupKeystoreAnswer(hostCsr("host1.example.org", List.of("1.2.3.4"))));
         Mockito.doNothing().when(agentManager).reconnect(Mockito.anyLong());
         Assert.assertTrue(caManager.provisionCertificate(host, true, null, false));
         Mockito.verify(agentManager, Mockito.times(1)).send(Mockito.anyLong(), any(SetupKeyStoreCommand.class));
@@ -196,13 +377,16 @@ public class CAManagerImplTest {
     @Test
     public void testProvisionCertificateWithoutReconnect() throws Exception {
         final Host host = Mockito.mock(Host.class);
+        Mockito.when(host.getName()).thenReturn("host1");
         Mockito.when(host.getPrivateIpAddress()).thenReturn("1.2.3.4");
         final KeyPair keyPair = CertUtils.generateRandomKeyPair(1024);
         final X509Certificate x509 = CertUtils.generateV3Certificate(null, keyPair, keyPair.getPublic(), "CN=ca", "SHA256withRSA", 365, null, null);
-        Mockito.when(caProvider.issueCertificate(anyString(), anyList(), anyList(), anyInt()))
+        Mockito.lenient().when(caProvider.issueCertificate(anyString(), anyList(), anyList(), anyInt()))
+                .thenReturn(new Certificate(x509, null, Collections.singletonList(x509)));
+        Mockito.lenient().when(caProvider.issueCertificateWithNames(anyString(), anyList(), anyList(), anyInt()))
                 .thenReturn(new Certificate(x509, null, Collections.singletonList(x509)));
         Mockito.when(agentManager.send(anyLong(), any(SetupCertificateCommand.class))).thenReturn(new SetupCertificateAnswer(true));
-        Mockito.when(agentManager.send(anyLong(), any(SetupKeyStoreCommand.class))).thenReturn(new SetupKeystoreAnswer("someCsr"));
+        Mockito.when(agentManager.send(anyLong(), any(SetupKeyStoreCommand.class))).thenReturn(new SetupKeystoreAnswer(hostCsr("host1.example.org", List.of("1.2.3.4"))));
         Assert.assertTrue(caManager.provisionCertificate(host, false, null, false));
         Mockito.verify(agentManager, Mockito.never()).reconnect(Mockito.anyLong());
     }
@@ -245,7 +429,7 @@ public class CAManagerImplTest {
         final String caProviderStr = "root";
 
         try (MockedStatic<SSHCmdHelper> sshCmdHelperMock = Mockito.mockStatic(SSHCmdHelper.class)) {
-            SSHCmdHelper.SSHCmdResult successResult = new SSHCmdHelper.SSHCmdResult(0, "someCsr", "");
+            SSHCmdHelper.SSHCmdResult successResult = new SSHCmdHelper.SSHCmdResult(0, hostCsr("host1.example.org", List.of(agentIp)), "");
             sshCmdHelperMock.when(() -> SSHCmdHelper.sshExecuteCmdWithResult(Mockito.eq(sshConnection), Mockito.anyString()))
                     .thenReturn(successResult);
 

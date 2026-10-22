@@ -19,6 +19,7 @@
 
 package org.apache.cloudstack.ca.provider;
 
+import java.io.StringWriter;
 import java.lang.reflect.Field;
 import java.security.InvalidKeyException;
 import java.security.KeyPair;
@@ -33,7 +34,9 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import javax.net.ssl.SSLEngine;
 
@@ -42,7 +45,16 @@ import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
 import org.apache.cloudstack.utils.security.CertUtils;
 import org.apache.cloudstack.utils.security.SSLUtils;
+import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.asn1.x509.ExtensionsGenerator;
 import org.bouncycastle.asn1.x509.GeneralName;
+import org.bouncycastle.asn1.x509.GeneralNames;
+import org.bouncycastle.openssl.jcajce.JcaPEMWriter;
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
+import org.bouncycastle.pkcs.PKCS10CertificationRequestBuilder;
+import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder;
 import org.joda.time.DateTime;
 import org.junit.After;
 import org.junit.Assert;
@@ -128,6 +140,31 @@ public class RootCAProviderTest {
         Assert.assertEquals(certificate.getCaCertificates().get(0), caCertificate);
         Assert.assertTrue(certificate.getClientCertificate().getSubjectDN().toString().startsWith("CN=v-1-VM,"));
         certificate.getClientCertificate().verify(caCertificate.getPublicKey());
+    }
+
+    @Test
+    public void certificateForGivenNamesCertifiesNoNameTheRequestAsksFor() throws Exception {
+        final KeyPair keyPair = CertUtils.generateRandomKeyPair(1024);
+        final PKCS10CertificationRequestBuilder builder = new JcaPKCS10CertificationRequestBuilder(
+                new X500Name("C=cloudstack,O=cloudstack,OU=cloudstack,CN=hosta.example.org"), keyPair.getPublic());
+        final ExtensionsGenerator extensions = new ExtensionsGenerator();
+        extensions.addExtension(Extension.subjectAlternativeName, false, new GeneralNames(new GeneralName[] {
+                new GeneralName(GeneralName.dNSName, "other.example.org"), new GeneralName(GeneralName.iPAddress, "10.9.9.9")}));
+        builder.addAttribute(PKCSObjectIdentifiers.pkcs_9_at_extensionRequest, extensions.generate());
+        final StringWriter csr = new StringWriter();
+        try (JcaPEMWriter writer = new JcaPEMWriter(csr)) {
+            writer.writeObject(builder.build(new JcaContentSignerBuilder("SHA256withRSA").build(keyPair.getPrivate())));
+        }
+
+        final Certificate certificate = provider.issueCertificateWithNames(csr.toString(), Arrays.asList("hosta", "10.0.0.11"),
+                Arrays.asList("10.0.0.11", null), 1);
+
+        final X509Certificate issued = certificate.getClientCertificate();
+        issued.verify(caCertificate.getPublicKey());
+        Assert.assertEquals(keyPair.getPublic(), issued.getPublicKey());
+        Assert.assertTrue(issued.getSubjectX500Principal().getName(), issued.getSubjectX500Principal().getName().contains("CN=hosta.example.org"));
+        final Set<String> names = issued.getSubjectAlternativeNames().stream().map(name -> name.get(0) + ":" + name.get(1)).collect(Collectors.toSet());
+        Assert.assertEquals(Set.of("2:hosta", "2:10.0.0.11", "7:10.0.0.11"), names);
     }
 
     @Test

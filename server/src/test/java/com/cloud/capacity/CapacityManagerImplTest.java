@@ -483,6 +483,49 @@ public class CapacityManagerImplTest {
     }
 
     @Test
+    public void stoppedInstanceMovingItsVolumesReleasesNoCapacity() {
+        HostVO lastHost = mockHost(32, 2000L, 128 * GIB);
+        when(hostDao.findById(HOST_ID)).thenReturn(lastHost);
+        VMInstanceVO vm = mockVm(VM_ID, CPU_OFFERING_ID, null, HOST_ID);
+        ServiceOfferingVO cpuOffering = mockOffering(CPU_OFFERING_ID, 4, 2000, 8 * 1024, null);
+        lenient().when(serviceOfferingDao.findById(VM_ID, CPU_OFFERING_ID)).thenReturn(cpuOffering);
+        CapacityVO[] rows = {capacity(1L, Capacity.CAPACITY_TYPE_CPU, 16000L, 0L, 64000L),
+                capacity(2L, Capacity.CAPACITY_TYPE_MEMORY, 16 * GIB, 0L, 128 * GIB), capacity(3L, Capacity.CAPACITY_TYPE_CPU_CORE, 8L, 0L, 32L)};
+        mockCapacityRows(HOST_ID, rows[0], rows[1], rows[2]);
+        mockClusterRatios("1.0", "1.0");
+        when(userVmDao.findById(VM_ID)).thenReturn(mock(UserVmVO.class));
+
+        try (MockedStatic<Transaction> ignored = mockTransaction()) {
+            capacityManager.postStateTransitionEvent(new StateMachine2.Transition<>(VirtualMachine.State.Migrating,
+                    VirtualMachine.Event.AgentReportStopped, VirtualMachine.State.Stopped, null), vm, true, new Pair<>(null, null));
+        }
+
+        assertRows(rows, 2, 0);
+        verify(capacityDao, never()).update(anyLong(), any(CapacityVO.class));
+    }
+
+    @Test
+    public void migratingInstanceWhoseHostRowIsGoneStillReleasesItsLastHost() {
+        HostVO lastHost = mockHost(32, 2000L, 128 * GIB);
+        when(hostDao.findById(HOST_ID)).thenReturn(lastHost);
+        VMInstanceVO vm = mockVm(VM_ID, CPU_OFFERING_ID, null, HOST_ID);
+        ServiceOfferingVO cpuOffering = mockOffering(CPU_OFFERING_ID, 4, 2000, 8 * 1024, null);
+        lenient().when(serviceOfferingDao.findById(VM_ID, CPU_OFFERING_ID)).thenReturn(cpuOffering);
+        CapacityVO[] rows = {capacity(1L, Capacity.CAPACITY_TYPE_CPU, 16000L, 0L, 64000L),
+                capacity(2L, Capacity.CAPACITY_TYPE_MEMORY, 16 * GIB, 0L, 128 * GIB), capacity(3L, Capacity.CAPACITY_TYPE_CPU_CORE, 8L, 0L, 32L)};
+        mockCapacityRows(HOST_ID, rows[0], rows[1], rows[2]);
+        mockClusterRatios("1.0", "1.0");
+        when(userVmDao.findById(VM_ID)).thenReturn(mock(UserVmVO.class));
+
+        try (MockedStatic<Transaction> ignored = mockTransaction()) {
+            capacityManager.postStateTransitionEvent(new StateMachine2.Transition<>(VirtualMachine.State.Migrating,
+                    VirtualMachine.Event.AgentReportStopped, VirtualMachine.State.Stopped, null), vm, true, new Pair<>(HOST_ID + 7, null));
+        }
+
+        assertRows(rows, 1, 0);
+    }
+
+    @Test
     public void releaseVmCapacityLeavesRowsUnchangedForGpuOffering() {
         HostVO host = mockHost(8, 2000L, 16 * GIB);
         VMInstanceVO vm = mockVm(VM_ID, GPU_OFFERING_ID, null, HOST_ID);

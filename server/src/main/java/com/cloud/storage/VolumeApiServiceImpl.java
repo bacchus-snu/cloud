@@ -1904,6 +1904,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
     }
 
     public void validateDestroyVolume(Volume volume, Account caller, boolean expunge, boolean forceExpunge) {
+        checkNotCopyOfVolumeBeingMoved(volume);
         if (volume.isDeleteProtection()) {
             throw new InvalidParameterValueException(String.format(
                     "Volume [id = %s, name = %s] has delete protection enabled and cannot be deleted.",
@@ -1918,6 +1919,15 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
             }
         } else if (volume.getState() == Volume.State.Allocated || volume.getState() == Volume.State.Uploaded) {
             throw new InvalidParameterValueException("The volume in Allocated/Uploaded state can only be expunged not destroyed/recovered");
+        }
+    }
+
+    /**
+     * The copy a volume move makes belongs to that move until it ends: the move keeps it or removes it with its file.
+     */
+    private void checkNotCopyOfVolumeBeingMoved(Volume volume) {
+        if (_volsDetailsDao.findDetail(volume.getId(), VolumeOrchestrationService.RELOCATION_OF) != null) {
+            throw new InvalidParameterValueException(String.format("Volume %s is the copy of a volume being moved; the move keeps or removes it.", volume.getUuid()));
         }
     }
 
@@ -1984,6 +1994,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
         if (volume.getState() != Volume.State.Destroy) {
             throw new InvalidParameterValueException("Please specify a volume in Destroy state.");
         }
+        checkNotCopyOfVolumeBeingMoved(volume);
 
         DiskOffering diskOffering = _diskOfferingDao.findById(volume.getDiskOfferingId());
 

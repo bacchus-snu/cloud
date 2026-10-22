@@ -2010,6 +2010,73 @@ public class VolumeServiceImpl implements VolumeService {
     }
 
     @Override
+    public AsyncCallFuture<VolumeApiResult> copyVolumeKeepingSource(VolumeInfo srcVolume, VolumeInfo destVolume) {
+        AsyncCallFuture<VolumeApiResult> future = new AsyncCallFuture<>();
+        try {
+            motionSrv.copyAsync(srcVolume, destVolume, result -> {
+                VolumeApiResult res = new VolumeApiResult(destVolume);
+                if (result.isFailed()) {
+                    res.setResult(result.getResult());
+                }
+                future.complete(res);
+            });
+        } catch (Exception e) {
+            logger.warn("Unable to copy {} to {}", srcVolume, destVolume, e);
+            VolumeApiResult res = new VolumeApiResult(destVolume);
+            res.setResult(e.toString());
+            future.complete(res);
+        }
+        return future;
+    }
+
+    @Override
+    public String ensureTemplateOnPool(long templateId, DataStore destStore, DataStore srcStore) {
+        VMTemplateStoragePoolVO sourceBase = _tmpltPoolDao.findByPoolTemplate(srcStore.getId(), templateId, null);
+        if (sourceBase == null || sourceBase.getState() != ObjectInDataStoreStateMachine.State.Ready) {
+            throw new CloudRuntimeException(String.format("Template %d has no Ready base on pool %s.", templateId, srcStore.getName()));
+        }
+        TemplateInfo templateOnSource = tmplFactory.getTemplate(templateId, srcStore);
+        DataObject templateOnDestination = destStore.create(templateOnSource);
+        VMTemplateStoragePoolVO base = _tmpltPoolDao.findByPoolTemplate(destStore.getId(), templateId, null);
+        if (base == null) {
+            throw new CloudRuntimeException(String.format("Unable to register template %d on pool %s.", templateId, destStore.getName()));
+        }
+        if (base.getState() == ObjectInDataStoreStateMachine.State.Ready) {
+            return base.getInstallPath();
+        }
+        int wait = NumbersUtil.parseInt(configDao.getValue(Config.StoragePoolMaxWaitSeconds.key()), 3600);
+        if (_tmpltPoolDao.acquireInLockTable(base.getId(), wait) == null) {
+            throw new CloudRuntimeException(String.format("Unable to lock the base of template %d on pool %s.", templateId, destStore.getName()));
+        }
+        try {
+            base = _tmpltPoolDao.findById(base.getId());
+            if (base.getState() == ObjectInDataStoreStateMachine.State.Ready) {
+                return base.getInstallPath();
+            }
+            if (base.getState() == ObjectInDataStoreStateMachine.State.Creating) {
+                // Whoever was creating it no longer holds the lock, so that copy ended without a result.
+                templateOnDestination.processEvent(Event.OperationFailed);
+            }
+            templateOnDestination.processEvent(Event.CreateOnlyRequested);
+            AsyncCallFuture<CopyCommandResult> copied = new AsyncCallFuture<>();
+            motionSrv.copyAsync(templateOnSource, templateOnDestination, copied::complete);
+            CopyCommandResult result = copied.get();
+            if (result.isFailed()) {
+                templateOnDestination.processEvent(Event.OperationFailed);
+                throw new CloudRuntimeException(String.format("Unable to copy the base of template %d to pool %s: %s", templateId, destStore.getName(),
+                        result.getResult()));
+            }
+            templateOnDestination.processEvent(Event.OperationSucceeded, result.getAnswer());
+            return _tmpltPoolDao.findById(base.getId()).getInstallPath();
+        } catch (InterruptedException | ExecutionException e) {
+            templateOnDestination.processEvent(Event.OperationFailed);
+            throw new CloudRuntimeException(String.format("Unable to copy the base of template %d to pool %s: %s", templateId, destStore.getName(), e.getMessage()), e);
+        } finally {
+            _tmpltPoolDao.releaseFromLockTable(base.getId());
+        }
+    }
+
+    @Override
     public boolean copyPoliciesBetweenVolumesAndDestroySourceVolumeAfterMigration(Event destinationEvent, Answer destinationEventAnswer, VolumeInfo sourceVolume,
       VolumeInfo destinationVolume, boolean retryExpungeVolumeAsync) {
         VolumeVO sourceVolumeVo = ((VolumeObject) sourceVolume).getVolume();

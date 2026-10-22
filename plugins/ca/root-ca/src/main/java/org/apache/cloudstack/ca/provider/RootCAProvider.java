@@ -160,7 +160,8 @@ public final class RootCAProvider extends AdapterBase implements CAProvider, Con
         return new Certificate(clientCertificate, keyPair.getPrivate(), caCertificates);
     }
 
-    private Certificate generateCertificateUsingCsr(final String csr, final List<String> names, final List<String> ips, final int validityDays) throws NoSuchAlgorithmException, InvalidKeyException, NoSuchProviderException, CertificateException, SignatureException, IOException, OperatorCreationException {
+    private Certificate generateCertificateUsingCsr(final String csr, final List<String> names, final List<String> ips, final int validityDays,
+            final boolean certifyRequestedNames) throws NoSuchAlgorithmException, InvalidKeyException, NoSuchProviderException, CertificateException, SignatureException, IOException, OperatorCreationException {
         final List<String> dnsNames = new ArrayList<>();
         final List<String> ipAddresses = new ArrayList<>();
 
@@ -186,6 +187,18 @@ public final class RootCAProvider extends AdapterBase implements CAProvider, Con
 
         final JcaPKCS10CertificationRequest request = new JcaPKCS10CertificationRequest(pemObject.getContent());
         final String subject = request.getSubject().toString();
+        if (certifyRequestedNames) {
+            addRequestedNames(request, dnsNames, ipAddresses);
+        }
+
+        final X509Certificate clientCertificate = CertUtils.generateV3Certificate(
+                caCertificate, caKeyPair, request.getPublicKey(),
+                subject, CAManager.CertSignatureAlgorithm.value(),
+                validityDays, dnsNames, ipAddresses);
+        return new Certificate(clientCertificate, null, caCertificates);
+    }
+
+    private static void addRequestedNames(final JcaPKCS10CertificationRequest request, final List<String> dnsNames, final List<String> ipAddresses) throws IOException {
         for (final Attribute attribute : request.getAttributes()) {
             if (attribute == null) {
                 continue;
@@ -206,12 +219,6 @@ public final class RootCAProvider extends AdapterBase implements CAProvider, Con
                 }
             }
         }
-
-        final X509Certificate clientCertificate = CertUtils.generateV3Certificate(
-                caCertificate, caKeyPair, request.getPublicKey(),
-                subject, CAManager.CertSignatureAlgorithm.value(),
-                validityDays, dnsNames, ipAddresses);
-        return new Certificate(clientCertificate, null, caCertificates);
     }
 
     ////////////////////////////////////////////////////////
@@ -241,7 +248,17 @@ public final class RootCAProvider extends AdapterBase implements CAProvider, Con
     @Override
     public Certificate issueCertificate(final String csr, final List<String> domainNames, final List<String> ipAddresses, final int validityDays) {
         try {
-            return generateCertificateUsingCsr(csr, domainNames, ipAddresses, validityDays);
+            return generateCertificateUsingCsr(csr, domainNames, ipAddresses, validityDays, true);
+        } catch (final CertificateException | IOException | SignatureException | NoSuchAlgorithmException | NoSuchProviderException | InvalidKeyException | OperatorCreationException e) {
+            logger.error("Failed to generate certificate from CSR: ", e);
+            throw new CloudRuntimeException("Failed to generate certificate using CSR due to:" + e.getMessage());
+        }
+    }
+
+    @Override
+    public Certificate issueCertificateWithNames(final String csr, final List<String> domainNames, final List<String> ipAddresses, final int validityDays) {
+        try {
+            return generateCertificateUsingCsr(csr, domainNames, ipAddresses, validityDays, false);
         } catch (final CertificateException | IOException | SignatureException | NoSuchAlgorithmException | NoSuchProviderException | InvalidKeyException | OperatorCreationException e) {
             logger.error("Failed to generate certificate from CSR: ", e);
             throw new CloudRuntimeException("Failed to generate certificate using CSR due to:" + e.getMessage());

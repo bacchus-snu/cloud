@@ -521,7 +521,7 @@ public class PlacementServiceImplTest {
 
     @Test
     public void verdictAnyHostForNewVm() {
-        when(userVmManager.configureCustomRootDiskSize(any(), any(), any(), any())).thenReturn(20 * GIB);
+        when(userVmManager.configureCustomRootDiskSize(any(), any(), any(), any(), eq(true), anyLong())).thenReturn(20 * GIB);
 
         PlacementVerdict verdict = service.check(PlacementRequest.deploy(TEMPLATE, OFFERING, ZONE, ACCOUNT).withDataDiskSizesGiB(Arrays.asList(100L)));
 

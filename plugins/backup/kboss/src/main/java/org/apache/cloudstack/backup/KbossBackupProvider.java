@@ -1355,7 +1355,7 @@ public class KbossBackupProvider extends AdapterBase implements InternalBackupPr
         if (startedVm) {
             userVmManager.stopVirtualMachine(validationVm.getId(), true);
         }
-        DestroyVMCmd destroyVMCmd = new DestroyVMCmd(validationVm.getId(), true);
+        DestroyVMCmd destroyVMCmd = new DestroyVMCmd(validationVm.getId(), true, false);
         StringBuilder errorMessage = new StringBuilder("Cleanup failed due to:");
         boolean sendMail = false;
         try {

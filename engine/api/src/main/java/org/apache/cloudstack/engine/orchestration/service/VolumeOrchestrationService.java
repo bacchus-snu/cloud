@@ -158,6 +158,13 @@ public interface VolumeOrchestrationService {
 
     void cleanupVolumes(long vmId) throws ConcurrentOperationException;
 
+    /**
+     * Detaches, as a data volume with its contents, disk offering and resource counts, the volume an Instance was being deployed from
+     * when that deployment fails, so that the volume outlives the failed Instance; nothing for a volume no longer attached to it. Called
+     * before the Instance is moved to Error, since an Instance in Error is expunged with every volume still attached to it.
+     */
+    void detachVolumeOfFailedDeployment(long vmId, long volumeId);
+
     void revokeAccess(DataObject dataObject, Host host, DataStore dataStore);
 
     void revokeAccess(long vmId, long hostId);

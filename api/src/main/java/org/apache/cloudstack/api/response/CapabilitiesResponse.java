@@ -167,6 +167,19 @@ public class CapabilitiesResponse extends BaseResponse {
     @Param(description = "The vCPU count of an Instance without a vGPU profile must be a multiple of this value", since = "4.23.0.100")
     private Integer poolVcpuStep;
 
+    @SerializedName(ApiConstants.ROOT_DISK_SIZE_MIN)
+    @Param(description = "The smallest ROOT disk, in GiB, of an Instance created from a Template; the Template's size in whole GiB may raise it", since = "4.23.0.100")
+    private Long rootDiskSizeMin;
+
+    @SerializedName(ApiConstants.ROOT_DISK_SIZE_DEFAULT)
+    @Param(description = "The ROOT disk size, in GiB, of an Instance created from a Template when none is given; the Template's size in whole GiB may raise it",
+            since = "4.23.0.100")
+    private Long rootDiskSizeDefault;
+
+    @SerializedName(ApiConstants.KEEP_ROOT_VOLUME_DEFAULT)
+    @Param(description = "Whether destroying an Instance keeps its ROOT volume when keeprootvolume is not passed", since = "4.23.0.100")
+    private Boolean keepRootVolumeDefault;
+
     public void setSecurityGroupsEnabled(boolean securityGroupsEnabled) {
         this.securityGroupsEnabled = securityGroupsEnabled;
     }
@@ -305,5 +318,17 @@ public class CapabilitiesResponse extends BaseResponse {
 
     public void setPoolVcpuStep(Integer poolVcpuStep) {
         this.poolVcpuStep = poolVcpuStep;
+    }
+
+    public void setRootDiskSizeMin(Long rootDiskSizeMin) {
+        this.rootDiskSizeMin = rootDiskSizeMin;
+    }
+
+    public void setRootDiskSizeDefault(Long rootDiskSizeDefault) {
+        this.rootDiskSizeDefault = rootDiskSizeDefault;
+    }
+
+    public void setKeepRootVolumeDefault(Boolean keepRootVolumeDefault) {
+        this.keepRootVolumeDefault = keepRootVolumeDefault;
     }
 }

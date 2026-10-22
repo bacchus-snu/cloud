@@ -925,7 +925,7 @@ public class PlacementServiceImpl extends ManagerBase implements PlacementServic
                 ServiceOfferingVO offering = offering(request.getServiceOfferingId(), request.getDetails());
                 VMInstanceVO vm = newInstance(owner, template, offering, request.getZoneId());
                 List<DiskProfile> disks = new ArrayList<>();
-                disks.add(rootDisk(request, template, offering));
+                disks.add(rootDisk(request, template, offering, owner));
                 disks.addAll(dataDisks(request, offering));
                 return new Context(request, owner, request.getZoneId(), vm, template, offering, new ArrayList<>(), disks, true,
                         String.format("An Instance from Template %s", template.getName()));
@@ -953,13 +953,13 @@ public class PlacementServiceImpl extends ManagerBase implements PlacementServic
         return vm;
     }
 
-    private DiskProfile rootDisk(PlacementRequest request, VMTemplateVO template, ServiceOffering offering) {
+    private DiskProfile rootDisk(PlacementRequest request, VMTemplateVO template, ServiceOffering offering, Account owner) {
         DiskOfferingVO rootOffering = diskOfferingDao.findById(offering.getDiskOfferingId());
         Map<String, String> parameters = new HashMap<>(request.getDetails());
         if (request.getRootDiskSizeGiB() != null) {
             parameters.put(VmDetailConstants.ROOT_DISK_SIZE, String.valueOf(request.getRootDiskSizeGiB()));
         }
-        long size = userVmManager.configureCustomRootDiskSize(parameters, template, template.getHypervisorType(), rootOffering);
+        long size = userVmManager.configureCustomRootDiskSize(parameters, template, template.getHypervisorType(), rootOffering, true, owner.getDomainId());
         DiskProfile disk = new DiskProfile(Volume.DISK_OFFERING_SUITABILITY_CHECK_VOLUME_ID, Volume.Type.ROOT, "ROOT", rootOffering.getId(), size,
                 rootOffering.getTagsArray(), rootOffering.isUseLocalStorage(), false, template.getId());
         disk.setHyperType(template.getHypervisorType());

@@ -917,4 +917,23 @@ public class CapacityManagerImplTest {
             setDetachOnStop(original);
         }
     }
+
+    @Test
+    public void anInstanceBeingDestroyedHoldsNoPoolCoresOrGpuDevices() throws Exception {
+        String original = GpuService.GpuDetachOnStop.defaultValue();
+        try {
+            setDetachOnStop("true");
+            transitCpuOnlyVm(0, VirtualMachine.State.Stopped, VirtualMachine.Event.DestroyRequested, VirtualMachine.State.Destroyed, null, 0L);
+            verify(hostPoolCoreManager).releasePoolCores(VM_ID);
+            verify(gpuService).releaseGpuDevicesOfStoppedVm(VM_ID);
+
+            Mockito.clearInvocations(hostPoolCoreManager, gpuService);
+            capacityManager.postStateTransitionEvent(new StateMachine2.Transition<>(VirtualMachine.State.Destroyed, VirtualMachine.Event.ExpungeOperation,
+                    VirtualMachine.State.Expunging, null), mockVm(VM_ID, CPU_OFFERING_ID, null, HOST_ID), true, new Pair<>(null, null));
+            verify(hostPoolCoreManager).releasePoolCores(VM_ID);
+            verify(gpuService).releaseGpuDevicesOfStoppedVm(VM_ID);
+        } finally {
+            setDetachOnStop(original);
+        }
+    }
 }

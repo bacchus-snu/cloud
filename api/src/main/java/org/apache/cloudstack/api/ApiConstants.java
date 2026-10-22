@@ -1400,6 +1400,10 @@ public class ApiConstants {
     public static final String FREE_VCPU = "freevcpu";
     public static final String FREE_MEMORY = "freememory";
     public static final String FREE_DISK = "freedisk";
+    public static final String KEEP_ROOT_VOLUME = "keeprootvolume";
+    public static final String KEEP_ROOT_VOLUME_DEFAULT = "keeprootvolumedefault";
+    public static final String ROOT_DISK_SIZE_MIN = "rootdisksizemin";
+    public static final String ROOT_DISK_SIZE_DEFAULT = "rootdisksizedefault";
 
     // Object Storage related
     public static final String BUCKET_AVAILABLE = "bucketavailable";

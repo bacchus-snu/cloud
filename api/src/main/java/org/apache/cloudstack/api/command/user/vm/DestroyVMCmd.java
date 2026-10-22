@@ -59,7 +59,8 @@ public class DestroyVMCmd extends BaseAsyncCmd implements UserCmd {
 
     @Parameter(name = ApiConstants.EXPUNGE,
                type = CommandType.BOOLEAN,
-               description = "If true is passed, the Instance is expunged immediately. False by default.",
+               description = "If true is passed, the Instance is expunged immediately. False by default. When the ROOT volume is kept (see keeprootvolume), " +
+                       "the Instance is expunged regardless.",
                since = "4.2.1")
     private Boolean expunge;
 
@@ -70,6 +71,15 @@ public class DestroyVMCmd extends BaseAsyncCmd implements UserCmd {
                 description = "Comma separated list of UUIDs for volumes that will be deleted",
                 since = "4.12.0")
     private List<Long> volumeIds;
+
+    @Parameter(name = ApiConstants.KEEP_ROOT_VOLUME,
+               type = CommandType.BOOLEAN,
+               description = "If true, the ROOT volume is detached and kept as a volume of the Instance's owner, the data volumes are detached, and the Instance is expunged. " +
+                       "If false, the ROOT volume goes with the Instance. When not passed, the ROOT volume is kept unless destroy.root.volume.on.vm.destruction " +
+                       "is true for the Instance's domain, and only where it can be detached; otherwise it goes with the Instance. Whether passed or not, the ROOT " +
+                       "volume goes with the Instance when the Instance is in Error or the ROOT volume was never created.",
+               since = "4.23.0.100")
+    private Boolean keepRootVolume;
 
     /////////////////////////////////////////////////////
     /////////////////// Accessors ///////////////////////
@@ -90,6 +100,13 @@ public class DestroyVMCmd extends BaseAsyncCmd implements UserCmd {
         return volumeIds;
     }
 
+    /**
+     * @return the caller's choice, or null when the caller did not pass it
+     */
+    public Boolean getKeepRootVolume() {
+        return keepRootVolume;
+    }
+
     public boolean isForced() {
         return false;
     }
@@ -102,8 +119,13 @@ public class DestroyVMCmd extends BaseAsyncCmd implements UserCmd {
     }
 
     public DestroyVMCmd(Long id, Boolean expunge) {
+        this(id, expunge, null);
+    }
+
+    public DestroyVMCmd(Long id, Boolean expunge, Boolean keepRootVolume) {
         this.id = id;
         this.expunge = expunge;
+        this.keepRootVolume = keepRootVolume;
     }
 
     @Override

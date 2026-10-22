@@ -1399,6 +1399,7 @@ public class ServerAdapter extends ManagerBase {
             Map<String, String> params = new HashMap<>();
             params.put(ApiConstants.ID, vo.getUuid());
             params.put(ApiConstants.EXPUNGE, Boolean.TRUE.toString());
+            params.put(ApiConstants.KEEP_ROOT_VOLUME, Boolean.FALSE.toString());
             if (deleteVolumes) {
                 List<String>volumeIds = volumeDao.findByInstance(vo.getId()).stream()
                         .filter(v -> Volume.Type.DATADISK.equals(v.getVolumeType()))

@@ -110,6 +110,7 @@ import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.collections.MapUtils;
 import org.apache.commons.lang.BooleanUtils;
 import org.apache.commons.lang3.ObjectUtils;
+import org.apache.logging.log4j.ThreadContext;
 
 import com.cloud.agent.AgentManager;
 import com.cloud.agent.Listener;
@@ -628,6 +629,22 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
 
             logger.debug("Allocation completed for VM: " + persistedVm);
         } catch (InsufficientCapacityException | CloudRuntimeException e) {
+            // An Instance in Error is expunged with every volume attached to it, so the volume it was deployed from leaves it first.
+            if (persistedVm != null && volume != null) {
+                try {
+                    volumeMgr.detachVolumeOfFailedDeployment(persistedVm.getId(), volume.getId());
+                } catch (RuntimeException detachFailure) {
+                    logger.error("Unable to detach volume {}, from which {} was to be deployed; the Instance is left Stopped with its volumes.", volume,
+                            persistedVm, detachFailure);
+                    _alertMgr.sendAlert(AlertManager.AlertType.ALERT_TYPE_USERVM, persistedVm.getDataCenterId(), persistedVm.getPodIdToDeployIn(),
+                            String.format("Failed to deploy Instance [ID: %s]", persistedVm.getUuid()),
+                            String.format("Failed to deploy [%s], and the volume [%s] it was deployed from could not be detached from it; the Instance is left "
+                                    + "Stopped with the volume. To troubleshoot, please check the logs with [logid:%s].", persistedVm, volume,
+                                    ThreadContext.get("logcontextid")));
+                    e.addSuppressed(detachFailure);
+                    throw e;
+                }
+            }
             // Failed VM will be in Stopped. Transition it to Error, so it can be expunged by ExpungeTask or similar
             try {
                 if (persistedVm != null) {

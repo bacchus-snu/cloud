@@ -51,6 +51,7 @@ import org.apache.cloudstack.framework.jobs.impl.AsyncJobVO;
 import org.apache.cloudstack.framework.jobs.impl.OutcomeImpl;
 import org.apache.cloudstack.framework.jobs.impl.VmWorkJobVO;
 import org.apache.cloudstack.jobs.JobInfo;
+import org.apache.cloudstack.resourcelimit.Reserver;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
 import org.apache.cloudstack.storage.to.VolumeObjectTO;
@@ -75,6 +76,7 @@ import com.cloud.hypervisor.Hypervisor;
 import com.cloud.hypervisor.Hypervisor.HypervisorType;
 import com.cloud.hypervisor.dao.HypervisorCapabilitiesDao;
 import com.cloud.projects.Project.ListProjectResourcesCriteria;
+import com.cloud.resourcelimit.ReservationHelper;
 import com.cloud.server.ResourceTag;
 import com.cloud.service.ServiceOfferingVO;
 import com.cloud.service.dao.ServiceOfferingDao;
@@ -992,19 +994,57 @@ public class VMSnapshotManagerImpl extends MutualExclusiveIdsManagerBase impleme
         try {
             VMSnapshotStrategy strategy = findVMSnapshotStrategy(vmSnapshotVo);
             strategy.revertVMSnapshot(vmSnapshotVo);
-            Transaction.execute(new TransactionCallbackWithExceptionNoReturn<CloudRuntimeException>() {
-                @Override
-                public void doInTransactionWithoutResult(TransactionStatus status) throws CloudRuntimeException {
-                    if (userVmServiceOfferingNeedsChange(userVm, vmSnapshotVo)) {
-                        changeUserVmServiceOffering(userVm, vmSnapshotVo);
-                    }
-                    revertCustomServiceOfferingDetailsFromVmSnapshot(userVm, vmSnapshotVo);
-                }
-            });
+            revertServiceOffering(userVm, vmSnapshotVo);
             return userVm;
         } catch (Exception e) {
             logger.debug("Failed to revert Instance Snapshot: {}", vmSnapshotVo, e);
             throw new CloudRuntimeException(e.getMessage());
+        }
+    }
+
+    /**
+     * Reverts the Instance's service offering and custom offering details to the snapshot's. No resource is reserved inside the transaction:
+     * a stopped Instance's change is prepared, with its reservations, before the transaction records it, and its storage is told once that
+     * has committed; a running Instance is scaled before the transaction, which then records the details.
+     */
+    protected void revertServiceOffering(UserVmVO userVm, VMSnapshotVO vmSnapshotVo) {
+        UserVmVO instance = _userVMDao.findById(userVm.getId());
+        List<Reserver> reservations = new ArrayList<>();
+        try {
+            UserVmManager.PreparedUpgrade upgrade = null;
+            if (userVmServiceOfferingNeedsChange(instance, vmSnapshotVo)) {
+                if (instance.getState() == VirtualMachine.State.Stopped) {
+                    upgrade = prepareStoppedServiceOfferingChange(instance, vmSnapshotVo, reservations);
+                } else {
+                    changeUserVmServiceOffering(instance, vmSnapshotVo);
+                }
+            }
+            final UserVmManager.PreparedUpgrade preparedUpgrade = upgrade;
+            Transaction.execute(new TransactionCallbackWithExceptionNoReturn<CloudRuntimeException>() {
+                @Override
+                public void doInTransactionWithoutResult(TransactionStatus status) throws CloudRuntimeException {
+                    if (preparedUpgrade != null) {
+                        preparedUpgrade.apply();
+                    }
+                    revertCustomServiceOfferingDetailsFromVmSnapshot(instance, vmSnapshotVo);
+                }
+            });
+            if (preparedUpgrade != null) {
+                preparedUpgrade.complete();
+                logger.debug("Successfully changed service offering to {} for Instance {}", _serviceOfferingDao.findById(vmSnapshotVo.getServiceOfferingId()), instance);
+            }
+        } finally {
+            ReservationHelper.closeAll(reservations);
+        }
+    }
+
+    private UserVmManager.PreparedUpgrade prepareStoppedServiceOfferingChange(UserVmVO userVm, VMSnapshotVO vmSnapshotVo, List<Reserver> reservations) {
+        _accountMgr.checkAccess(getCaller(), null, true, userVm);
+        try {
+            return _userVmManager.prepareStoppedVirtualMachineUpgrade(userVm.getId(), vmSnapshotVo.getServiceOfferingId(), getVmMapDetails(vmSnapshotVo), reservations);
+        } catch (ResourceAllocationException e) {
+            logger.error("Couldn't change service offering for vm {} to {} due to: {}", userVm, _serviceOfferingDao.findById(vmSnapshotVo.getServiceOfferingId()), e.getMessage());
+            throw new CloudRuntimeException("Instance Snapshot reverting failed because the Instance service offering couldn't be changed to the one used when Snapshot was taken", e);
         }
     }
 

@@ -27,6 +27,8 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.lang.reflect.Field;
 
 import com.cloud.configuration.Resource;
@@ -43,15 +45,19 @@ import com.cloud.storage.DataStoreRole;
 import com.cloud.storage.Storage;
 import com.cloud.storage.Volume;
 import com.cloud.storage.Volume.Type;
+import com.cloud.storage.VolumeApiService;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.VolumeDao;
 import com.cloud.user.Account;
 import com.cloud.user.ResourceLimitService;
 import com.cloud.uservm.UserVm;
 import com.cloud.utils.db.EntityManager;
+import com.cloud.utils.db.UUIDManager;
 import com.cloud.utils.exception.CloudRuntimeException;
+import com.cloud.vm.UserVmVO;
 import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VirtualMachine;
+import com.cloud.vm.dao.UserVmDao;
 import com.cloud.utils.Pair;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataObject;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
@@ -77,6 +83,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentMatchers;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedConstruction;
@@ -243,26 +250,26 @@ public class VolumeOrchestratorTest {
         String path = "volume path";
         String chainInfo = "chain info";
 
-        MockedConstruction<VolumeVO> volumeVOMockedConstructionConstruction = Mockito.mockConstruction(VolumeVO.class, (mock, context) -> {
-        });
+        try (MockedConstruction<VolumeVO> volumeVOMockedConstructionConstruction = Mockito.mockConstruction(VolumeVO.class, (mock, context) -> {
+        })) {
+            VolumeVO volumeVO = Mockito.mock(VolumeVO.class);
+            Mockito.when(volumeDao.persist(Mockito.any(VolumeVO.class))).thenReturn(volumeVO);
 
-        VolumeVO volumeVO = Mockito.mock(VolumeVO.class);
-        Mockito.when(volumeDao.persist(Mockito.any(VolumeVO.class))).thenReturn(volumeVO);
+            volumeOrchestrator.importVolume(volumeType, name, diskOffering, sizeInBytes, null, null,
+                    zoneId, hypervisorType, null, null, owner,
+                    deviceId, poolId, Storage.StoragePoolType.NetworkFilesystem, path, chainInfo);
 
-        volumeOrchestrator.importVolume(volumeType, name, diskOffering, sizeInBytes, null, null,
-                zoneId, hypervisorType, null, null, owner,
-                deviceId, poolId, Storage.StoragePoolType.NetworkFilesystem, path, chainInfo);
-
-        VolumeVO volume = volumeVOMockedConstructionConstruction.constructed().get(0);
-        Mockito.verify(volume, Mockito.never()).setInstanceId(Mockito.anyLong());
-        Mockito.verify(volume, Mockito.never()).setAttached(Mockito.any(Date.class));
-        Mockito.verify(volume, Mockito.times(1)).setDeviceId(deviceId);
-        Mockito.verify(volume, Mockito.never()).setDisplayVolume(Mockito.any(Boolean.class));
-        Mockito.verify(volume, Mockito.times(1)).setFormat(Storage.ImageFormat.QCOW2);
-        Mockito.verify(volume, Mockito.times(1)).setPoolId(poolId);
-        Mockito.verify(volume, Mockito.times(1)).setPath(path);
-        Mockito.verify(volume, Mockito.times(1)).setChainInfo(chainInfo);
-        Mockito.verify(volume, Mockito.times(1)).setState(Volume.State.Ready);
+            VolumeVO volume = volumeVOMockedConstructionConstruction.constructed().get(0);
+            Mockito.verify(volume, Mockito.never()).setInstanceId(Mockito.anyLong());
+            Mockito.verify(volume, Mockito.never()).setAttached(Mockito.any(Date.class));
+            Mockito.verify(volume, Mockito.times(1)).setDeviceId(deviceId);
+            Mockito.verify(volume, Mockito.never()).setDisplayVolume(Mockito.any(Boolean.class));
+            Mockito.verify(volume, Mockito.times(1)).setFormat(Storage.ImageFormat.QCOW2);
+            Mockito.verify(volume, Mockito.times(1)).setPoolId(poolId);
+            Mockito.verify(volume, Mockito.times(1)).setPath(path);
+            Mockito.verify(volume, Mockito.times(1)).setChainInfo(chainInfo);
+            Mockito.verify(volume, Mockito.times(1)).setState(Volume.State.Ready);
+        }
     }
 
     @Test
@@ -974,6 +981,118 @@ public class VolumeOrchestratorTest {
             assertTrue(String.valueOf(e.getCause()), e.getCause() instanceof CloudRuntimeException);
             assertTrue(e.getCause().getMessage(), e.getCause().getMessage().contains("cannot be recreated"));
         }
+    }
+
+    @Test
+    public void aVolumeDeployedAsRootTakesTheRootDiskOfferingOnlyWhenItCan() throws Exception {
+        VolumeApiService volumeApiService = Mockito.mock(VolumeApiService.class);
+        setField(volumeOrchestrator, "_volumeApiService", volumeApiService);
+        setField(volumeOrchestrator, "_volumeDao", volumeDao);
+        VolumeVO kept = new VolumeVO(Type.DATADISK, "ROOT-5151", 1L, 1L, 5L, 43L, Storage.ProvisioningType.THIN, 20L << 30, null, null, null);
+        setField(kept, "id", 5152L);
+        Mockito.when(volumeDao.findById(5152L)).thenReturn(kept);
+        VMInstanceVO vm = Mockito.mock(VMInstanceVO.class);
+        Mockito.when(vm.getId()).thenReturn(MOCK_VM_ID);
+        DiskOffering rootDiskOffering = Mockito.mock(DiskOffering.class);
+        Mockito.when(volumeApiService.takesRootDiskOffering(kept, rootDiskOffering)).thenReturn(true);
+        Mockito.when(volumeApiService.assignDiskOfferingKeepingSize(kept, rootDiskOffering)).thenReturn(kept);
+
+        Volume root = volumeOrchestrator.attachExistingVolumeToVm(vm, 0L, kept, Type.ROOT, rootDiskOffering);
+
+        Assert.assertEquals(Type.ROOT, root.getVolumeType());
+        Assert.assertEquals(Long.valueOf(MOCK_VM_ID), root.getInstanceId());
+        InOrder order = Mockito.inOrder(volumeDao, volumeApiService);
+        order.verify(volumeDao).update(5152L, kept);
+        order.verify(volumeApiService).assignDiskOfferingKeepingSize(kept, rootDiskOffering);
+        order.verify(volumeApiService).informStorageOfDiskOfferingChange(kept, rootDiskOffering);
+
+        Mockito.when(volumeApiService.takesRootDiskOffering(kept, rootDiskOffering)).thenReturn(false);
+        volumeOrchestrator.attachExistingVolumeToVm(vm, 0L, kept, Type.ROOT, rootDiskOffering);
+
+        Mockito.verify(volumeApiService, Mockito.times(1)).assignDiskOfferingKeepingSize(Mockito.any(), Mockito.any());
+        Mockito.verify(volumeApiService, Mockito.times(1)).informStorageOfDiskOfferingChange(Mockito.any(), Mockito.any());
+    }
+
+    @Test
+    public void theVolumeOfAFailedDeploymentOutlivesItsInstance() throws Exception {
+        VolumeApiService volumeApiService = Mockito.mock(VolumeApiService.class);
+        setField(volumeOrchestrator, "_volumeApiService", volumeApiService);
+        setField(volumeOrchestrator, "_volsDao", volumeDao);
+        setField(volumeOrchestrator, "_volumeDao", volumeDao);
+        UserVmDao userVmDao = Mockito.mock(UserVmDao.class);
+        setField(volumeOrchestrator, "_userVmDao", userVmDao);
+        setField(volumeOrchestrator, "_uuidMgr", Mockito.mock(UUIDManager.class));
+        UserVmVO vm = Mockito.mock(UserVmVO.class);
+        Mockito.when(vm.getId()).thenReturn(MOCK_VM_ID);
+        Mockito.lenient().when(vm.getHypervisorType()).thenReturn(Hypervisor.HypervisorType.KVM);
+        Mockito.lenient().when(userVmDao.findById(MOCK_VM_ID)).thenReturn(vm);
+        VolumeVO given = new VolumeVO(Type.DATADISK, "ROOT-5151", 1L, 1L, 5L, 43L, Storage.ProvisioningType.THIN, 20L << 30, null, null, null);
+        setField(given, "id", 5152L);
+        given.setState(Volume.State.Ready);
+        given.setPoolId(MOCK_POOL_ID);
+        Mockito.when(volumeDao.findById(5152L)).thenReturn(given);
+        Mockito.lenient().doAnswer(invocation -> {
+            given.setInstanceId(null);
+            given.setDeviceId(null);
+            given.setVolumeType(Type.DATADISK);
+            return null;
+        }).when(volumeDao).detachVolume(5152L);
+        Mockito.lenient().when(volumeDao.findByInstance(Mockito.anyLong())).thenAnswer(invocation -> Stream.of(given)
+                .filter(volume -> Long.valueOf((long) invocation.getArgument(0)).equals(volume.getInstanceId())).collect(Collectors.toList()));
+        volumeOrchestrator.attachExistingVolumeToVm(vm, 0L, given, Type.ROOT, Mockito.mock(DiskOffering.class));
+
+        volumeOrchestrator.detachVolumeOfFailedDeployment(MOCK_VM_ID, 5152L);
+
+        Mockito.verify(volumeDao).detachVolume(5152L);
+        volumeOrchestrator.detachVolumeOfFailedDeployment(MOCK_VM_ID, 5152L);
+        volumeOrchestrator.detachVolumeOfFailedDeployment(MOCK_VM_ID + 1, 5152L);
+        Mockito.verify(volumeDao, Mockito.times(1)).detachVolume(Mockito.anyLong());
+        Assert.assertEquals(Type.DATADISK, given.getVolumeType());
+        Assert.assertNull(given.getInstanceId());
+
+        volumeOrchestrator.cleanupVolumes(MOCK_VM_ID);
+
+        Mockito.verify(volumeApiService, Mockito.never()).destroyVolume(Mockito.anyLong());
+        Mockito.verify(volumeService, Mockito.never()).expungeVolumeAsync(Mockito.any());
+        Mockito.verify(resourceLimitMgr, Mockito.never()).decrementVolumeResourceCount(Mockito.anyLong(), Mockito.any(), Mockito.any(), Mockito.any(),
+                Mockito.any());
+        Assert.assertEquals(Volume.State.Ready, given.getState());
+        Assert.assertEquals(Long.valueOf(43L), given.getDiskOfferingId());
+    }
+
+    @Test
+    public void aDetachedFormerRootIsUntouchedWhenItsInstanceIsExpunged() throws Exception {
+        VolumeApiService volumeApiService = Mockito.mock(VolumeApiService.class);
+        setField(volumeOrchestrator, "_volumeApiService", volumeApiService);
+        setField(volumeOrchestrator, "_volsDao", volumeDao);
+        UserVmDao userVmDao = Mockito.mock(UserVmDao.class);
+        setField(volumeOrchestrator, "_userVmDao", userVmDao);
+        setField(volumeOrchestrator, "_uuidMgr", Mockito.mock(UUIDManager.class));
+        UserVmVO vm = Mockito.mock(UserVmVO.class);
+        Mockito.when(vm.getHypervisorType()).thenReturn(Hypervisor.HypervisorType.KVM);
+        Mockito.when(userVmDao.findById(MOCK_VM_ID)).thenReturn(vm);
+        VolumeVO keptRoot = new VolumeVO(Type.DATADISK, "ROOT-" + MOCK_VM_ID, 1L, 1L, 5L, 43L, Storage.ProvisioningType.THIN, 20L << 30, null, null, null);
+        setField(keptRoot, "id", 5152L);
+        keptRoot.setState(Volume.State.Ready);
+        keptRoot.setPoolId(MOCK_POOL_ID);
+        VolumeVO attachedData = new VolumeVO(Type.DATADISK, "DATA-" + MOCK_VM_ID, 1L, 1L, 5L, 44L, Storage.ProvisioningType.THIN, 10L << 30, null, null, null);
+        setField(attachedData, "id", 5153L);
+        attachedData.setState(Volume.State.Ready);
+        attachedData.setInstanceId(MOCK_VM_ID);
+        List<VolumeVO> volumes = List.of(keptRoot, attachedData);
+        Mockito.when(volumeDao.findByInstance(Mockito.anyLong())).thenAnswer(invocation -> volumes.stream()
+                .filter(volume -> Long.valueOf((long) invocation.getArgument(0)).equals(volume.getInstanceId())).collect(Collectors.toList()));
+
+        volumeOrchestrator.cleanupVolumes(MOCK_VM_ID);
+
+        Mockito.verify(volumeDao).detachVolume(5153L);
+        Mockito.verify(volumeDao, Mockito.never()).detachVolume(5152L);
+        Mockito.verify(volumeApiService, Mockito.never()).destroyVolume(Mockito.anyLong());
+        Mockito.verify(volumeService, Mockito.never()).expungeVolumeAsync(Mockito.any());
+        Mockito.verify(resourceLimitMgr, Mockito.never()).decrementVolumeResourceCount(Mockito.anyLong(), Mockito.any(), Mockito.any(), Mockito.any(),
+                Mockito.any());
+        Assert.assertEquals(Volume.State.Ready, keptRoot.getState());
+        Assert.assertNull(keptRoot.getInstanceId());
     }
 
     private void setField(Object target, String fieldName, Object value) throws Exception {

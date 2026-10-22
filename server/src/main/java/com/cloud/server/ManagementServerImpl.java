@@ -4941,6 +4941,9 @@ public class ManagementServerImpl extends MutualExclusiveIdsManagerBase implemen
         }
         capabilities.put(ApiConstants.ADDITONAL_CONFIG_ENABLED, UserVmManager.EnableAdditionalVmConfig.valueIn(caller.getId()));
         capabilities.put(ApiConstants.POOL_VCPU_STEP, UserVmManager.poolVcpuStep(domainId));
+        capabilities.put(ApiConstants.ROOT_DISK_SIZE_MIN, UserVmManager.rootDiskSizeMinGiB(domainId));
+        capabilities.put(ApiConstants.ROOT_DISK_SIZE_DEFAULT, UserVmManager.rootDiskSizeDefaultGiB(domainId));
+        capabilities.put(ApiConstants.KEEP_ROOT_VOLUME_DEFAULT, UserVmManager.keepRootVolumeByDefault(domainId));
 
         Map<String, Object> vpnParams = getVpnCustomerGatewayParameters(domainId);
         if (!vpnParams.isEmpty()) {

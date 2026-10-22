@@ -1823,7 +1823,8 @@ public class KbossBackupProviderTest {
             kbossBackupProviderSpy.cleanupValidation(false, userVmVOMock, backupVoMock, List.of(dataVolume));
 
             verify(userVmManagerMock, Mockito.never()).stopVirtualMachine(anyLong(), anyBoolean());
-            verify(userVmManagerMock, Mockito.times(1)).destroyVm(any(DestroyVMCmd.class), Mockito.eq(false));
+            verify(userVmManagerMock, Mockito.times(1)).destroyVm(Mockito.argThat((DestroyVMCmd cmd) -> Boolean.FALSE.equals(cmd.getKeepRootVolume())),
+                    Mockito.eq(false));
             verify(volumeApiServiceMock, Mockito.times(1)).destroyVolume(Mockito.eq(52L), any(), Mockito.eq(true), Mockito.eq(true), Mockito.isNull());
             verify(agentManagerMock, Mockito.never()).easySend(anyLong(), any());
         }

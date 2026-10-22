@@ -68,6 +68,7 @@ import org.apache.cloudstack.framework.jobs.Outcome;
 import org.apache.cloudstack.framework.jobs.dao.AsyncJobJoinMapDao;
 import org.apache.cloudstack.framework.jobs.impl.AsyncJobVO;
 import org.apache.cloudstack.resourcedetail.dao.SnapshotPolicyDetailsDao;
+import org.apache.cloudstack.resourcelimit.Reserver;
 import org.apache.cloudstack.snapshot.SnapshotHelper;
 import org.apache.cloudstack.storage.datastore.db.ImageStoreDao;
 import org.apache.cloudstack.storage.datastore.db.ImageStoreVO;
@@ -144,6 +145,8 @@ import com.cloud.user.User;
 import com.cloud.user.UserVO;
 import com.cloud.user.dao.AccountDao;
 import com.cloud.utils.Pair;
+import com.cloud.utils.db.Transaction;
+import com.cloud.utils.db.TransactionCallback;
 import com.cloud.utils.db.TransactionLegacy;
 import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.utils.fsm.NoTransitionException;
@@ -3073,5 +3076,248 @@ public class VolumeApiServiceImplTest {
         Assert.assertTrue(e.getMessage(), e.getMessage().contains("nothing was moved"));
         Mockito.verify(volumeOrchestrationService, Mockito.never()).relocateVolumes(Mockito.anyList(), Mockito.any());
         Mockito.verify(volumeApiServiceImpl, Mockito.never()).getVolumeAttachJobResult(Mockito.anyLong(), Mockito.anyLong(), Mockito.any());
+    }
+
+    @Test
+    public void rootIsDetachedOnDestroyOnlyWhereDetachVolumeDetachesIt() {
+        doReturn(null).when(volumeApiServiceImpl).orchestrateDetachVolumeFromVM(anyLong(), anyLong());
+
+        Assert.assertThrows("a running Instance", InvalidParameterValueException.class, () -> volumeApiServiceImpl.detachVolumeViaDestroyVM(1L, 1L));
+        Assert.assertThrows("a hypervisor without root detach", InvalidParameterValueException.class, () -> volumeApiServiceImpl.detachVolumeViaDestroyVM(3L, 3L));
+        Assert.assertThrows("managed storage", InvalidParameterValueException.class, () -> volumeApiServiceImpl.detachVolumeViaDestroyVM(2L, 4L));
+        verify(volumeApiServiceImpl, Mockito.never()).orchestrateDetachVolumeFromVM(anyLong(), anyLong());
+
+        volumeApiServiceImpl.detachVolumeViaDestroyVM(2L, 2L);
+        volumeApiServiceImpl.detachVolumeViaDestroyVM(1L, 10L);
+
+        verify(volumeApiServiceImpl).orchestrateDetachVolumeFromVM(2L, 2L);
+        verify(volumeApiServiceImpl).orchestrateDetachVolumeFromVM(1L, 10L);
+    }
+
+    @Test
+    public void rootDetachIsCheckedBeforeTheInstanceStops() {
+        VirtualMachine hyperV = mock(VirtualMachine.class);
+        when(hyperV.getHypervisorType()).thenReturn(HypervisorType.Hyperv);
+        VirtualMachine kvm = mock(VirtualMachine.class);
+        when(kvm.getHypervisorType()).thenReturn(HypervisorType.KVM);
+        VolumeVO onUnmanagedPool = new VolumeVO(Volume.Type.ROOT, "ROOT-1", 1L, 1L, 1L, 1L, Storage.ProvisioningType.THIN, 1L, null, null, null);
+        onUnmanagedPool.setPoolId(1L);
+        VolumeVO onManagedPool = new VolumeVO(Volume.Type.ROOT, "ROOT-2", 1L, 1L, 1L, 1L, Storage.ProvisioningType.THIN, 1L, null, null, null);
+        onManagedPool.setPoolId(2L);
+        VolumeVO notCreated = new VolumeVO(Volume.Type.ROOT, "ROOT-3", 1L, 1L, 1L, 1L, Storage.ProvisioningType.THIN, 1L, null, null, null);
+
+        Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.checkRootVolumeDetachSupported(onUnmanagedPool, hyperV));
+        Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.checkRootVolumeDetachSupported(onManagedPool, kvm));
+        volumeApiServiceImpl.checkRootVolumeDetachSupported(onUnmanagedPool, kvm);
+        volumeApiServiceImpl.checkRootVolumeDetachSupported(notCreated, kvm);
+    }
+
+    private VolumeVO readyRootOnPool(long poolId, long diskOfferingId) {
+        VolumeVO root = new VolumeVO(Volume.Type.ROOT, "ROOT-6161", 1L, 1L, 5L, diskOfferingId, Storage.ProvisioningType.THIN, 20L << 30, null, null, null);
+        ReflectionTestUtils.setField(root, "id", 6162L);
+        root.setState(Volume.State.Ready);
+        root.setPoolId(poolId);
+        root.setInstanceId(6161L);
+        lenient().when(volumeDaoMock.findById(6162L)).thenReturn(root);
+        return root;
+    }
+
+    private void poolOfScope(long id, ScopeType scope) {
+        StoragePoolVO pool = new StoragePoolVO();
+        ReflectionTestUtils.setField(pool, "id", id);
+        pool.setScope(scope);
+        lenient().when(primaryDataStoreDaoMock.findById(id)).thenReturn(pool);
+    }
+
+    private DiskOfferingVO computeOnlyDiskOffering(long id, boolean local, String tags) {
+        DiskOfferingVO offering = new DiskOfferingVO("root", "root", Storage.ProvisioningType.THIN, false, tags, false, local, false);
+        ReflectionTestUtils.setField(offering, "id", id);
+        lenient().when(_diskOfferingDao.findByIdIncludingRemoved(id)).thenReturn(offering);
+        lenient().when(_diskOfferingDao.findById(id)).thenReturn(offering);
+        return offering;
+    }
+
+    private Volume changeRootDiskOffering(VolumeVO root, DiskOfferingVO diskOffering) throws ResourceAllocationException {
+        List<Reserver> reservations = new ArrayList<>();
+        volumeApiServiceImpl.reserveRootDiskOfferingChange(root, diskOffering, reservations);
+        return volumeApiServiceImpl.assignDiskOfferingKeepingSize(root, diskOffering);
+    }
+
+    @Test
+    public void rootTakesComputeOnlyDiskOfferingKeepingItsSize() throws ResourceAllocationException {
+        poolOfScope(30L, ScopeType.HOST);
+        VolumeVO root = readyRootOnPool(30L, 41L);
+        DiskOfferingVO current = computeOnlyDiskOffering(41L, true, null);
+        DiskOfferingVO target = computeOnlyDiskOffering(42L, true, null);
+        when(accountManagerMock.getAccount(5L)).thenReturn(accountMock);
+
+        Volume result = changeRootDiskOffering(root, target);
+
+        Assert.assertEquals(42L, (long) result.getDiskOfferingId());
+        Assert.assertEquals(Long.valueOf(20L << 30), result.getSize());
+        Assert.assertEquals(Long.valueOf(30L), result.getPoolId());
+        Assert.assertEquals(Volume.State.Ready, result.getState());
+        verify(resourceLimitServiceMock).checkVolumeResourceLimitForDiskOfferingChange(eq(accountMock), any(), eq(20L << 30), eq(20L << 30), eq(current), eq(target),
+                Mockito.anyList());
+        verify(resourceLimitServiceMock).updateVolumeResourceCountForDiskOfferingChange(eq(5L), any(), eq(20L << 30), eq(20L << 30), eq(current), eq(target));
+        verify(volumeDaoMock).update(6162L, root);
+        verify(volumeOrchestrationService).saveVolumeDetails(42L, 6162L);
+    }
+
+    @Test
+    public void allocatedRootTakesComputeOnlyDiskOfferingWithoutStorageToInform() throws ResourceAllocationException {
+        VolumeVO notCreated = readyRootOnPool(30L, 41L);
+        notCreated.setPoolId(null);
+        notCreated.setState(Volume.State.Allocated);
+        DiskOfferingVO current = computeOnlyDiskOffering(41L, true, null);
+        DiskOfferingVO target = computeOnlyDiskOffering(42L, true, null);
+        when(accountManagerMock.getAccount(5L)).thenReturn(accountMock);
+
+        Volume result = changeRootDiskOffering(notCreated, target);
+
+        Assert.assertEquals(42L, (long) result.getDiskOfferingId());
+        Assert.assertEquals(Long.valueOf(20L << 30), result.getSize());
+        verify(resourceLimitServiceMock).updateVolumeResourceCountForDiskOfferingChange(eq(5L), any(), eq(20L << 30), eq(20L << 30), eq(current), eq(target));
+        verify(dataStoreMgr, Mockito.never()).getDataStore(Mockito.anyLong(), any(DataStoreRole.class));
+    }
+
+    @Test
+    public void rootKeepsItsDiskOfferingWhenItsPoolDoesNotSuitTheNewOne() {
+        poolOfScope(31L, ScopeType.CLUSTER);
+        VolumeVO onSharedPool = readyRootOnPool(31L, 41L);
+        computeOnlyDiskOffering(41L, false, null);
+        DiskOfferingVO local = computeOnlyDiskOffering(42L, true, null);
+
+        InvalidParameterValueException e = Assert.assertThrows(InvalidParameterValueException.class,
+                () -> volumeApiServiceImpl.reserveRootDiskOfferingChange(onSharedPool, local, new ArrayList<>()));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains(local.getUuid()));
+        Assert.assertFalse("a deployment keeps the volume's disk offering", volumeApiServiceImpl.takesRootDiskOffering(onSharedPool, local));
+
+        poolOfScope(30L, ScopeType.HOST);
+        VolumeVO onLocalPool = readyRootOnPool(30L, 41L);
+        DiskOfferingVO tagged = computeOnlyDiskOffering(43L, true, "tagA");
+        Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.reserveRootDiskOfferingChange(onLocalPool, tagged, new ArrayList<>()));
+        Assert.assertFalse(volumeApiServiceImpl.takesRootDiskOffering(onLocalPool, tagged));
+
+        verify(volumeDaoMock, Mockito.never()).update(Mockito.anyLong(), Mockito.any(VolumeVO.class));
+        verify(resourceLimitServiceMock, Mockito.never()).updateVolumeResourceCountForDiskOfferingChange(Mockito.anyLong(), any(), any(), any(), any(), any());
+    }
+
+    private VolumeVO keptRootOnLocalPool(long diskOfferingId) {
+        poolOfScope(30L, ScopeType.HOST);
+        VolumeVO kept = readyRootOnPool(30L, diskOfferingId);
+        kept.setVolumeType(Volume.Type.DATADISK);
+        kept.setInstanceId(null);
+        return kept;
+    }
+
+    @Test
+    public void deployFromKeptRootRelabelsToComputeOnlyOffering() throws ResourceAllocationException {
+        VolumeVO kept = keptRootOnLocalPool(43L);
+        DiskOfferingVO current = computeOnlyDiskOffering(43L, true, null);
+        DiskOfferingVO target = computeOnlyDiskOffering(42L, true, null);
+        when(accountManagerMock.getAccount(5L)).thenReturn(accountMock);
+        List<Reserver> reservations = new ArrayList<>();
+
+        Assert.assertTrue(volumeApiServiceImpl.takesRootDiskOffering(kept, target));
+        volumeApiServiceImpl.reserveRootDiskOfferingChange(kept, target, reservations);
+        verify(resourceLimitServiceMock).checkVolumeResourceLimitForDiskOfferingChange(accountMock, kept.isDisplayVolume(), 20L << 30, 20L << 30, current, target,
+                reservations);
+        Volume relabelled = volumeApiServiceImpl.assignDiskOfferingKeepingSize(kept, target);
+
+        Assert.assertEquals(42L, (long) relabelled.getDiskOfferingId());
+        Assert.assertEquals(Long.valueOf(20L << 30), relabelled.getSize());
+        Assert.assertEquals(Long.valueOf(30L), relabelled.getPoolId());
+        verify(volumeDaoMock).update(6162L, kept);
+        verify(volumeOrchestrationService).saveVolumeDetails(42L, 6162L);
+        verify(resourceLimitServiceMock).updateVolumeResourceCountForDiskOfferingChange(eq(5L), any(), eq(20L << 30), eq(20L << 30), eq(current), eq(target));
+        verify(resourceLimitServiceMock, times(1)).checkVolumeResourceLimitForDiskOfferingChange(any(), any(), any(), any(), any(), any(), Mockito.anyList());
+        Assert.assertFalse("a volume on the disk offering already takes nothing", volumeApiServiceImpl.takesRootDiskOffering(relabelled, target));
+    }
+
+    @Test
+    public void deployFromVolumeKeepsOfferingWhenNotComputeOnly() {
+        VolumeVO kept = keptRootOnLocalPool(43L);
+        computeOnlyDiskOffering(43L, true, null);
+        DiskOfferingVO fixedSize = computeOnlyDiskOffering(44L, true, null);
+        fixedSize.setDiskSize(20L << 30);
+        DiskOfferingVO standalone = computeOnlyDiskOffering(45L, true, null);
+        ReflectionTestUtils.setField(standalone, "computeOnly", false);
+
+        Assert.assertFalse(volumeApiServiceImpl.takesRootDiskOffering(kept, fixedSize));
+        Assert.assertFalse(volumeApiServiceImpl.takesRootDiskOffering(kept, standalone));
+        Assert.assertEquals(43L, (long) kept.getDiskOfferingId());
+    }
+
+    @Test
+    public void aDiskOfferingAssignmentCommitsOrRollsBackAsOne() {
+        VolumeVO root = readyRootOnPool(30L, 41L);
+        computeOnlyDiskOffering(41L, true, null);
+        DiskOfferingVO target = computeOnlyDiskOffering(42L, true, null);
+        boolean[] inTransaction = {false};
+        List<String> calls = new ArrayList<>();
+        Mockito.doAnswer(invocation -> {
+            calls.add("update:" + inTransaction[0]);
+            return true;
+        }).when(volumeDaoMock).update(eq(6162L), any(VolumeVO.class));
+        Mockito.doAnswer(invocation -> {
+            calls.add("details:" + inTransaction[0]);
+            return null;
+        }).when(volumeOrchestrationService).saveVolumeDetails(42L, 6162L);
+        Mockito.doAnswer(invocation -> {
+            calls.add("counts:" + inTransaction[0]);
+            throw new CloudRuntimeException("the storage tag counts could not be updated");
+        }).when(resourceLimitServiceMock).updateVolumeResourceCountForDiskOfferingChange(eq(5L), any(), any(), any(), any(), any());
+
+        try (MockedStatic<Transaction> transaction = Mockito.mockStatic(Transaction.class)) {
+            transaction.when(() -> Transaction.execute(any(TransactionCallback.class))).thenAnswer(invocation -> {
+                inTransaction[0] = true;
+                try {
+                    return ((TransactionCallback<?>) invocation.getArgument(0)).doInTransaction(null);
+                } catch (RuntimeException e) {
+                    calls.add("rollback");
+                    throw e;
+                } finally {
+                    inTransaction[0] = false;
+                }
+            });
+            CloudRuntimeException e = Assert.assertThrows(CloudRuntimeException.class, () -> volumeApiServiceImpl.assignDiskOfferingKeepingSize(root, target));
+            Assert.assertTrue(e.getMessage(), e.getMessage().contains("storage tag counts"));
+        }
+
+        Assert.assertEquals("the row, its details and its counts change in one transaction, which a failed count update rolls back",
+                Arrays.asList("update:true", "details:true", "counts:true", "rollback"), calls);
+    }
+
+    @Test
+    public void theStorageIsToldOfANewDiskOfferingOnlyWhenAsked() {
+        poolOfScope(30L, ScopeType.HOST);
+        VolumeVO root = readyRootOnPool(30L, 41L);
+        computeOnlyDiskOffering(41L, true, null);
+        DiskOfferingVO target = computeOnlyDiskOffering(42L, true, null);
+
+        volumeApiServiceImpl.assignDiskOfferingKeepingSize(root, target);
+        verify(dataStoreMgr, Mockito.never()).getDataStore(Mockito.anyLong(), any(DataStoreRole.class));
+
+        volumeApiServiceImpl.informStorageOfDiskOfferingChange(root, target);
+        verify(dataStoreMgr).getDataStore(30L, DataStoreRole.Primary);
+
+        root.setPoolId(null);
+        volumeApiServiceImpl.informStorageOfDiskOfferingChange(root, target);
+        verify(dataStoreMgr, times(1)).getDataStore(Mockito.anyLong(), any(DataStoreRole.class));
+    }
+
+    @Test
+    public void deployFromVolumeEncryptionMismatchKeepsOffering() {
+        VolumeVO kept = keptRootOnLocalPool(43L);
+        computeOnlyDiskOffering(43L, true, null);
+        DiskOfferingVO encrypted = computeOnlyDiskOffering(42L, true, null);
+        encrypted.setEncrypt(true);
+
+        Assert.assertFalse(volumeApiServiceImpl.takesRootDiskOffering(kept, encrypted));
+        Assert.assertThrows("an offering change refuses it", InvalidParameterValueException.class,
+                () -> volumeApiServiceImpl.reserveRootDiskOfferingChange(kept, encrypted, new ArrayList<>()));
+        Assert.assertEquals(43L, (long) kept.getDiskOfferingId());
+        verify(volumeDaoMock, Mockito.never()).update(Mockito.anyLong(), Mockito.any(VolumeVO.class));
     }
 }

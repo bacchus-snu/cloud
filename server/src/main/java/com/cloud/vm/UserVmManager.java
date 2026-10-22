@@ -26,6 +26,7 @@ import java.util.Set;
 
 import org.apache.cloudstack.api.BaseCmd.HTTPMethod;
 import org.apache.cloudstack.framework.config.ConfigKey;
+import org.apache.cloudstack.resourcelimit.Reserver;
 
 import com.cloud.agent.api.VolumeStatsEntry;
 import com.cloud.exception.ConcurrentOperationException;
@@ -132,6 +133,41 @@ public interface UserVmManager extends UserVmService {
     static int poolVcpuStep(Long domainId) {
         Integer step = VmPoolVcpuStep.valueIn(domainId);
         return step == null || step < 1 ? 1 : step;
+    }
+
+    ConfigKey<Long> VmRootDiskSizeDefault = new ConfigKey<>(ConfigKey.CATEGORY_ADVANCED, Long.class, "vm.root.disk.size.default", "20",
+            "The ROOT disk size, in GiB, of an Instance created from a Template when no root disk size is given. A larger Template size, rounded up " +
+                    "to whole GiB, takes its place, and so does vm.root.disk.size.min when it is larger. ISO-based ROOT disks and data disks are not affected.",
+            true, ConfigKey.Scope.Domain);
+
+    ConfigKey<Long> VmRootDiskSizeMin = new ConfigKey<>(ConfigKey.CATEGORY_ADVANCED, Long.class, "vm.root.disk.size.min", "10",
+            "The smallest root disk size, in GiB, that may be given for an Instance created or reinstalled from a Template. A larger Template size, " +
+                    "rounded up to whole GiB, takes its place. ISO-based ROOT disks and data disks are not affected.",
+            true, ConfigKey.Scope.Domain);
+
+    /**
+     * @return the smallest root disk size in GiB the domain admits for an Instance created from a Template, before the Template's own size
+     */
+    static long rootDiskSizeMinGiB(Long domainId) {
+        Long min = VmRootDiskSizeMin.valueIn(domainId);
+        return min == null || min < 0 ? 0 : min;
+    }
+
+    /**
+     * @return the root disk size in GiB the domain gives an Instance created from a Template when none is given, before the Template's
+     *         own size; never below {@link #rootDiskSizeMinGiB(Long)}, so the default is always an admissible size
+     */
+    static long rootDiskSizeDefaultGiB(Long domainId) {
+        Long size = VmRootDiskSizeDefault.valueIn(domainId);
+        return Math.max(size == null ? 0 : size, rootDiskSizeMinGiB(domainId));
+    }
+
+    /**
+     * @return whether destroying an Instance owned in the domain keeps its ROOT volume when the caller does not say, the inverse of
+     *         {@link #DestroyRootVolumeOnVmDestruction}
+     */
+    static boolean keepRootVolumeByDefault(Long domainId) {
+        return !Boolean.TRUE.equals(DestroyRootVolumeOnVmDestruction.valueIn(domainId));
     }
 
     static final int MAX_USER_DATA_LENGTH_BYTES = 2048;
@@ -242,8 +278,37 @@ public interface UserVmManager extends UserVmService {
     void validatePoolVcpuStep(VirtualMachine.Type vmType, ServiceOffering offering, Integer vcpus, long domainId);
 
     /**
-     * @return the size in bytes of the root volume a deployment from the template creates; sets the root disk size in
-     *         the custom parameters when the root disk offering fixes it
+     * @param boundTemplateRoot whether the root disk default and minimum apply: the root volume is created from the template with a size a
+     *        caller chooses, rather than being an existing volume, made from a snapshot, or re-created at a recorded size
+     * @param domainId the owner's domain, whose {@link #VmRootDiskSizeDefault} and {@link #VmRootDiskSizeMin} bound a root created from a
+     *        disk image template
+     * @return the size in bytes of the root volume of a new Instance; sets the root disk size in the custom parameters when the root disk
+     *         offering fixes it or the default applies
      */
-    long configureCustomRootDiskSize(Map<String, String> customParameters, VMTemplateVO template, HypervisorType hypervisorType, DiskOfferingVO rootDiskOffering);
+    long configureCustomRootDiskSize(Map<String, String> customParameters, VMTemplateVO template, HypervisorType hypervisorType, DiskOfferingVO rootDiskOffering,
+            boolean boundTemplateRoot, long domainId);
+
+    /**
+     * A stopped Instance's change of offering, checked and reserved, still to be applied.
+     */
+    interface PreparedUpgrade {
+        /**
+         * Changes the Instance's offering, the disk offering of its root where the new offering gives one, and the resource counts that
+         * follow. Only the database is touched and nothing is reserved, so it may run inside the caller's transaction.
+         */
+        void apply();
+
+        /**
+         * Tells the storage of the root's new disk offering; called after the transaction that applied the change has committed.
+         */
+        void complete();
+    }
+
+    /**
+     * Checks a stopped Instance's change to the offering, reserves its resources into the given reservations, and makes the change of
+     * the root volume that a change to an offering with a sized root disk offering makes. The caller applies the returned change,
+     * completes it after its transaction commits, and releases the reservations whatever happens.
+     */
+    PreparedUpgrade prepareStoppedVirtualMachineUpgrade(long vmId, long serviceOfferingId, Map<String, String> customParameters, List<Reserver> reservations)
+            throws ResourceAllocationException;
 }

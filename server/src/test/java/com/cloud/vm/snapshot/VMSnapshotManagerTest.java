@@ -67,11 +67,17 @@ import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.apache.cloudstack.resourcelimit.Reserver;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 import org.mockito.Spy;
+
+import com.cloud.utils.db.Transaction;
+import com.cloud.utils.db.TransactionCallbackWithException;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -470,5 +476,86 @@ public class VMSnapshotManagerTest {
         assertTrue(appliedNames.contains(VmDetailConstants.CPU_NUMBER));
         assertTrue(appliedNames.contains(VmDetailConstants.MEMORY));
         assertFalse("UEFI must not be applied from snapshot so that existing UEFI setting is preserved", appliedNames.contains("UEFI"));
+    }
+
+    /** Records, for each step of reverting an Instance's offering, whether it ran inside the revert's transaction. */
+    private List<String> revertOfferingRecordingTheTransaction(State state, Reserver reservation, boolean failInside) throws Exception {
+        UserVmVO instance = mock(UserVmVO.class);
+        when(instance.getId()).thenReturn(TEST_VM_ID);
+        when(instance.getState()).thenReturn(state);
+        when(instance.getServiceOfferingId()).thenReturn(SERVICE_OFFERING_ID);
+        when(_userVMDao.findById(TEST_VM_ID)).thenReturn(instance);
+        when(vmSnapshotVO.getServiceOfferingId()).thenReturn(SERVICE_OFFERING_DIFFERENT_ID);
+        boolean[] inTransaction = {false};
+        List<String> calls = new ArrayList<>();
+        Mockito.doAnswer(invocation -> {
+            calls.add("details:" + inTransaction[0]);
+            return null;
+        }).when(_vmSnapshotMgr).revertCustomServiceOfferingDetailsFromVmSnapshot(any(), any());
+        UserVmManager.PreparedUpgrade upgrade = mock(UserVmManager.PreparedUpgrade.class);
+        when(_userVmManager.prepareStoppedVirtualMachineUpgrade(eq(TEST_VM_ID), eq(SERVICE_OFFERING_DIFFERENT_ID), Mockito.anyMap(), Mockito.anyList()))
+                .thenAnswer(invocation -> {
+                    calls.add("prepare:" + inTransaction[0]);
+                    ((List<Reserver>) invocation.getArgument(3)).add(reservation);
+                    return upgrade;
+                });
+        Mockito.doAnswer(invocation -> {
+            calls.add("apply:" + inTransaction[0]);
+            if (failInside) {
+                throw new CloudRuntimeException("the Instance row could not be updated");
+            }
+            return null;
+        }).when(upgrade).apply();
+        Mockito.doAnswer(invocation -> {
+            calls.add("complete:" + inTransaction[0]);
+            return null;
+        }).when(upgrade).complete();
+        when(_userVmManager.upgradeVirtualMachine(eq(TEST_VM_ID), eq(SERVICE_OFFERING_DIFFERENT_ID), Mockito.anyMap())).thenAnswer(invocation -> {
+            calls.add("upgrade:" + inTransaction[0]);
+            return true;
+        });
+
+        try (MockedStatic<Transaction> transaction = Mockito.mockStatic(Transaction.class)) {
+            transaction.when(() -> Transaction.execute(any(TransactionCallbackWithException.class))).thenAnswer(invocation -> {
+                inTransaction[0] = true;
+                try {
+                    return ((TransactionCallbackWithException<?, ?>) invocation.getArgument(0)).doInTransaction(null);
+                } finally {
+                    inTransaction[0] = false;
+                }
+            });
+            _vmSnapshotMgr.revertServiceOffering(instance, vmSnapshotVO);
+        } catch (CloudRuntimeException e) {
+            assertTrue(e.getMessage(), failInside);
+        }
+        return calls;
+    }
+
+    @Test
+    public void revertingTheOfferingOfAStoppedInstanceReservesBeforeItsTransaction() throws Exception {
+        Reserver reservation = mock(Reserver.class);
+
+        List<String> calls = revertOfferingRecordingTheTransaction(State.Stopped, reservation, false);
+
+        assertEquals(Arrays.asList("prepare:false", "apply:true", "details:true", "complete:false"), calls);
+        verify(reservation).close();
+        verify(_userVmManager, never()).upgradeVirtualMachine(anyLong(), any(), Mockito.anyMap());
+    }
+
+    @Test
+    public void aFailedRevertOfTheOfferingReleasesItsReservations() throws Exception {
+        Reserver reservation = mock(Reserver.class);
+
+        List<String> calls = revertOfferingRecordingTheTransaction(State.Stopped, reservation, true);
+
+        assertEquals(Arrays.asList("prepare:false", "apply:true"), calls);
+        verify(reservation).close();
+    }
+
+    @Test
+    public void revertingTheOfferingOfARunningInstanceScalesItBeforeTheTransaction() throws Exception {
+        List<String> calls = revertOfferingRecordingTheTransaction(State.Running, mock(Reserver.class), false);
+
+        assertEquals(Arrays.asList("upgrade:false", "details:true"), calls);
     }
 }

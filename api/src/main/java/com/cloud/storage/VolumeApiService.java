@@ -29,6 +29,7 @@ import com.cloud.offering.DiskOffering;
 import com.cloud.user.Account;
 import com.cloud.utils.Pair;
 import com.cloud.utils.fsm.NoTransitionException;
+import com.cloud.vm.VirtualMachine;
 
 import org.apache.cloudstack.api.command.user.volume.AssignVolumeCmd;
 import org.apache.cloudstack.api.command.user.volume.AttachVolumeCmd;
@@ -43,6 +44,7 @@ import org.apache.cloudstack.api.command.user.volume.ResizeVolumeCmd;
 import org.apache.cloudstack.api.command.user.volume.UploadVolumeCmd;
 import org.apache.cloudstack.api.response.GetUploadParamsResponse;
 import org.apache.cloudstack.framework.config.ConfigKey;
+import org.apache.cloudstack.resourcelimit.Reserver;
 
 public interface VolumeApiService {
 
@@ -121,7 +123,49 @@ public interface VolumeApiService {
 
     Volume attachVolumeToVM(Long vmId, Long volumeId, Long deviceId, Boolean allowAttachForSharedFS, boolean allowAttachOnRestoring);
 
+    /**
+     * Detaches a volume of an Instance that is being destroyed; a ROOT volume only from a stopped Instance whose hypervisor and storage allow it.
+     */
     Volume detachVolumeViaDestroyVM(long vmId, long volumeId);
+
+    /**
+     * Checks that the Instance's hypervisor and the storage of its ROOT volume let that volume be detached once the Instance is stopped.
+     */
+    void checkRootVolumeDetachSupported(Volume rootVolume, VirtualMachine vm);
+
+    /**
+     * Refuses a ROOT volume that cannot take the disk offering while keeping its size and storage pool, and reserves the change of its
+     * storage tag resource counts into the given reservations; the caller then applies {@link #assignDiskOfferingKeepingSize} and closes
+     * the reservations. Nothing is reserved for a volume already on the disk offering.
+     */
+    void reserveRootDiskOfferingChange(Volume rootVolume, DiskOffering newDiskOffering, List<Reserver> reservations) throws ResourceAllocationException;
+
+    /**
+     * Whether an existing volume that becomes the ROOT volume of an Instance takes the Instance's root disk offering: when that disk
+     * offering is compute-only without a size of its own, is not the volume's, and the volume can take it as it is, with the same
+     * encryption and on a storage pool that suits it. Otherwise the volume keeps its disk offering.
+     */
+    boolean takesRootDiskOffering(Volume volume, DiskOffering rootDiskOffering);
+
+    /**
+     * Gives the volume the disk offering, keeping its size and storage pool, and moves its storage tag resource counts. The caller has
+     * checked that the volume can take it and reserved the storage tag change. Only the database is touched, in one transaction that joins
+     * the caller's when there is one; the caller calls {@link #informStorageOfDiskOfferingChange} once the change has committed.
+     */
+    Volume assignDiskOfferingKeepingSize(Volume volume, DiskOffering diskOffering);
+
+    /**
+     * Tells the storage of the volume's pool about the volume's new disk offering, for a storage driver that keeps settings per disk
+     * offering; nothing for a volume without a pool. It talks to the storage, so it is called after the change has committed.
+     */
+    void informStorageOfDiskOfferingChange(Volume volume, DiskOffering diskOffering);
+
+    /**
+     * @return whether the disk offering is compute-only without a size of its own, so a ROOT volume on it keeps whatever size it has
+     */
+    static boolean isComputeOnlyWithoutSize(DiskOffering diskOffering) {
+        return diskOffering != null && diskOffering.isComputeOnly() && diskOffering.getDiskSize() <= 0;
+    }
 
     Volume detachVolumeFromVM(DetachVolumeCmd cmd);
 

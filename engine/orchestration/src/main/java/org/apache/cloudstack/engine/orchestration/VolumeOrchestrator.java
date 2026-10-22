@@ -1111,7 +1111,7 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
         assert (template.getFormat() != ImageFormat.ISO) : "ISO is not a template.";
 
         if (volume != null) {
-            volume = attachExistingVolumeToVm(vm, deviceId, volume, type);
+            volume = attachExistingVolumeToVm(vm, deviceId, volume, type, offering);
             provideVmInfoToTheStorageVolume(vm, volume);
             return toDiskProfile(volume, offering);
         }
@@ -1208,7 +1208,12 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
         }
     }
 
-    private Volume attachExistingVolumeToVm(VirtualMachine vm, long deviceId, Volume volume, Type type) {
+    /**
+     * An existing volume that becomes the Instance's ROOT volume takes the root disk offering when it can, as a ROOT volume created for
+     * the Instance would have it; the storage tag change was reserved before the Instance was allocated. Allocation runs without a
+     * transaction, so the change has committed when the volume's storage is told of it.
+     */
+    protected Volume attachExistingVolumeToVm(VirtualMachine vm, long deviceId, Volume volume, Type type, DiskOffering rootDiskOffering) {
         VolumeVO volumeVO = _volumeDao.findById(volume.getId());
         if (volumeVO == null) {
             throw new CloudRuntimeException(String.format("Could not find the volume %s in the DB", volume));
@@ -1219,6 +1224,11 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
             volumeVO.setInstanceId(vm.getId());
         }
         _volumeDao.update(volumeVO.getId(), volumeVO);
+        if (type == Type.ROOT && _volumeApiService.takesRootDiskOffering(volumeVO, rootDiskOffering)) {
+            Volume relabelled = _volumeApiService.assignDiskOfferingKeepingSize(volumeVO, rootDiskOffering);
+            _volumeApiService.informStorageOfDiskOfferingChange(relabelled, rootDiskOffering);
+            return relabelled;
+        }
         return volumeVO;
     }
 
@@ -1576,6 +1586,16 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
                 logger.debug("Exception: ", e);
             }
         }
+    }
+
+    @Override
+    public void detachVolumeOfFailedDeployment(long vmId, long volumeId) {
+        VolumeVO volume = _volsDao.findById(volumeId);
+        if (volume == null || !Objects.equals(volume.getInstanceId(), vmId)) {
+            return;
+        }
+        logger.debug("Detaching volume [{}], from which the VM was to be deployed, so that it outlives the failed deployment.", volume);
+        _volsDao.detachVolume(volumeId);
     }
 
     private void destroyVolumeInContext(Volume volume) {

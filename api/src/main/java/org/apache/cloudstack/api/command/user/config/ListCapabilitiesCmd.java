@@ -90,6 +90,9 @@ public class ListCapabilitiesCmd extends BaseCmd {
         response.setDynamicScalingEnabled((Boolean) capabilities.get(ApiConstants.DYNAMIC_SCALING_ENABLED));
         response.setAdditionalConfigEnabled((Boolean) capabilities.get(ApiConstants.ADDITONAL_CONFIG_ENABLED));
         response.setPoolVcpuStep((Integer) capabilities.get(ApiConstants.POOL_VCPU_STEP));
+        response.setRootDiskSizeMin((Long) capabilities.get(ApiConstants.ROOT_DISK_SIZE_MIN));
+        response.setRootDiskSizeDefault((Long) capabilities.get(ApiConstants.ROOT_DISK_SIZE_DEFAULT));
+        response.setKeepRootVolumeDefault((Boolean) capabilities.get(ApiConstants.KEEP_ROOT_VOLUME_DEFAULT));
         if (capabilities.containsKey(ApiConstants.VPN_CUSTOMER_GATEWAY_PARAMETERS)) {
             Map<String, Object> vpnCustomerGatewayParameters = (Map<String, Object>) capabilities.get(ApiConstants.VPN_CUSTOMER_GATEWAY_PARAMETERS);
             response.setVpnCustomerGatewayParameters(vpnCustomerGatewayParameters);

@@ -3619,16 +3619,20 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
     }
 
     private void validateRootVolumeDetachAttach(VolumeVO volume, UserVmVO vm) {
+        checkRootVolumeDetachSupported(volume, vm);
+        if (!(vm.getState() == State.Stopped) || (vm.getState() == State.Destroyed)) {
+            throw new InvalidParameterValueException("Root volume detach can happen only when vm is in states: " + State.Stopped.toString() + " or " + State.Destroyed.toString());
+        }
+    }
+
+    @Override
+    public void checkRootVolumeDetachSupported(Volume rootVolume, VirtualMachine vm) {
         if (!(vm.getHypervisorType() == HypervisorType.XenServer || vm.getHypervisorType() == HypervisorType.VMware || vm.getHypervisorType() == HypervisorType.KVM
                 || vm.getHypervisorType() == HypervisorType.Simulator)) {
             throw new InvalidParameterValueException("Root volume detach is not supported for hypervisor type " + vm.getHypervisorType());
         }
-        if (!(vm.getState() == State.Stopped) || (vm.getState() == State.Destroyed)) {
-            throw new InvalidParameterValueException("Root volume detach can happen only when vm is in states: " + State.Stopped.toString() + " or " + State.Destroyed.toString());
-        }
-
-        if (volume.getPoolId() != null) {
-            StoragePoolVO pool = _storagePoolDao.findById(volume.getPoolId());
+        if (rootVolume.getPoolId() != null) {
+            StoragePoolVO pool = _storagePoolDao.findById(rootVolume.getPoolId());
             if (pool.isManaged()) {
                 throw new InvalidParameterValueException("Root volume detach is not supported for Managed DataStores");
             }
@@ -3638,13 +3642,92 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
     @ActionEvent(eventType = EventTypes.EVENT_VOLUME_DETACH, eventDescription = "detaching volume")
     public Volume detachVolumeViaDestroyVM(long vmId, long volumeId) {
         Account caller = CallContext.current().getCallingAccount();
-        Volume volume = _volsDao.findById(volumeId);
+        VolumeVO volume = _volsDao.findById(volumeId);
         // Permissions check
         _accountMgr.checkAccess(caller, null, true, volume);
+        if (volume.getVolumeType() == Volume.Type.ROOT) {
+            validateRootVolumeDetachAttach(volume, _userVmDao.findById(vmId));
+        }
         return orchestrateDetachVolumeFromVM(vmId, volumeId);
     }
 
-    private Volume orchestrateDetachVolumeFromVM(long vmId, long volumeId) {
+    @Override
+    public void reserveRootDiskOfferingChange(Volume rootVolume, DiskOffering newDiskOffering, List<Reserver> reservations) throws ResourceAllocationException {
+        VolumeVO volume = _volsDao.findById(rootVolume.getId());
+        if (Objects.equals(volume.getDiskOfferingId(), newDiskOffering.getId())) {
+            return;
+        }
+        String mismatch = diskOfferingMismatch(volume, newDiskOffering);
+        if (mismatch != null) {
+            throw new InvalidParameterValueException(mismatch);
+        }
+        _resourceLimitMgr.checkVolumeResourceLimitForDiskOfferingChange(_accountMgr.getAccount(volume.getAccountId()), volume.isDisplayVolume(),
+                volume.getSize(), volume.getSize(), _diskOfferingDao.findByIdIncludingRemoved(volume.getDiskOfferingId()),
+                _diskOfferingDao.findById(newDiskOffering.getId()), reservations);
+    }
+
+    /**
+     * @return why the volume cannot take the disk offering while keeping its size and storage pool, or null when it can
+     */
+    protected String diskOfferingMismatch(Volume volume, DiskOffering newDiskOffering) {
+        DiskOfferingVO currentDiskOffering = _diskOfferingDao.findByIdIncludingRemoved(volume.getDiskOfferingId());
+        DiskOfferingVO diskOffering = _diskOfferingDao.findById(newDiskOffering.getId());
+        if (currentDiskOffering == null || diskOffering == null) {
+            return String.format("Unable to find the disk offerings of volume %s", volume.getUuid());
+        }
+        if (currentDiskOffering.getEncrypt() != diskOffering.getEncrypt()) {
+            return "Cannot change the encryption type of a volume, please check the selected offering";
+        }
+        StoragePoolVO pool = volume.getPoolId() == null ? null : _storagePoolDao.findById(volume.getPoolId());
+        if (pool != null && ((pool.isShared() && diskOffering.isUseLocalStorage()) || (pool.isLocal() && diskOffering.isShared())
+                || !doesStoragePoolSupportDiskOffering(pool, diskOffering))) {
+            return String.format("Volume %s stays on its storage pool, which does not suit disk offering %s", volume.getUuid(), diskOffering.getUuid());
+        }
+        return null;
+    }
+
+    @Override
+    public boolean takesRootDiskOffering(Volume volume, DiskOffering rootDiskOffering) {
+        return VolumeApiService.isComputeOnlyWithoutSize(rootDiskOffering) && !Objects.equals(volume.getDiskOfferingId(), rootDiskOffering.getId())
+                && diskOfferingMismatch(volume, rootDiskOffering) == null;
+    }
+
+    @Override
+    public Volume assignDiskOfferingKeepingSize(Volume volume, DiskOffering newDiskOffering) {
+        VolumeVO volumeVO = _volsDao.findById(volume.getId());
+        if (Objects.equals(volumeVO.getDiskOfferingId(), newDiskOffering.getId())) {
+            return volumeVO;
+        }
+        DiskOfferingVO currentDiskOffering = _diskOfferingDao.findByIdIncludingRemoved(volumeVO.getDiskOfferingId());
+        DiskOfferingVO diskOffering = _diskOfferingDao.findById(newDiskOffering.getId());
+        Long[] minIops = {null};
+        Long[] maxIops = {null};
+        setNewIopsLimits(volumeVO, diskOffering, minIops, maxIops);
+        return Transaction.execute(new TransactionCallback<VolumeVO>() {
+            @Override
+            public VolumeVO doInTransaction(TransactionStatus status) {
+                volumeVO.setDiskOfferingId(diskOffering.getId());
+                volumeVO.setMinIops(minIops[0]);
+                volumeVO.setMaxIops(maxIops[0]);
+                _volsDao.update(volumeVO.getId(), volumeVO);
+                _volumeMgr.saveVolumeDetails(diskOffering.getId(), volumeVO.getId());
+                _resourceLimitMgr.updateVolumeResourceCountForDiskOfferingChange(volumeVO.getAccountId(), volumeVO.isDisplayVolume(), volumeVO.getSize(),
+                        volumeVO.getSize(), currentDiskOffering, diskOffering);
+                return volumeVO;
+            }
+        });
+    }
+
+    @Override
+    public void informStorageOfDiskOfferingChange(Volume volume, DiskOffering diskOffering) {
+        VolumeVO volumeVO = _volsDao.findById(volume.getId());
+        if (volumeVO == null || volumeVO.getPoolId() == null) {
+            return;
+        }
+        updateStorageWithTheNewDiskOffering(volumeVO, _diskOfferingDao.findById(diskOffering.getId()));
+    }
+
+    protected Volume orchestrateDetachVolumeFromVM(long vmId, long volumeId) {
         Volume volume = _volsDao.findById(volumeId);
         VMInstanceVO vm = _vmInstanceDao.findById(vmId);
 

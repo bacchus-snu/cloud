@@ -2531,4 +2531,58 @@ public class ManagementServerImplTest {
             ConfigKey.init(null);
         }
     }
+
+    private Map<String, Object> capabilitiesOfACallerInDomain(long domainId) {
+        Account caller = mock(Account.class);
+        lenient().when(caller.getId()).thenReturn(3L);
+        lenient().when(caller.getDomainId()).thenReturn(domainId);
+        Mockito.doReturn(caller).when(spy).getCaller();
+        ReflectionTestUtils.setField(spy, "networkDao", mock(NetworkDao.class));
+        ReflectionTestUtils.setField(spy, "_imgStoreDao", mock(ImageStoreDao.class));
+        ReflectionTestUtils.setField(spy, "_projectMgr", mock(ProjectManager.class));
+        ReflectionTestUtils.setField(spy, "_configDao", configDao);
+        ReflectionTestUtils.setField(spy, "_accountService", accountManager);
+        lenient().when(configDao.getValue(Config.ApiLimitInterval.key())).thenReturn("1");
+        lenient().when(configDao.getValue(Config.ApiLimitMax.key())).thenReturn("1");
+        lenient().when(configDao.getValue("sharedfsvm.min.cpu.count")).thenReturn("2");
+        lenient().when(configDao.getValue("sharedfsvm.min.ram.size")).thenReturn("1024");
+        ListCapabilitiesCmd cmd = mock(ListCapabilitiesCmd.class);
+        lenient().when(cmd.getDomainId()).thenReturn(null);
+        return spy.listCapabilities(cmd);
+    }
+
+    @Test
+    public void listCapabilitiesReturnsRootDiskBoundsForCallerDomain() {
+        ConfigDepotImpl depot = mock(ConfigDepotImpl.class);
+        lenient().when(depot.getConfigStringValue(UserVmManager.VmRootDiskSizeMin.key(), ConfigKey.Scope.Domain, 7L)).thenReturn("12");
+        lenient().when(depot.getConfigStringValue(UserVmManager.VmRootDiskSizeDefault.key(), ConfigKey.Scope.Domain, 7L)).thenReturn("30");
+        lenient().when(depot.getConfigStringValue(UserVmManager.VmRootDiskSizeMin.key(), ConfigKey.Scope.Domain, 11L)).thenReturn("40");
+        ConfigKey.init(depot);
+        try {
+            Map<String, Object> seven = capabilitiesOfACallerInDomain(7L);
+            Assert.assertEquals(12L, seven.get(ApiConstants.ROOT_DISK_SIZE_MIN));
+            Assert.assertEquals(30L, seven.get(ApiConstants.ROOT_DISK_SIZE_DEFAULT));
+
+            Map<String, Object> nine = capabilitiesOfACallerInDomain(9L);
+            Assert.assertEquals(10L, nine.get(ApiConstants.ROOT_DISK_SIZE_MIN));
+            Assert.assertEquals(20L, nine.get(ApiConstants.ROOT_DISK_SIZE_DEFAULT));
+
+            Assert.assertEquals("a default below the minimum is the minimum", 40L, capabilitiesOfACallerInDomain(11L).get(ApiConstants.ROOT_DISK_SIZE_DEFAULT));
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
+
+    @Test
+    public void listCapabilitiesReturnsKeepRootDefault() {
+        ConfigDepotImpl depot = mock(ConfigDepotImpl.class);
+        lenient().when(depot.getConfigStringValue(UserVmManager.DestroyRootVolumeOnVmDestruction.key(), ConfigKey.Scope.Domain, 7L)).thenReturn("true");
+        ConfigKey.init(depot);
+        try {
+            Assert.assertEquals(Boolean.FALSE, capabilitiesOfACallerInDomain(7L).get(ApiConstants.KEEP_ROOT_VOLUME_DEFAULT));
+            Assert.assertEquals(Boolean.TRUE, capabilitiesOfACallerInDomain(9L).get(ApiConstants.KEEP_ROOT_VOLUME_DEFAULT));
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
 }

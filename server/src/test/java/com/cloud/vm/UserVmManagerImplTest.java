@@ -82,6 +82,7 @@ import org.apache.cloudstack.api.command.user.vm.UpdateVmNicCmd;
 import org.apache.cloudstack.api.command.user.volume.ResizeVolumeCmd;
 import org.apache.cloudstack.backup.BackupManager;
 import org.apache.cloudstack.backup.BackupProvider;
+import org.apache.cloudstack.backup.Backup;
 import org.apache.cloudstack.backup.BackupVO;
 import org.apache.cloudstack.backup.dao.BackupDao;
 import org.apache.cloudstack.backup.dao.BackupScheduleDao;
@@ -92,6 +93,7 @@ import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStore;
 import org.apache.cloudstack.engine.subsystem.api.storage.Scope;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeDataFactory;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeInfo;
+import org.apache.cloudstack.engine.subsystem.api.storage.VolumeService;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.impl.ConfigDepotImpl;
 import org.apache.cloudstack.framework.jobs.impl.AsyncJobVO;
@@ -189,6 +191,7 @@ import com.cloud.storage.StorageManager;
 import com.cloud.storage.VMTemplateVO;
 import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeApiService;
+import com.cloud.storage.VolumeApiServiceImpl;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.DiskOfferingDao;
 import com.cloud.storage.dao.GuestOSDao;
@@ -213,6 +216,8 @@ import com.cloud.user.dao.UserDataDao;
 import com.cloud.uservm.UserVm;
 import com.cloud.utils.Pair;
 import com.cloud.utils.db.EntityManager;
+import com.cloud.utils.db.Transaction;
+import com.cloud.utils.db.TransactionCallback;
 import com.cloud.utils.db.UUIDManager;
 import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.utils.exception.ExceptionProxyObject;
@@ -883,7 +888,7 @@ public class UserVmManagerImplTest {
         Mockito.when(diskfferingVo.getDiskSize()).thenReturn(offeringRootDiskSize);
 
         Mockito.when(volumeApiService.validateVolumeSizeInBytes(Mockito.anyLong())).thenReturn(true);
-        long rootDiskSize = userVmManagerImpl.configureCustomRootDiskSize(customParameters, template, Hypervisor.HypervisorType.KVM, diskfferingVo);
+        long rootDiskSize = userVmManagerImpl.configureCustomRootDiskSize(customParameters, template, Hypervisor.HypervisorType.KVM, diskfferingVo, true, 1L);
 
         Assert.assertEquals(expectedRootDiskSize, rootDiskSize);
         Mockito.verify(userVmManagerImpl, times(timesVerifyIfHypervisorSupports)).verifyIfHypervisorSupportsRootdiskSizeOverride(Mockito.any());
@@ -4842,6 +4847,7 @@ public class UserVmManagerImplTest {
                 nullable(String.class), eq(false), eq(false));
         assertNull("the move was approved before the Instance existed", request.getValue().getApprovalInstanceId());
         verify(volumeDaoMock, never()).detachVolume(Mockito.anyLong());
+        verify(volumeOrchestrationService, never()).detachVolumeOfFailedDeployment(anyLong(), anyLong());
     }
 
     @Test
@@ -4861,10 +4867,30 @@ public class UserVmManagerImplTest {
 
         assertThrows(VolumeMoveRequiredException.class, () -> userVmManagerImpl.startVirtualMachine(deployFromVolumeCmd()));
 
-        verify(volumeDaoMock).detachVolume(201L);
+        InOrder order = Mockito.inOrder(volumeOrchestrationService, virtualMachineManager);
+        order.verify(volumeOrchestrationService).detachVolumeOfFailedDeployment(MOVING_VM_ID, 201L);
+        order.verify(virtualMachineManager).stateTransitTo(stopped, VirtualMachine.Event.OperationFailedToError, null);
         verify(volumeOrchestrationService, never()).destroyVolume(kept);
         verify(volumeOrchestrationService).destroyVolume(data);
         verify(virtualMachineManager, never()).relocateStoppedVm(anyString(), anyList(), anyLong());
+    }
+
+    @Test
+    public void aFailedDeploymentWhoseVolumeCouldNotBeDetachedLeavesTheInstanceOutOfError() throws Exception {
+        UserVmVO stopped = stoppedKvmVm(VirtualMachine.State.Stopped);
+        when(userVmDao.findById(MOVING_VM_ID)).thenReturn(stopped);
+        PlacementVerdict verdict = approvedMoveToHostB();
+        when(placementService.approvedMove(any(PlacementRequest.class), eq(true), eq("approval")))
+                .thenThrow(new VolumeMoveRequiredException("The approved move has expired", 1L, verdict));
+        doThrow(new CloudRuntimeException("the database is unavailable")).when(volumeOrchestrationService).detachVolumeOfFailedDeployment(MOVING_VM_ID, 201L);
+
+        VolumeMoveRequiredException e = assertThrows(VolumeMoveRequiredException.class, () -> userVmManagerImpl.startVirtualMachine(deployFromVolumeCmd()));
+
+        assertTrue(e.getMessage(), e.getMessage().contains("expired"));
+        verify(virtualMachineManager, never()).stateTransitTo(any(), eq(VirtualMachine.Event.OperationFailedToError), any());
+        verify(volumeOrchestrationService, never()).destroyVolume(any());
+        verify(alertManager).sendAlert(eq(AlertManager.AlertType.ALERT_TYPE_USERVM), eq(1L), any(), eq("Failed to deploy Instance [ID: moving-vm]"),
+                Mockito.argThat(body -> body.contains("volume [201]") && !body.contains("host")));
     }
 
     @Test
@@ -4949,5 +4975,774 @@ public class UserVmManagerImplTest {
 
         assertTrue(e.getMessage(), e.getMessage().contains("nothing was moved"));
         verify(virtualMachineManager, never()).relocateStoppedVm(anyString(), anyList(), anyLong());
+    }
+
+    private static final long KEEP_VM_ID = 5151L;
+    private static final long KEEP_ROOT_ID = 5152L;
+    private static final long KEEP_DOMAIN_ID = 7L;
+
+    private UserVmVO vmToDestroy(VirtualMachine.State state) throws Exception {
+        UserVmVO vm = mock(UserVmVO.class);
+        lenient().when(vm.getId()).thenReturn(KEEP_VM_ID);
+        lenient().when(vm.getUuid()).thenReturn("keep-vm");
+        lenient().when(vm.getState()).thenReturn(state);
+        lenient().when(vm.getUserVmType()).thenReturn("User");
+        lenient().when(vm.getDomainId()).thenReturn(KEEP_DOMAIN_ID);
+        lenient().when(vm.getAccountId()).thenReturn(5L);
+        lenient().when(vm.getHypervisorType()).thenReturn(Hypervisor.HypervisorType.KVM);
+        lenient().when(vm.getServiceOfferingId()).thenReturn(20L);
+        lenient().when(userVmDao.findById(KEEP_VM_ID)).thenReturn(vm);
+        lenient().doReturn(vm).when(userVmManagerImpl).stopVirtualMachine(anyLong(), anyBoolean());
+        lenient().doReturn(vm).when(userVmManagerImpl).destroyVm(eq(KEEP_VM_ID), anyBoolean());
+        lenient().doReturn(true).when(userVmManagerImpl).expunge(vm);
+        return vm;
+    }
+
+    /** The detach answers with what the volume DAO does to a detached ROOT volume. */
+    private VolumeVO rootToKeep() {
+        VolumeVO root = new VolumeVO(Volume.Type.ROOT, "ROOT-5151", 1L, KEEP_DOMAIN_ID, 5L, 40L, Storage.ProvisioningType.THIN, 20L * GiB_TO_BYTES,
+                null, null, null);
+        ReflectionTestUtils.setField(root, "id", KEEP_ROOT_ID);
+        root.setInstanceId(KEEP_VM_ID);
+        root.setDeviceId(0L);
+        root.setState(Volume.State.Ready);
+        root.setTemplateId(30L);
+        root.setPoolId(12L);
+        lenient().when(volumeDaoMock.getInstanceRootVolume(KEEP_VM_ID)).thenReturn(root);
+        lenient().when(volumeDaoMock.findById(KEEP_ROOT_ID)).thenReturn(root);
+        lenient().doAnswer(invocation -> {
+            root.setInstanceId(null);
+            root.setDeviceId(null);
+            root.setVolumeType(Volume.Type.DATADISK);
+            return root;
+        }).when(volumeApiService).detachVolumeViaDestroyVM(KEEP_VM_ID, KEEP_ROOT_ID);
+        return root;
+    }
+
+    private DestroyVMCmd destroyCmd(Boolean keepRootVolume) {
+        DestroyVMCmd cmd = mock(DestroyVMCmd.class);
+        lenient().when(cmd.getId()).thenReturn(KEEP_VM_ID);
+        lenient().when(cmd.getExpunge()).thenReturn(false);
+        lenient().when(cmd.getKeepRootVolume()).thenReturn(keepRootVolume);
+        return cmd;
+    }
+
+    private UserVm destroyAsTheApiDoes(DestroyVMCmd cmd) throws Exception {
+        CallContext callContext = mock(CallContext.class);
+        lenient().when(callContext.getCallingAccount()).thenReturn(callerAccount);
+        try (MockedStatic<CallContext> mockedCallContext = mockStatic(CallContext.class);
+             MockedStatic<UsageEventUtils> ignored = mockStatic(UsageEventUtils.class)) {
+            mockedCallContext.when(CallContext::current).thenReturn(callContext);
+            mockedCallContext.when(() -> CallContext.register(callContext, ApiCommandResourceType.Volume)).thenReturn(callContext);
+            return userVmManagerImpl.destroyVm(cmd, true);
+        }
+    }
+
+    @Test
+    public void destroyKeepsRootAsStandaloneVolumeByDefault() throws Exception {
+        UserVmVO vm = vmToDestroy(VirtualMachine.State.Running);
+        VolumeVO root = rootToKeep();
+        VolumeVO data = mock(VolumeVO.class);
+        lenient().when(data.getId()).thenReturn(5153L);
+        lenient().when(data.getInstanceId()).thenReturn(KEEP_VM_ID);
+        when(volumeDaoMock.findByInstanceAndType(KEEP_VM_ID, Volume.Type.DATADISK)).thenReturn(List.of(data));
+
+        UserVm result = destroyAsTheApiDoes(destroyCmd(null));
+
+        assertEquals(vm, result);
+        InOrder order = Mockito.inOrder(userVmManagerImpl, volumeApiService, backupManager);
+        order.verify(volumeApiService).checkRootVolumeDetachSupported(root, vm);
+        order.verify(userVmManagerImpl).stopVirtualMachine(KEEP_VM_ID, false);
+        order.verify(volumeApiService).detachVolumeViaDestroyVM(KEEP_VM_ID, KEEP_ROOT_ID);
+        order.verify(volumeApiService).detachVolumeViaDestroyVM(KEEP_VM_ID, 5153L);
+        order.verify(backupManager).checkAndRemoveBackupOfferingBeforeExpunge(vm);
+        order.verify(userVmManagerImpl).destroyVm(KEEP_VM_ID, true);
+        order.verify(userVmManagerImpl).expunge(vm);
+        verify(userVmManagerImpl, never()).checkExpungeVmPermission(any(), any());
+        verify(volumeApiService, never()).destroyVolume(eq(KEEP_ROOT_ID), any(), anyBoolean(), anyBoolean(), any());
+
+        when(volumeDataFactory.getVolume(KEEP_ROOT_ID)).thenReturn(volumeInfo);
+        when(volumeInfo.getDataStore()).thenReturn(primaryDataStore);
+        when(primaryDataStore.getScope()).thenReturn(scopeMock);
+        when(scopeMock.getScopeType()).thenReturn(ScopeType.HOST);
+        when(volumeInfo.getTemplateId()).thenAnswer(invocation -> root.getTemplateId());
+        when(volumeInfo.getInstanceId()).thenAnswer(invocation -> root.getInstanceId());
+        assertEquals("an Instance is deployed from the kept root", volumeInfo, userVmManagerImpl.getVolume(KEEP_ROOT_ID, null, false));
+    }
+
+    @Test
+    public void destroyWithKeepFalseUsesStockPath() throws Exception {
+        UserVmVO vm = vmToDestroy(VirtualMachine.State.Running);
+        VolumeVO root = rootToKeep();
+
+        destroyAsTheApiDoes(destroyCmd(false));
+
+        verify(userVmManagerImpl).stopVirtualMachine(KEEP_VM_ID, false);
+        verify(userVmManagerImpl).destroyVm(KEEP_VM_ID, false);
+        verify(userVmManagerImpl, never()).expunge(vm);
+        verify(volumeApiService, never()).detachVolumeViaDestroyVM(KEEP_VM_ID, KEEP_ROOT_ID);
+        verify(volumeApiService, never()).checkRootVolumeDetachSupported(any(), any());
+        assertEquals("the root stays with the destroyed Instance", Long.valueOf(KEEP_VM_ID), root.getInstanceId());
+    }
+
+    @Test
+    public void keepRootRefusedWithVmSnapshots() throws Exception {
+        vmToDestroy(VirtualMachine.State.Running);
+        rootToKeep();
+        when(vmSnapshotDaoMock.findByVm(KEEP_VM_ID)).thenReturn(List.of(mock(VMSnapshotVO.class)));
+
+        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> destroyAsTheApiDoes(destroyCmd(null)));
+
+        assertTrue(e.getMessage(), e.getMessage().contains("Instance Snapshots"));
+        assertTrue(e.getMessage(), e.getMessage().contains(ApiConstants.KEEP_ROOT_VOLUME + "=false"));
+        verify(userVmManagerImpl, never()).stopVirtualMachine(anyLong(), anyBoolean());
+        verify(volumeApiService, never()).detachVolumeViaDestroyVM(anyLong(), anyLong());
+        verify(userVmManagerImpl, never()).destroyVm(eq(KEEP_VM_ID), anyBoolean());
+    }
+
+    @Test
+    public void keepRootRefusedForAnInstanceBetweenStates() throws Exception {
+        vmToDestroy(VirtualMachine.State.Migrating);
+        rootToKeep();
+
+        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> destroyAsTheApiDoes(destroyCmd(true)));
+
+        assertTrue(e.getMessage(), e.getMessage().contains("Migrating"));
+        verify(userVmManagerImpl, never()).stopVirtualMachine(anyLong(), anyBoolean());
+    }
+
+    @Test
+    public void anInstanceWithoutDataInItsRootIsDestroyedWithItsRoot() throws Exception {
+        UserVmVO failed = vmToDestroy(VirtualMachine.State.Error);
+        VolumeVO root = rootToKeep();
+
+        destroyAsTheApiDoes(destroyCmd(null));
+
+        verify(userVmManagerImpl).destroyVm(KEEP_VM_ID, false);
+        verify(volumeApiService, never()).detachVolumeViaDestroyVM(KEEP_VM_ID, KEEP_ROOT_ID);
+
+        when(failed.getState()).thenReturn(VirtualMachine.State.Stopped);
+        root.setState(Volume.State.Allocated);
+        destroyAsTheApiDoes(destroyCmd(null));
+
+        verify(userVmManagerImpl, times(2)).destroyVm(KEEP_VM_ID, false);
+        verify(volumeApiService, never()).detachVolumeViaDestroyVM(KEEP_VM_ID, KEEP_ROOT_ID);
+        verify(userVmManagerImpl, never()).expunge(failed);
+    }
+
+    @Test
+    public void aRootThatStaysAttachedIsNeverExpungedWithTheInstance() throws Exception {
+        UserVmVO vm = vmToDestroy(VirtualMachine.State.Running);
+        VolumeVO root = rootToKeep();
+        doReturn(null).when(volumeApiService).detachVolumeViaDestroyVM(KEEP_VM_ID, KEEP_ROOT_ID);
+
+        CloudRuntimeException e = assertThrows(CloudRuntimeException.class, () -> destroyAsTheApiDoes(destroyCmd(true)));
+
+        assertTrue(e.getMessage(), e.getMessage().contains(root.getUuid()));
+        verify(userVmManagerImpl, never()).destroyVm(eq(KEEP_VM_ID), anyBoolean());
+        verify(userVmManagerImpl, never()).expunge(vm);
+        verify(backupManager, never()).checkAndRemoveBackupOfferingBeforeExpunge(any());
+    }
+
+    @Test
+    public void keptRootStaysInPrimaryStorageCount() throws Exception {
+        ConfigDepotImpl depot = mock(ConfigDepotImpl.class);
+        lenient().when(depot.getConfigStringValue(UserVmManager.DestroyRootVolumeOnVmDestruction.key(), ConfigKey.Scope.Domain, KEEP_DOMAIN_ID)).thenReturn("true");
+        ConfigKey.init(depot);
+        try {
+            VolumeService engineVolumeService = mock(VolumeService.class);
+            ReflectionTestUtils.setField(userVmManagerImpl, "_volService", engineVolumeService);
+            UserVmVO vm = vmToDestroy(VirtualMachine.State.Stopped);
+            VolumeVO root = rootToKeep();
+
+            destroyAsTheApiDoes(destroyCmd(true));
+
+            verify(engineVolumeService, never()).destroyVolume(anyLong());
+            verify(volumeApiService, never()).destroyVolume(eq(KEEP_ROOT_ID), any(), anyBoolean(), anyBoolean(), any());
+            verify(volumeOrchestrationService, never()).destroyVolume(root);
+            verify(resourceLimitMgr, never()).decrementVolumeResourceCount(anyLong(), any(), any(), any(), any());
+            verify(resourceLimitMgr, never()).decrementVolumePrimaryStorageResourceCount(anyLong(), any(), any(), any());
+            InOrder order = Mockito.inOrder(volumeApiService, userVmManagerImpl);
+            order.verify(volumeApiService).detachVolumeViaDestroyVM(KEEP_VM_ID, KEEP_ROOT_ID);
+            order.verify(userVmManagerImpl).destroyVm(KEEP_VM_ID, true);
+            order.verify(userVmManagerImpl).expunge(vm);
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
+
+    @Test
+    public void keepingTheRootOfAnInstanceAlreadyDestroyedIsRefused() throws Exception {
+        UserVmVO vm = vmToDestroy(VirtualMachine.State.Destroyed);
+        rootToKeep();
+
+        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> destroyAsTheApiDoes(destroyCmd(true)));
+
+        assertTrue(e.getMessage(), e.getMessage().contains("already destroyed"));
+        verify(userVmManagerImpl, never()).destroyVm(eq(KEEP_VM_ID), anyBoolean());
+        verify(userVmManagerImpl, never()).expunge(vm);
+        assertEquals("without asking, a destroyed Instance stays as it is", vm, destroyAsTheApiDoes(destroyCmd(null)));
+    }
+
+    @Test
+    public void aRootThatCannotBeDetachedGoesWithTheInstanceUnlessKeepingWasAsked() throws Exception {
+        UserVmVO vm = vmToDestroy(VirtualMachine.State.Running);
+        rootToKeep();
+        doThrow(new InvalidParameterValueException("Root volume detach is not supported for hypervisor type Hyperv")).when(volumeApiService)
+                .checkRootVolumeDetachSupported(any(), any());
+
+        destroyAsTheApiDoes(destroyCmd(null));
+
+        verify(userVmManagerImpl).destroyVm(KEEP_VM_ID, false);
+        verify(userVmManagerImpl, never()).expunge(vm);
+        verify(volumeApiService, never()).detachVolumeViaDestroyVM(KEEP_VM_ID, KEEP_ROOT_ID);
+
+        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> destroyAsTheApiDoes(destroyCmd(true)));
+
+        assertTrue(e.getMessage(), e.getMessage().contains("Hyperv"));
+        assertTrue(e.getMessage(), e.getMessage().contains(ApiConstants.KEEP_ROOT_VOLUME + "=false"));
+        verify(userVmManagerImpl, times(1)).stopVirtualMachine(anyLong(), anyBoolean());
+    }
+
+    @Test
+    public void anInstanceWithoutARootIsExpungedWhenItsRootIsKept() throws Exception {
+        UserVmVO vm = vmToDestroy(VirtualMachine.State.Stopped);
+        lenient().when(volumeDaoMock.getInstanceRootVolume(KEEP_VM_ID)).thenReturn(null);
+
+        destroyAsTheApiDoes(destroyCmd(null));
+
+        verify(userVmManagerImpl).destroyVm(KEEP_VM_ID, true);
+        verify(userVmManagerImpl).expunge(vm);
+        verify(volumeApiService, never()).detachVolumeViaDestroyVM(anyLong(), anyLong());
+    }
+
+    @Test
+    public void backupsBlockKeepingTheRootBeforeAnythingChanges() throws Exception {
+        UserVmVO vm = vmToDestroy(VirtualMachine.State.Running);
+        rootToKeep();
+        lenient().when(vm.getBackupOfferingId()).thenReturn(9L);
+        lenient().when(vm.getDataCenterId()).thenReturn(zoneId);
+        when(backupDao.listByVmIdAndOffering(zoneId, KEEP_VM_ID, 9L)).thenReturn(List.of(mock(Backup.class)));
+
+        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> destroyAsTheApiDoes(destroyCmd(null)));
+
+        assertTrue(e.getMessage(), e.getMessage().startsWith("Unable to keep the ROOT volume of Instance "));
+        assertTrue(e.getMessage(), e.getMessage().contains(ApiConstants.KEEP_ROOT_VOLUME + "=false"));
+        verify(userVmManagerImpl, never()).stopVirtualMachine(anyLong(), anyBoolean());
+        verify(backupManager, never()).checkAndRemoveBackupOfferingBeforeExpunge(any());
+    }
+
+    @Test
+    public void backupsBlockExpungingAnInstanceWithoutARoot() throws Exception {
+        UserVmVO vm = vmToDestroy(VirtualMachine.State.Stopped);
+        lenient().when(volumeDaoMock.getInstanceRootVolume(KEEP_VM_ID)).thenReturn(null);
+        lenient().when(vm.getBackupOfferingId()).thenReturn(9L);
+        lenient().when(vm.getDataCenterId()).thenReturn(zoneId);
+        when(backupDao.listByVmIdAndOffering(zoneId, KEEP_VM_ID, 9L)).thenReturn(List.of(mock(Backup.class)));
+
+        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> destroyAsTheApiDoes(destroyCmd(null)));
+
+        assertTrue(e.getMessage(), e.getMessage().startsWith("Unable to expunge Instance "));
+        assertTrue(e.getMessage(), e.getMessage().contains(ApiConstants.KEEP_ROOT_VOLUME + "=false"));
+        verify(userVmManagerImpl, never()).stopVirtualMachine(anyLong(), anyBoolean());
+    }
+
+    @Test
+    public void keepRootDefaultFollowsDestroyRootSetting() throws Exception {
+        ConfigDepotImpl depot = mock(ConfigDepotImpl.class);
+        lenient().when(depot.getConfigStringValue(UserVmManager.DestroyRootVolumeOnVmDestruction.key(), ConfigKey.Scope.Domain, KEEP_DOMAIN_ID)).thenReturn("true");
+        ConfigKey.init(depot);
+        try {
+            assertFalse(UserVmManager.keepRootVolumeByDefault(KEEP_DOMAIN_ID));
+            assertTrue(UserVmManager.keepRootVolumeByDefault(9L));
+            VolumeService engineVolumeService = mock(VolumeService.class);
+            ReflectionTestUtils.setField(userVmManagerImpl, "_volService", engineVolumeService);
+            vmToDestroy(VirtualMachine.State.Running);
+            VolumeVO root = rootToKeep();
+
+            destroyAsTheApiDoes(destroyCmd(null));
+
+            verify(userVmManagerImpl).destroyVm(KEEP_VM_ID, false);
+            verify(engineVolumeService).destroyVolume(KEEP_ROOT_ID);
+            verify(volumeApiService, never()).detachVolumeViaDestroyVM(KEEP_VM_ID, KEEP_ROOT_ID);
+
+            destroyAsTheApiDoes(destroyCmd(true));
+
+            verify(volumeApiService).detachVolumeViaDestroyVM(KEEP_VM_ID, KEEP_ROOT_ID);
+            verify(userVmManagerImpl).destroyVm(KEEP_VM_ID, true);
+            verify(engineVolumeService, times(1)).destroyVolume(KEEP_ROOT_ID);
+            assertNull(root.getInstanceId());
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
+
+    private VMTemplateVO templateOfSize(long bytes) {
+        VMTemplateVO template = mock(VMTemplateVO.class);
+        lenient().when(template.getSize()).thenReturn(bytes);
+        lenient().when(template.getFormat()).thenReturn(Storage.ImageFormat.QCOW2);
+        return template;
+    }
+
+    private DiskOfferingVO computeOnlyRootOffering(long fixedSizeBytes) {
+        DiskOfferingVO offering = mock(DiskOfferingVO.class);
+        lenient().when(offering.isComputeOnly()).thenReturn(true);
+        lenient().when(offering.getDiskSize()).thenReturn(fixedSizeBytes);
+        return offering;
+    }
+
+    private long rootSize(Map<String, String> parameters, VMTemplateVO template, long domainId) {
+        return userVmManagerImpl.configureCustomRootDiskSize(parameters, template, Hypervisor.HypervisorType.KVM, computeOnlyRootOffering(0L), true, domainId);
+    }
+
+    private static Map<String, String> rootDiskSizeGiB(String size) {
+        Map<String, String> parameters = new HashMap<>();
+        parameters.put(VmDetailConstants.ROOT_DISK_SIZE, size);
+        return parameters;
+    }
+
+    @Test
+    public void rootDefaultsTo20GiBWhenAbsent() {
+        Map<String, String> parameters = new HashMap<>();
+
+        assertEquals(20L * GiB_TO_BYTES, rootSize(parameters, templateOfSize(2362232013L), 1L));
+        assertEquals("20", parameters.get(VmDetailConstants.ROOT_DISK_SIZE));
+    }
+
+    @Test
+    public void rootDefaultUsesTemplateSizeWhenLarger() {
+        Map<String, String> parameters = new HashMap<>();
+
+        assertEquals(25L * GiB_TO_BYTES, rootSize(parameters, templateOfSize(24L * GiB_TO_BYTES + GiB_TO_BYTES / 2), 1L));
+        assertEquals("25", parameters.get(VmDetailConstants.ROOT_DISK_SIZE));
+    }
+
+    @Test
+    public void rootBelowFloorRejectedNamingFloor() {
+        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class,
+                () -> rootSize(rootDiskSizeGiB("9"), templateOfSize(2L * GiB_TO_BYTES), 1L));
+
+        assertTrue(e.getMessage(), e.getMessage().contains("10"));
+        assertEquals(10L * GiB_TO_BYTES, rootSize(rootDiskSizeGiB("10"), templateOfSize(2L * GiB_TO_BYTES), 1L));
+    }
+
+    @Test
+    public void rootBelowTemplateRejected() {
+        VMTemplateVO template = templateOfSize(12L * GiB_TO_BYTES + GiB_TO_BYTES / 2);
+
+        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> rootSize(rootDiskSizeGiB("12"), template, 1L));
+
+        assertTrue(e.getMessage(), e.getMessage().contains("13"));
+        assertEquals(13L * GiB_TO_BYTES, rootSize(rootDiskSizeGiB("13"), template, 1L));
+    }
+
+    @Test
+    public void rootBoundsAreTheOwnersDomainSettings() {
+        ConfigDepotImpl depot = mock(ConfigDepotImpl.class);
+        lenient().when(depot.getConfigStringValue(UserVmManager.VmRootDiskSizeDefault.key(), ConfigKey.Scope.Domain, 7L)).thenReturn("40");
+        lenient().when(depot.getConfigStringValue(UserVmManager.VmRootDiskSizeMin.key(), ConfigKey.Scope.Domain, 7L)).thenReturn("30");
+        lenient().when(depot.getConfigStringValue(UserVmManager.VmRootDiskSizeDefault.key(), ConfigKey.Scope.Domain, 8L)).thenReturn("5");
+        ConfigKey.init(depot);
+        try {
+            assertEquals(40L * GiB_TO_BYTES, rootSize(new HashMap<>(), templateOfSize(2L * GiB_TO_BYTES), 7L));
+            InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class,
+                    () -> rootSize(rootDiskSizeGiB("29"), templateOfSize(2L * GiB_TO_BYTES), 7L));
+            assertTrue(e.getMessage(), e.getMessage().contains("30"));
+            assertEquals("a default below the minimum gives the minimum", 10L * GiB_TO_BYTES, rootSize(new HashMap<>(), templateOfSize(2L * GiB_TO_BYTES), 8L));
+            assertEquals(20L * GiB_TO_BYTES, rootSize(new HashMap<>(), templateOfSize(2L * GiB_TO_BYTES), 9L));
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
+
+    @Test
+    public void isoVolumeAndSnapshotRootsKeepTheirSizes() {
+        VMTemplateVO iso = templateOfSize(GiB_TO_BYTES / 2);
+        when(iso.getFormat()).thenReturn(Storage.ImageFormat.ISO);
+        Map<String, String> isoParameters = new HashMap<>();
+
+        assertEquals(GiB_TO_BYTES / 2, rootSize(isoParameters, iso, 1L));
+        assertFalse(isoParameters.containsKey(VmDetailConstants.ROOT_DISK_SIZE));
+        assertEquals(5L * GiB_TO_BYTES, rootSize(rootDiskSizeGiB("5"), iso, 1L));
+
+        Map<String, String> fromVolume = new HashMap<>();
+        assertEquals(2L * GiB_TO_BYTES, userVmManagerImpl.configureCustomRootDiskSize(fromVolume, templateOfSize(2L * GiB_TO_BYTES), Hypervisor.HypervisorType.KVM,
+                computeOnlyRootOffering(0L), false, 1L));
+        assertFalse(fromVolume.containsKey(VmDetailConstants.ROOT_DISK_SIZE));
+    }
+
+    @Test
+    public void dataDiskRangeUnchanged() {
+        VolumeApiServiceImpl volumes = new VolumeApiServiceImpl() { };
+        ReflectionTestUtils.setField(userVmManagerImpl, "_volumeService", volumes);
+        ConfigDepotImpl depot = mock(ConfigDepotImpl.class);
+        ConfigKey.init(depot);
+        try {
+            volumes.validateCustomDiskOfferingSizeRange(1L);
+            assertThrows(InvalidParameterValueException.class, () -> volumes.validateCustomDiskOfferingSizeRange(2048L));
+            assertThrows(InvalidParameterValueException.class, () -> volumes.validateVolumeSizeInBytes(2048L * GiB_TO_BYTES));
+            assertThrows(InvalidParameterValueException.class, () -> rootSize(rootDiskSizeGiB("2048"), templateOfSize(2L * GiB_TO_BYTES), 1L));
+
+            lenient().when(depot.getConfigStringValue(VolumeOrchestrationService.CustomDiskOfferingMaxSize.key(), ConfigKey.Scope.Global, null)).thenReturn("65536");
+            lenient().when(depot.getConfigStringValue(VolumeOrchestrationService.MaxVolumeSize.key(), ConfigKey.Scope.Global, null)).thenReturn("65536");
+
+            volumes.validateCustomDiskOfferingSizeRange(1L);
+            volumes.validateCustomDiskOfferingSizeRange(2048L);
+            assertTrue("a data disk and a resize take the same check", volumes.validateVolumeSizeInBytes(2048L * GiB_TO_BYTES));
+            assertEquals(2048L * GiB_TO_BYTES, rootSize(rootDiskSizeGiB("2048"), templateOfSize(2L * GiB_TO_BYTES), 1L));
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
+
+    @Test
+    public void restoreWithRootBelowFloorRejected() throws Exception {
+        RestoreVMCmd cmd = mock(RestoreVMCmd.class);
+        when(cmd.getVmId()).thenReturn(vmId);
+        when(cmd.getTemplateId()).thenReturn(null);
+        when(cmd.getRootDiskOfferingId()).thenReturn(null);
+        when(cmd.getDetails()).thenReturn(rootDiskSizeGiB("9"));
+        when(userVmVoMock.getTemplateId()).thenReturn(templateId);
+        lenient().when(userVmVoMock.getDomainId()).thenReturn(1L);
+        doReturn(false).when(userVmManagerImpl).isVMPartOfAnyCKSCluster(userVmVoMock);
+        VMTemplateVO template = templateOfSize(2L * GiB_TO_BYTES);
+        when(templateDao.findById(templateId)).thenReturn(template);
+
+        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> userVmManagerImpl.restoreVM(cmd));
+
+        assertTrue(e.getMessage(), e.getMessage().contains("10"));
+        verify(virtualMachineManager, never()).restoreVirtualMachine(anyLong(), any(), any(), anyBoolean(), any());
+
+        when(cmd.getDetails()).thenReturn(rootDiskSizeGiB("10"));
+        userVmManagerImpl.restoreVM(cmd);
+        verify(virtualMachineManager).restoreVirtualMachine(anyLong(), isNull(), isNull(), eq(false), any());
+    }
+
+    private static final long OFFERING_CHANGE_VM_ID = 6161L;
+
+    private ServiceOfferingVO offeringWithRoot(long id, boolean strict, long diskOfferingId, Long vgpuProfileId) {
+        ServiceOfferingVO offering = mock(ServiceOfferingVO.class);
+        lenient().when(offering.getId()).thenReturn(id);
+        lenient().when(offering.getCpu()).thenReturn(4);
+        lenient().when(offering.getRamSize()).thenReturn(4096);
+        lenient().when(offering.getSpeed()).thenReturn(2000);
+        lenient().when(offering.getState()).thenReturn(ServiceOffering.State.Active);
+        lenient().when(offering.getDiskOfferingStrictness()).thenReturn(strict);
+        lenient().when(offering.getDiskOfferingId()).thenReturn(diskOfferingId);
+        lenient().when(offering.getVgpuProfileId()).thenReturn(vgpuProfileId);
+        lenient().when(_serviceOfferingDao.findById(id)).thenReturn(offering);
+        return offering;
+    }
+
+    private DiskOfferingVO rootDiskOffering(long id, long fixedSizeBytes) {
+        DiskOfferingVO offering = computeOnlyRootOffering(fixedSizeBytes);
+        lenient().when(offering.getId()).thenReturn(id);
+        lenient().when(diskOfferingDao.findById(id)).thenReturn(offering);
+        return offering;
+    }
+
+    private VolumeVO stoppedInstanceOn(ServiceOfferingVO current) {
+        long currentId = current.getId();
+        long currentDiskOfferingId = current.getDiskOfferingId();
+        VMInstanceDao vmInstanceDao = mock(VMInstanceDao.class);
+        ReflectionTestUtils.setField(userVmManagerImpl, "_vmInstanceDao", vmInstanceDao);
+        VMInstanceVO vm = mock(VMInstanceVO.class);
+        lenient().when(vm.getId()).thenReturn(OFFERING_CHANGE_VM_ID);
+        lenient().when(vm.getState()).thenReturn(VirtualMachine.State.Stopped);
+        lenient().when(vm.getType()).thenReturn(VirtualMachine.Type.User);
+        lenient().when(vm.getDomainId()).thenReturn(1L);
+        lenient().when(vm.getAccountId()).thenReturn(5L);
+        lenient().when(vm.getDataCenterId()).thenReturn(zoneId);
+        lenient().when(vm.getServiceOfferingId()).thenReturn(currentId);
+        lenient().when(vm.getTemplateId()).thenReturn(templateId);
+        lenient().when(vm.isDisplay()).thenReturn(true);
+        when(vmInstanceDao.findById(OFFERING_CHANGE_VM_ID)).thenReturn(vm);
+        lenient().when(_serviceOfferingDao.findByIdIncludingRemoved(OFFERING_CHANGE_VM_ID, currentId)).thenReturn(current);
+        lenient().when(accountManager.getActiveAccountById(5L)).thenReturn(account);
+        VolumeVO root = new VolumeVO(Volume.Type.ROOT, "ROOT-6161", zoneId, 1L, 5L, currentDiskOfferingId, Storage.ProvisioningType.THIN,
+                20L * GiB_TO_BYTES, null, null, null);
+        root.setState(Volume.State.Ready);
+        lenient().when(volumeDaoMock.findReadyAndAllocatedRootVolumesByInstance(OFFERING_CHANGE_VM_ID)).thenReturn(List.of(root));
+        return root;
+    }
+
+    @Test
+    public void changeToComputeOnlyRootOfferingFromNonStrictAllowed() throws Exception {
+        ServiceOfferingVO nonStrictOffering = offeringWithRoot(21L, false, 41L, null);
+        rootDiskOffering(41L, 0L);
+        ServiceOfferingVO targetOffering = offeringWithRoot(22L, true, 42L, null);
+        DiskOfferingVO targetRoot = rootDiskOffering(42L, 0L);
+        VolumeVO root = stoppedInstanceOn(nonStrictOffering);
+
+        assertTrue(userVmManagerImpl.upgradeVirtualMachine(OFFERING_CHANGE_VM_ID, 22L, new HashMap<>()));
+
+        InOrder order = Mockito.inOrder(volumeApiService, virtualMachineManager);
+        order.verify(volumeApiService).reserveRootDiskOfferingChange(eq(root), eq(targetRoot), anyList());
+        order.verify(volumeApiService).assignDiskOfferingKeepingSize(root, targetRoot);
+        order.verify(virtualMachineManager).upgradeVmDb(OFFERING_CHANGE_VM_ID, targetOffering, nonStrictOffering);
+    }
+
+    @Test
+    public void changeBetweenComputeOnlyRootOfferingsAllowed() throws Exception {
+        ServiceOfferingVO vgpuOffering = offeringWithRoot(23L, true, 43L, 3L);
+        rootDiskOffering(43L, 0L);
+        ServiceOfferingVO targetOffering = offeringWithRoot(22L, true, 42L, null);
+        DiskOfferingVO targetRoot = rootDiskOffering(42L, 0L);
+        VolumeVO root = stoppedInstanceOn(vgpuOffering);
+
+        assertTrue(userVmManagerImpl.upgradeVirtualMachine(OFFERING_CHANGE_VM_ID, 22L, new HashMap<>()));
+
+        verify(volumeApiService).reserveRootDiskOfferingChange(eq(root), eq(targetRoot), anyList());
+        verify(volumeApiService).assignDiskOfferingKeepingSize(root, targetRoot);
+        verify(virtualMachineManager).upgradeVmDb(OFFERING_CHANGE_VM_ID, targetOffering, vgpuOffering);
+    }
+
+    @Test
+    public void offeringChangeRootKeepsSizeTakesNewDiskOffering() throws Exception {
+        updateDefaultConfigValue(UserVmManager.AllowDiskOfferingChangeDuringScaleVm, true, false);
+        ServiceOfferingVO nonStrictOffering = offeringWithRoot(21L, false, 41L, null);
+        rootDiskOffering(41L, 0L);
+        offeringWithRoot(22L, true, 42L, null);
+        DiskOfferingVO targetRoot = rootDiskOffering(42L, 0L);
+        VolumeVO root = stoppedInstanceOn(nonStrictOffering);
+
+        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class,
+                () -> userVmManagerImpl.upgradeVirtualMachine(OFFERING_CHANGE_VM_ID, 22L, rootDiskSizeGiB("30")));
+        assertTrue(e.getMessage(), e.getMessage().contains("keeps its size"));
+        verify(volumeApiService, never()).assignDiskOfferingKeepingSize(any(), any());
+
+        assertTrue(userVmManagerImpl.upgradeVirtualMachine(OFFERING_CHANGE_VM_ID, 22L, rootDiskSizeGiB("20")));
+
+        verify(volumeApiService).assignDiskOfferingKeepingSize(root, targetRoot);
+        verify(volumeApiService, never()).changeDiskOfferingForVolume(any());
+    }
+
+    /** Records, for each step of an offering change, whether it ran inside the transaction; the change fails inside when asked. */
+    private List<String> changeOfferingRecordingTheTransaction(Reserver reservation, boolean failInside) throws Exception {
+        ServiceOfferingVO nonStrictOffering = offeringWithRoot(21L, false, 41L, null);
+        rootDiskOffering(41L, 0L);
+        offeringWithRoot(22L, true, 42L, null);
+        rootDiskOffering(42L, 0L);
+        stoppedInstanceOn(nonStrictOffering);
+        boolean[] inTransaction = {false};
+        List<String> calls = new ArrayList<>();
+        lenient().doAnswer(invocation -> {
+            calls.add("reserve:" + inTransaction[0]);
+            ((List<Reserver>) invocation.getArgument(2)).add(reservation);
+            return null;
+        }).when(volumeApiService).reserveRootDiskOfferingChange(any(), any(), anyList());
+        lenient().doAnswer(invocation -> {
+            calls.add("assign:" + inTransaction[0]);
+            return invocation.getArgument(0);
+        }).when(volumeApiService).assignDiskOfferingKeepingSize(any(), any());
+        lenient().doAnswer(invocation -> {
+            calls.add("upgradeVmDb:" + inTransaction[0]);
+            if (failInside) {
+                throw new CloudRuntimeException("the Instance row could not be updated");
+            }
+            return true;
+        }).when(virtualMachineManager).upgradeVmDb(anyLong(), any(), any());
+        lenient().doAnswer(invocation -> {
+            calls.add("inform:" + inTransaction[0]);
+            return null;
+        }).when(volumeApiService).informStorageOfDiskOfferingChange(any(), any());
+
+        try (MockedStatic<Transaction> transaction = mockStatic(Transaction.class)) {
+            transaction.when(() -> Transaction.execute(any(TransactionCallback.class))).thenAnswer(invocation -> {
+                inTransaction[0] = true;
+                try {
+                    return ((TransactionCallback<?>) invocation.getArgument(0)).doInTransaction(null);
+                } finally {
+                    inTransaction[0] = false;
+                }
+            });
+            userVmManagerImpl.upgradeVirtualMachine(OFFERING_CHANGE_VM_ID, 22L, new HashMap<>());
+        } catch (CloudRuntimeException e) {
+            assertTrue(e.getMessage(), failInside);
+        }
+        return calls;
+    }
+
+    @Test
+    public void offeringChangeRelabelsTheRootAndChangesTheOfferingInOneTransaction() throws Exception {
+        Reserver reservation = mock(Reserver.class);
+
+        List<String> calls = changeOfferingRecordingTheTransaction(reservation, false);
+
+        assertEquals("the storage tag change is reserved before the transaction, the root and the Instance change inside it, and the storage is "
+                + "told once it has committed", List.of("reserve:false", "assign:true", "upgradeVmDb:true", "inform:false"), calls);
+        verify(reservation).close();
+    }
+
+    @Test
+    public void aFailedOfferingChangeTellsTheStorageNothingAndReleasesItsReservations() throws Exception {
+        Reserver reservation = mock(Reserver.class);
+
+        List<String> calls = changeOfferingRecordingTheTransaction(reservation, true);
+
+        assertEquals(List.of("reserve:false", "assign:true", "upgradeVmDb:true"), calls);
+        verify(volumeApiService, never()).informStorageOfDiskOfferingChange(any(), any());
+        verify(reservation).close();
+    }
+
+    @Test
+    public void aFailedCountOfANewInstanceDetachesTheVolumeItWasDeployedFrom() {
+        UserVmVO created = mock(UserVmVO.class);
+        when(created.getId()).thenReturn(KEEP_VM_ID);
+        when(created.getUuid()).thenReturn("new-instance");
+        Volume given = mock(Volume.class);
+        when(given.getId()).thenReturn(KEEP_ROOT_ID);
+        doThrow(new CloudRuntimeException("the resource count could not be updated")).when(userVmManagerImpl)
+                .resourceCountIncrement(anyLong(), any(), any(), any(), any());
+
+        CloudRuntimeException e = assertThrows(CloudRuntimeException.class,
+                () -> userVmManagerImpl.incrementResourceCountForNewInstance(created, accountId, true, serviceOffering, templateMock, given));
+
+        verify(volumeOrchestrationService).detachVolumeOfFailedDeployment(KEEP_VM_ID, KEEP_ROOT_ID);
+        assertTrue(e.getIdProxyList().stream().anyMatch(proxy -> "new-instance".equals(proxy.getUuid())));
+        assertThrows(CloudRuntimeException.class,
+                () -> userVmManagerImpl.incrementResourceCountForNewInstance(created, accountId, true, serviceOffering, templateMock, null));
+        doNothing().when(userVmManagerImpl).resourceCountIncrement(anyLong(), any(), any(), any(), any());
+        userVmManagerImpl.incrementResourceCountForNewInstance(created, accountId, true, serviceOffering, templateMock, given);
+        verify(volumeOrchestrationService, times(1)).detachVolumeOfFailedDeployment(anyLong(), anyLong());
+    }
+
+    @Test
+    public void changeToFixedRootDiskOfferingStillRefused() throws Exception {
+        offeringWithRoot(24L, true, 44L, null);
+        rootDiskOffering(44L, 20L * GiB_TO_BYTES);
+
+        stoppedInstanceOn(offeringWithRoot(23L, true, 43L, 3L));
+        assertThrows(InvalidParameterValueException.class, () -> userVmManagerImpl.upgradeVirtualMachine(OFFERING_CHANGE_VM_ID, 24L, new HashMap<>()));
+
+        stoppedInstanceOn(offeringWithRoot(21L, false, 41L, null));
+        assertThrows(InvalidParameterValueException.class, () -> userVmManagerImpl.upgradeVirtualMachine(OFFERING_CHANGE_VM_ID, 24L, new HashMap<>()));
+
+        verify(volumeApiService, never()).reserveRootDiskOfferingChange(any(), any(), anyList());
+        verify(volumeApiService, never()).assignDiskOfferingKeepingSize(any(), any());
+        verify(virtualMachineManager, never()).upgradeVmDb(anyLong(), any(), any());
+    }
+
+    @Test
+    public void offeringChangeStillChecksResourceLimits() throws Exception {
+        ServiceOfferingVO nonStrictOffering = offeringWithRoot(21L, false, 41L, null);
+        rootDiskOffering(41L, 0L);
+        ServiceOfferingVO targetOffering = offeringWithRoot(22L, true, 42L, null);
+        rootDiskOffering(42L, 0L);
+        stoppedInstanceOn(nonStrictOffering);
+        doThrow(new ResourceAllocationException("Maximum number of resources of type 'cpu' for account has been exceeded.", Resource.ResourceType.cpu))
+                .when(resourceLimitMgr).checkVmResourceLimitsForServiceOfferingChange(eq(account), eq(true), eq(4L), eq(4L), eq(4096L), eq(4096L),
+                        eq(nonStrictOffering), eq(targetOffering), any(), anyList());
+
+        assertThrows(ResourceAllocationException.class, () -> userVmManagerImpl.upgradeVirtualMachine(OFFERING_CHANGE_VM_ID, 22L, new HashMap<>()));
+
+        verify(volumeApiService, never()).assignDiskOfferingKeepingSize(any(), any());
+        verify(virtualMachineManager, never()).upgradeVmDb(anyLong(), any(), any());
+    }
+
+    @Test
+    public void deployFromVolumeReservesOnlyTheRootsStorageTagChange() throws Exception {
+        ServiceOfferingVO targetOffering = offeringWithRoot(22L, true, 42L, null);
+        DiskOfferingVO targetRoot = rootDiskOffering(42L, 0L);
+        VolumeVO kept = new VolumeVO(Volume.Type.DATADISK, "ROOT-5151", zoneId, 1L, 5L, 43L, Storage.ProvisioningType.THIN, 20L * GiB_TO_BYTES,
+                null, null, null);
+        ReflectionTestUtils.setField(kept, "id", KEEP_ROOT_ID);
+        kept.setState(Volume.State.Ready);
+        when(volumeDaoMock.findById(KEEP_ROOT_ID)).thenReturn(kept);
+        when(volumeApiService.takesRootDiskOffering(kept, targetRoot)).thenReturn(true);
+        List<Reserver> reservations = new ArrayList<>();
+
+        try (MockedConstruction<CheckedReservation> created = Mockito.mockConstruction(CheckedReservation.class)) {
+            userVmManagerImpl.reserveStorageResourcesForVm(reservations, account, null, null, null, 42L, targetOffering, 2L * GiB_TO_BYTES, null, kept);
+
+            assertTrue("the volume is counted already, so no new root volume or storage is reserved", created.constructed().isEmpty());
+            verify(volumeApiService).reserveRootDiskOfferingChange(kept, targetRoot, reservations);
+
+            when(volumeApiService.takesRootDiskOffering(kept, targetRoot)).thenReturn(false);
+            userVmManagerImpl.reserveStorageResourcesForVm(reservations, account, null, null, null, 42L, targetOffering, 2L * GiB_TO_BYTES, null, kept);
+
+            assertTrue("a volume that keeps its disk offering reserves nothing", created.constructed().isEmpty());
+            verify(volumeApiService, times(1)).reserveRootDiskOfferingChange(any(), any(), anyList());
+        }
+    }
+
+    private static final long BACKUP_ID = 4L;
+
+    /**
+     * Deploys an Instance from a backup whose root was 5 GiB, and returns what the root disk size computation gives for the details the
+     * deployment is handed: the size in bytes, or the refusal.
+     */
+    private Object rootOfAnInstanceFromABackup(Long callerRootDiskSizeGiB, Long overrideDiskOfferingId, DiskOfferingVO overrideDiskOffering) throws Exception {
+        CreateVMFromBackupCmd cmd = new CreateVMFromBackupCmd();
+        cmd._accountService = accountService;
+        cmd._entityMgr = entityManager;
+        lenient().when(accountService.finalizeAccountId(nullable(String.class), nullable(Long.class), nullable(Long.class), eq(true))).thenReturn(accountId);
+        lenient().when(accountService.getActiveAccountById(accountId)).thenReturn(account);
+        ReflectionTestUtils.setField(cmd, "serviceOfferingId", serviceOfferingId);
+        ReflectionTestUtils.setField(cmd, "templateId", templateId);
+        ReflectionTestUtils.setField(cmd, "backupId", BACKUP_ID);
+        ReflectionTestUtils.setField(cmd, "zoneId", zoneId);
+        ReflectionTestUtils.setField(cmd, "rootdisksize", callerRootDiskSizeGiB);
+        ReflectionTestUtils.setField(cmd, "overrideDiskOfferingId", overrideDiskOfferingId);
+        ServiceOfferingVO offering = mock(ServiceOfferingVO.class);
+        lenient().when(offering.getDiskOfferingId()).thenReturn(40L);
+        when(_serviceOfferingDao.findById(serviceOfferingId)).thenReturn(offering);
+        DiskOfferingVO offeringRoot = rootDiskOffering(40L, 0L);
+        if (overrideDiskOfferingId != null) {
+            lenient().when(diskOfferingDao.findById(overrideDiskOfferingId)).thenReturn(overrideDiskOffering);
+        }
+        BackupVO backup = mock(BackupVO.class);
+        when(backup.getZoneId()).thenReturn(zoneId);
+        when(backup.getVmId()).thenReturn(vmId);
+        when(backupDao.findById(BACKUP_ID)).thenReturn(backup);
+        UserVmVO backedUp = new UserVmVO();
+        backedUp.setTemplateId(templateId);
+        when(userVmDao.findByIdIncludingRemoved(vmId)).thenReturn(backedUp);
+        VMTemplateVO template = templateOfSize(2L * GiB_TO_BYTES);
+        when(templateDao.findById(templateId)).thenReturn(template);
+        when(backupManager.getRootDiskInfoFromBackup(backup)).thenReturn(new VmDiskInfo(mock(DiskOffering.class), 5L, null, null));
+        when(backupManager.canCreateInstanceFromBackup(BACKUP_ID)).thenReturn(true);
+        DiskOfferingVO rootOffering = overrideDiskOffering != null ? overrideDiskOffering : offeringRoot;
+        Object[] outcome = {null};
+        Mockito.doAnswer(invocation -> {
+            Map<String, String> details = invocation.getArgument(22);
+            try {
+                outcome[0] = userVmManagerImpl.configureCustomRootDiskSize(new HashMap<>(details), template, Hypervisor.HypervisorType.KVM, rootOffering,
+                        userVmManagerImpl.boundsTemplateRoot(null, null), 1L);
+            } catch (InvalidParameterValueException e) {
+                outcome[0] = e;
+            }
+            return userVmVoMock;
+        }).when(userVmManagerImpl).createAdvancedVirtualMachine(any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), nullable(Boolean.class), any(), any(), any(),
+                any(), any(), any(), any(), eq(true), any(), any(), any(), any(), any());
+
+        userVmManagerImpl.allocateVMFromBackup(cmd);
+
+        assertTrue("the next deployment is bounded again", userVmManagerImpl.boundsTemplateRoot(null, null));
+        return outcome[0];
+    }
+
+    @Test
+    public void aBackupsRecordedRootIsDeployedAtItsSize() throws Exception {
+        assertEquals("neither the floor nor the default", 5L * GiB_TO_BYTES, rootOfAnInstanceFromABackup(null, null, null));
+    }
+
+    @Test
+    public void aCallersRootSizeIsReplacedByTheRecordedOne() throws Exception {
+        assertEquals(5L * GiB_TO_BYTES, rootOfAnInstanceFromABackup(30L, null, null));
+    }
+
+    @Test
+    public void aCallersRootSizeOnACustomizedOverrideIsBoundedByTheFloor() throws Exception {
+        DiskOfferingVO customized = mock(DiskOfferingVO.class);
+        lenient().when(customized.isCustomized()).thenReturn(true);
+        lenient().when(customized.isComputeOnly()).thenReturn(false);
+        lenient().when(customized.getDiskSize()).thenReturn(0L);
+
+        Object outcome = rootOfAnInstanceFromABackup(5L, 45L, customized);
+
+        assertTrue(String.valueOf(outcome), outcome instanceof InvalidParameterValueException);
+        assertTrue(((InvalidParameterValueException) outcome).getMessage(), ((InvalidParameterValueException) outcome).getMessage().contains("10"));
     }
 }

@@ -45,6 +45,7 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
 import java.util.Map;
@@ -115,6 +116,7 @@ import com.cloud.agent.api.to.NicTO;
 import com.cloud.agent.api.to.VirtualMachineMetadataTO;
 import com.cloud.agent.api.to.VirtualMachineTO;
 import com.cloud.agent.manager.Commands;
+import com.cloud.alert.AlertManager;
 import com.cloud.capacity.HostPoolCoreManager;
 import com.cloud.exception.InsufficientServerCapacityException;
 import com.cloud.exception.VolumeMoveRequiredException;
@@ -144,6 +146,8 @@ import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.OperationTimedoutException;
 import com.cloud.host.Host;
 import org.apache.cloudstack.gpu.GpuService;
+import org.apache.cloudstack.backup.BackupManager;
+import com.cloud.vm.snapshot.VMSnapshotManager;
 import com.cloud.host.HostVO;
 import com.cloud.host.dao.HostDao;
 import com.cloud.hypervisor.Hypervisor.HypervisorType;
@@ -153,6 +157,8 @@ import com.cloud.network.dao.NetworkDao;
 import com.cloud.network.dao.NetworkVO;
 import com.cloud.network.vpc.VpcVO;
 import com.cloud.network.vpc.dao.VpcDao;
+import com.cloud.offering.DiskOffering;
+import com.cloud.offering.DiskOfferingInfo;
 import com.cloud.offering.ServiceOffering;
 import com.cloud.org.Cluster;
 import com.cloud.service.ServiceOfferingVO;
@@ -2529,5 +2535,100 @@ public class VirtualMachineManagerImplTest {
         verify(_stateMachine, never()).transitTo(any(), eq(VirtualMachine.Event.OperationRetry), any(), any());
         verify(startGpuService, never()).allocateGpuGroup(any(), Mockito.anyLong(), Mockito.anyLong(), Mockito.anyInt());
         verify(_stateMachine).transitTo(any(), eq(VirtualMachine.Event.OperationFailed), any(), any());
+    }
+
+    @Test
+    public void destroyWithExpungeDeallocatesEveryGpuDeviceOfTheInstance() throws Exception {
+        GpuService gpuService = mock(GpuService.class);
+        VMSnapshotManager vmSnapshotManager = mock(VMSnapshotManager.class);
+        VMInstanceDao vmDao = mock(VMInstanceDao.class);
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "gpuService", gpuService);
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "_vmSnapshotMgr", vmSnapshotManager);
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "_vmDao", vmDao);
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "backupManager", mock(BackupManager.class));
+        VMInstanceVO vm = mock(VMInstanceVO.class);
+        when(vm.getId()).thenReturn(4242L);
+        when(vm.getState()).thenReturn(VirtualMachine.State.Stopped);
+        when(vm.getHypervisorType()).thenReturn(HypervisorType.KVM);
+        when(vm.getHostId()).thenReturn(null);
+        when(vmDao.findByUuid("instance-with-gpus")).thenReturn(vm);
+        when(vmSnapshotManager.deleteAllVMSnapshots(4242L, null)).thenReturn(true);
+        doNothing().when(virtualMachineManagerImpl).advanceStop("instance-with-gpus", false);
+        doReturn(true).when(virtualMachineManagerImpl).stateTransitTo(any(VirtualMachine.class), any(VirtualMachine.Event.class), Mockito.nullable(Long.class));
+
+        virtualMachineManagerImpl.destroy("instance-with-gpus", true);
+
+        InOrder order = Mockito.inOrder(virtualMachineManagerImpl, gpuService);
+        order.verify(virtualMachineManagerImpl).advanceStop("instance-with-gpus", false);
+        order.verify(gpuService).deallocateAllGpuDevicesForVm(4242L);
+        order.verify(virtualMachineManagerImpl).stateTransitTo(vm, VirtualMachine.Event.DestroyRequested, null);
+        order.verify(virtualMachineManagerImpl).stateTransitTo(vm, VirtualMachine.Event.ExpungeOperation, null);
+    }
+
+    private static final long DEPLOYED_VOLUME_ID = 5152L;
+
+    /** Allocates an Instance from a volume with the given step failing, and returns the Instance. */
+    private VMInstanceVO allocateFromAVolumeFailingAt(String failingStep, VolumeOrchestrationService volumes) throws Exception {
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "volumeMgr", volumes);
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "_networkMgr", mock(NetworkOrchestrationService.class));
+        VMInstanceDao vmDao = mock(VMInstanceDao.class);
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "_vmDao", vmDao);
+        VMInstanceVO vm = mock(VMInstanceVO.class);
+        when(vm.getId()).thenReturn(5151L);
+        when(vm.getType()).thenReturn(VirtualMachine.Type.User);
+        Mockito.lenient().when(vm.getUuid()).thenReturn("instance-from-volume");
+        when(vmDao.findVMByInstanceName("i-2-5151-VM")).thenReturn(vm);
+        when(vmDao.persist(vm)).thenReturn(vm);
+        VMTemplateVO template = mock(VMTemplateVO.class);
+        when(template.getFormat()).thenReturn(Storage.ImageFormat.QCOW2);
+        doReturn(false).when(virtualMachineManagerImpl).isBlankInstance(template);
+        doReturn(true).when(virtualMachineManagerImpl).stateTransitTo(any(VirtualMachine.class), any(VirtualMachine.Event.class), Mockito.nullable(Long.class));
+        Volume given = mock(Volume.class);
+        when(given.getId()).thenReturn(DEPLOYED_VOLUME_ID);
+        DiskOffering dataDiskOffering = mock(DiskOffering.class);
+        if ("root".equals(failingStep)) {
+            when(volumes.allocateTemplatedVolumes(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), eq(given), any()))
+                    .thenThrow(new CloudRuntimeException("the ROOT volume could not take the disk offering"));
+        } else {
+            when(volumes.allocateRawVolume(eq(Volume.Type.DATADISK), any(), eq(dataDiskOffering), any(), any(), any(), any(), any(), any(), any(), any(),
+                    Mockito.anyBoolean())).thenThrow(new CloudRuntimeException("the data volume could not be allocated"));
+        }
+        DataCenterDeployment plan = new DataCenterDeployment(1L);
+        try (MockedStatic<CallContext> ignored = Mockito.mockStatic(CallContext.class)) {
+            CloudRuntimeException e = assertThrows(CloudRuntimeException.class, () -> virtualMachineManagerImpl.allocate("i-2-5151-VM", template,
+                    mock(ServiceOffering.class), new DiskOfferingInfo(mock(DiskOffering.class)), List.of(new DiskOfferingInfo(dataDiskOffering, 10L, null, null)),
+                    Arrays.asList(1L), new LinkedHashMap<>(), plan, HypervisorType.KVM, null, null, given, null));
+            assertTrue(e.getMessage(), e.getMessage().contains("could not"));
+        }
+        return vm;
+    }
+
+    @Test
+    public void aFailedAllocationDetachesTheVolumeItWasDeployedFromBeforeTheInstanceGoesToError() throws Exception {
+        for (String failingStep : List.of("root", "data")) {
+            VolumeOrchestrationService volumes = mock(VolumeOrchestrationService.class);
+            Mockito.clearInvocations(virtualMachineManagerImpl);
+
+            VMInstanceVO vm = allocateFromAVolumeFailingAt(failingStep, volumes);
+
+            InOrder order = Mockito.inOrder(volumes, virtualMachineManagerImpl);
+            order.verify(volumes).detachVolumeOfFailedDeployment(5151L, DEPLOYED_VOLUME_ID);
+            order.verify(virtualMachineManagerImpl).stateTransitTo(vm, VirtualMachine.Event.OperationFailedToError, null);
+        }
+    }
+
+    @Test
+    public void anInstanceWhoseVolumeCouldNotBeDetachedIsNotMovedToError() throws Exception {
+        VolumeOrchestrationService volumes = mock(VolumeOrchestrationService.class);
+        doThrow(new CloudRuntimeException("the database is unavailable")).when(volumes).detachVolumeOfFailedDeployment(5151L, DEPLOYED_VOLUME_ID);
+        AlertManager alerts = mock(AlertManager.class);
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "_alertMgr", alerts);
+
+        allocateFromAVolumeFailingAt("data", volumes);
+
+        verify(volumes).detachVolumeOfFailedDeployment(5151L, DEPLOYED_VOLUME_ID);
+        verify(virtualMachineManagerImpl, never()).stateTransitTo(any(VirtualMachine.class), eq(VirtualMachine.Event.OperationFailedToError), Mockito.nullable(Long.class));
+        verify(alerts).sendAlert(eq(AlertManager.AlertType.ALERT_TYPE_USERVM), anyLong(), any(), eq("Failed to deploy Instance [ID: instance-from-volume]"),
+                Mockito.argThat(body -> body.contains("Mock for Volume") && !body.contains("host")));
     }
 }

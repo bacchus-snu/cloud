@@ -40,7 +40,9 @@
     >
       <template #headerCell="{ column }">
         <template v-if="column.key === 'cpu'"><appstore-outlined /> {{ $t('label.cpu') }}</template>
+        <template v-if="column.key === 'cpuspeed'">{{ $t('label.cpuspeed') }}</template>
         <template v-if="column.key === 'ram'"><bulb-outlined /> {{ $t('label.memory') }}</template>
+        <template v-if="column.key === 'gpuslots'">{{ $t('label.gpu.slots') }}</template>
         <template v-if="column.key === 'hosttags'"><tag-outlined /> {{ $t('label.hosttags') }}</template>
         <template v-if="column.key === 'storagetags'"><tag-outlined /> {{ $t('label.storagetags') }}</template>
         <template v-if="column.key === 'gpu'"><font-awesome-icon
@@ -53,6 +55,7 @@
       </template>
       <template #displayText="{ record }">
         <span>{{ record.name }}</span>
+        <a-tag v-if="record.disabledReason === 'quota'" color="orange" style="margin-left: 8px;">{{ $t('label.offering.over.quota') }}</a-tag>
         <span
             v-if="record.leaseduration !== undefined"
             :style="{
@@ -96,9 +99,17 @@
 </template>
 
 <script>
+import { gpuTypeOf } from '@/utils/limits'
+import { showCpuSpeed, showGpuSlots } from '@/utils/uiConfig'
+
 export default {
   name: 'ComputeOfferingSelection',
   props: {
+    // the remaining GPU quota of each GPU type (null: unlimited); a GPU offering above it cannot be chosen
+    gpuQuota: {
+      type: Object,
+      default: () => ({})
+    },
     computeItems: {
       type: Array,
       default: () => []
@@ -190,12 +201,28 @@ export default {
         }
       ]
 
+      if (showCpuSpeed(this.$config)) {
+        baseColumns.splice(2, 0, {
+          key: 'cpuspeed',
+          dataIndex: 'cpuspeed',
+          width: '20%'
+        })
+      }
+
       if (this.computeItems.some(item => item.gpucardname !== undefined && item.gpucardname !== null)) {
         baseColumns.push({
           key: 'gpu',
           dataIndex: 'gpu',
           width: '30%',
           slots: { customRender: 'gpuColumn' }
+        })
+      }
+
+      if (showGpuSlots(this.$config) && this.computeItems.some(item => item.gpuslotstotal !== undefined && item.gpuslotstotal !== null)) {
+        baseColumns.push({
+          key: 'gpuslots',
+          dataIndex: 'gpuSlots',
+          width: '20%'
         })
       }
 
@@ -223,7 +250,7 @@ export default {
         var maxCpuSpeed = item.cpuspeed
         var maxMemory = item.memory
         var cpuNumberValue = (item.cpunumber !== null && item.cpunumber !== undefined && item.cpunumber > 0) ? item.cpunumber + '' : ''
-        var cpuSpeedValue = (item.cpuspeed !== null && item.cpuspeed !== undefined && item.cpuspeed > 0) ? parseFloat(item.cpuspeed / 1000.0).toFixed(2) + '' : ''
+        var cpuSpeedValue = (item.cpuspeed !== null && item.cpuspeed !== undefined && item.cpuspeed > 0) ? item.cpuspeed + '' : ''
         var ramValue = (item.memory !== null && item.memory !== undefined && item.memory > 0) ? item.memory + '' : ''
         if (item.iscustomized === true) {
           if ('serviceofferingdetails' in item &&
@@ -261,6 +288,11 @@ export default {
         if (this.allowAllOfferings) {
           disabled = false
         }
+        var disabledReason = disabled ? 'unsuitable' : ''
+        if (!this.allowAllOfferings && this.overGpuQuota(item)) {
+          disabled = true
+          disabledReason = 'quota'
+        }
         var gpuEnabledOffering = false
         var gpuCount = 0
         var gpuType = ''
@@ -278,10 +310,13 @@ export default {
         return {
           key: item.id,
           name: item.name,
-          cpu: cpuNumberValue.length > 0 ? `${cpuNumberValue} CPU x ${cpuSpeedValue} Ghz` : '',
+          cpu: cpuNumberValue.length > 0 ? `${cpuNumberValue} CPU` : '',
+          cpuspeed: cpuSpeedValue,
           ram: ramValue.length > 0 ? `${ramValue} MB` : '',
           disabled: disabled,
+          disabledReason: disabledReason,
           leaseduration: item.leaseduration,
+          gpuSlots: item.gpuslotstotal !== undefined && item.gpuslotstotal !== null ? `${item.gpuslotsavailable ?? 0} / ${item.gpuslotstotal}` : '',
           gpuEnabledOffering: gpuEnabledOffering,
           gpuCount: gpuCount,
           gpuType: gpuType,
@@ -326,11 +361,26 @@ export default {
             return
           }
           this.oldZoneId = this.zoneId
-          if (this.computeItems && this.computeItems.length > 0) {
-            this.selectedRowKeys = [this.computeItems[0].id]
-            this.$emit('select-compute-item', this.computeItems[0].id)
+          // the first offering that can be chosen: a disabled one is never preselected
+          const first = this.tableSource.find(row => !row.disabled)
+          if (first) {
+            this.selectedRowKeys = [first.key]
+            this.$emit('select-compute-item', first.key)
           }
         }
+      }
+    },
+    // a choice that the remaining quota turns into one that cannot be made moves to the first one that can
+    gpuQuota: {
+      deep: true,
+      handler () {
+        const chosen = this.tableSource.find(row => row.key === this.selectedRowKeys[0])
+        if (!chosen || chosen.disabledReason !== 'quota') {
+          return
+        }
+        const next = this.tableSource.find(row => !row.disabled)
+        this.selectedRowKeys = next ? [next.key] : []
+        this.$emit('select-compute-item', next ? next.key : undefined)
       }
     }
   },
@@ -371,6 +421,15 @@ export default {
           this.$emit('select-compute-item', record.key)
         }
       }
+    },
+    // only quota disables a GPU offering: the slots left are shown, never used to refuse a choice
+    overGpuQuota (item) {
+      const type = gpuTypeOf(item, this.gpuQuota)
+      if (!type) {
+        return false
+      }
+      const remaining = this.gpuQuota[type]
+      return remaining !== null && remaining !== undefined && Number(item.gpucount) > remaining
     },
     getRemainingLeaseText (leaseDuration) {
       if (leaseDuration > 0) {

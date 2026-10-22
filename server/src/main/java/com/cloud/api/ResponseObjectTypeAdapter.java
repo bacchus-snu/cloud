@@ -45,8 +45,12 @@ public class ResponseObjectTypeAdapter implements JsonSerializer<ResponseObject>
             }
             return obj;
         } else if (responseObj instanceof ExceptionResponse) {
-            obj.addProperty("errorcode", ((ExceptionResponse)responseObj).getErrorCode());
-            obj.addProperty("errortext", ((ExceptionResponse)responseObj).getErrorText());
+            ExceptionResponse exception = (ExceptionResponse)responseObj;
+            obj.addProperty("errorcode", exception.getErrorCode());
+            if (exception.getCSErrorCode() != null) {
+                obj.addProperty("cserrorcode", exception.getCSErrorCode());
+            }
+            obj.addProperty("errortext", exception.getErrorText());
             return obj;
         } else {
             obj.add(responseObj.getObjectName(), ApiResponseGsonHelper.getBuilder().create().toJsonTree(responseObj));

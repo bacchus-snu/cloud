@@ -29,6 +29,7 @@
                 <a-slider
                   :min="minCpu"
                   :max="maxCpu"
+                  :step="cpuStep"
                   v-model:value="cpuNumberInputValue"
                   @change="($event) => updateComputeCpuNumber($event)"
                 />
@@ -36,6 +37,7 @@
               <a-col :md="4" :lg="4">
                 <a-input-number
                   v-focus="isConstrained"
+                  :step="cpuStep"
                   v-model:value="cpuNumberInputValue"
                   @change="($event) => updateComputeCpuNumber($event)"
                 />
@@ -43,7 +45,7 @@
             </a-row>
           </a-form-item>
         </a-col>
-        <a-col :md="8" :lg="8" v-show="!isConstrained" v-if="isCustomized">
+        <a-col :md="8" :lg="8" v-show="!isConstrained" v-if="isCustomized && cpuSpeedShown">
           <a-form-item
             :label="$t('label.cpuspeed')"
             :validate-status="errors.cpuspeed.status"
@@ -96,12 +98,19 @@
 </template>
 
 <script>
+import { showCpuSpeed } from '@/utils/uiConfig'
+
 export default {
   name: 'ComputeSelection',
   props: {
     computeOfferingId: {
       type: String,
       default: () => ''
+    },
+    // an Instance's vCPU count is a multiple of this
+    cpuStep: {
+      type: Number,
+      default: 1
     },
     isConstrained: {
       type: Boolean,
@@ -186,6 +195,9 @@ export default {
     }
   },
   computed: {
+    cpuSpeedShown () {
+      return showCpuSpeed(this.$config)
+    },
     colContraned () {
       if (this.isConstrained && this.maxCpu && !isNaN(this.maxCpu)) {
         return 12
@@ -258,8 +270,10 @@ export default {
         return false
       }
 
-      if (!this.isConstrained) {
-        return true
+      if (input === 'cpu' && this.cpuStep > 1 && value % this.cpuStep !== 0) {
+        this.errors[input].status = 'error'
+        this.errors[input].message = this.$t('message.error.vcpu.step', { step: this.cpuStep })
+        return false
       }
 
       let min
@@ -274,6 +288,17 @@ export default {
           min = this.minMemory
           max = this.maxMemory
           break
+      }
+
+      // an offering that is not constrained is bounded only by the quota its parent passes as the maximum
+      if (!this.isConstrained && max >= Number.MAX_SAFE_INTEGER) {
+        return true
+      }
+
+      if (max < min) {
+        this.errors[input].status = 'error'
+        this.errors[input].message = this.$t('message.error.quota.below.minimum')
+        return false
       }
 
       if (!this.checkValidRange(value, min, max)) {

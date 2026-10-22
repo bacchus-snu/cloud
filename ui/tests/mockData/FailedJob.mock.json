@@ -1,0 +1,31 @@
+{
+  "moveRequired": {
+    "jobstatus": 2,
+    "jobresultcode": 533,
+    "jobresulttype": "object",
+    "jobresult": {
+      "errorcode": 533,
+      "cserrorcode": 4336,
+      "errortext": "the disks must move first"
+    }
+  },
+  "other": {
+    "jobstatus": 2,
+    "jobresultcode": 533,
+    "jobresulttype": "object",
+    "jobresult": {
+      "errorcode": 533,
+      "cserrorcode": 4250,
+      "errortext": "Unable to start the Instance"
+    }
+  },
+  "withoutCode": {
+    "jobstatus": 2,
+    "jobresultcode": 530,
+    "jobresulttype": "object",
+    "jobresult": {
+      "errorcode": 530,
+      "errortext": "broken"
+    }
+  }
+}

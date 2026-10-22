@@ -30,6 +30,7 @@
             />
             <span style="padding-top: 6px; margin-left: 5px">GB</span>
           </span>
+          <p v-if="maxDiskSize !== null && minDiskSize > 0" class="disk-size-range">{{ minDiskSize }} - {{ maxDiskSize }} GB</p>
           <p v-if="error" style="color: red"> {{ $t(error) }} </p>
         </a-form-item>
       </a-col>
@@ -90,6 +91,16 @@ export default {
       type: Number,
       default: 0
     },
+    // the remaining quota; null leaves the size unbounded
+    maxDiskSize: {
+      type: Number,
+      default: null
+    },
+    // the size the input starts at and returns to when the minimum changes
+    initialDiskSize: {
+      type: Number,
+      default: 0
+    },
     diskSelected: {
       type: Object,
       default: () => {}
@@ -118,8 +129,16 @@ export default {
   watch: {
     minDiskSize (newItem) {
       if (newItem && newItem > 0) {
-        this.inputValue = newItem
-        this.updateDiskSize(newItem)
+        const start = Math.max(this.initialDiskSize, newItem)
+        this.inputValue = start
+        this.updateDiskSize(start)
+      }
+    },
+    initialDiskSize (newItem) {
+      if (newItem && newItem > 0) {
+        const start = Math.max(newItem, this.minDiskSize)
+        this.inputValue = start
+        this.updateDiskSize(start)
       }
     }
   },
@@ -157,18 +176,36 @@ export default {
   },
   methods: {
     fillValue () {
-      this.inputValue = this.minDiskSize
+      const start = Math.max(this.initialDiskSize, this.minDiskSize)
+      this.inputValue = start
       if (this.inputDecorator === 'rootdisksize') {
-        this.inputValue = this.preFillContent?.rootdisksize ? this.preFillContent.rootdisksize : this.minDiskSize
+        this.inputValue = this.preFillContent?.rootdisksize ? this.preFillContent.rootdisksize : start
       } else if (this.inputDecorator === 'size') {
-        this.inputValue = this.preFillContent?.size ? this.preFillContent.size : this.minDiskSize
+        this.inputValue = this.preFillContent?.size ? this.preFillContent.size : start
       }
       this.$emit('update-disk-size', this.inputDecorator, this.inputValue)
     },
+    // The size is held between its minimum and the remaining quota; a quota below the minimum leaves the minimum and
+    // says so, since the server then refuses the disk.
     updateDiskSize (value) {
-      if (value < this.minDiskSize) {
-        this.inputValue = this.minDiskSize
-        this.error = `${this.$t('message.error.limit.value')} ` + this.minDiskSize + ' GB'
+      const min = this.minDiskSize
+      const max = this.maxDiskSize
+      if (max !== null && max < min) {
+        this.inputValue = min
+        this.error = this.$t('message.error.quota.below.minimum')
+        this.$emit('update-disk-size', this.inputDecorator, min)
+        return
+      }
+      if (value < min) {
+        this.inputValue = min
+        this.error = `${this.$t('message.error.limit.value')} ` + min + ' GB'
+        this.$emit('update-disk-size', this.inputDecorator, min)
+        return
+      }
+      if (max !== null && value > max) {
+        this.inputValue = max
+        this.error = `${this.$t('message.error.limit.maximum')} ` + max + ' GB'
+        this.$emit('update-disk-size', this.inputDecorator, max)
         return
       }
       this.error = false

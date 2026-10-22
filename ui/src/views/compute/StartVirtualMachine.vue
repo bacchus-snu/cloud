@@ -104,12 +104,21 @@
           <a-switch v-model:checked="form.bootintosetup" />
         </a-form-item>
 
+        <a-alert v-if="refusal" class="start-refused" type="error" show-icon :message="refusal" />
+        <a-alert v-if="working" class="start-working" type="info" show-icon :message="$t('message.placement.working')" />
+
         <div :span="24" class="action-button">
           <a-button @click="closeAction">{{ $t('label.cancel') }}</a-button>
           <a-button :loading="loading" ref="submit" type="primary" @click="handleSubmit">{{ $t('label.ok') }}</a-button>
         </div>
       </a-form>
     </a-spin>
+    <placement-move-modal
+      :visible="moveVisible"
+      :verdict="moveVerdict"
+      operation="start"
+      @approve="approveMove"
+      @reject="rejectMove" />
   </div>
 </template>
 
@@ -117,12 +126,17 @@
 import { ref, reactive, toRaw } from 'vue'
 import { getAPI, postAPI } from '@/api'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
+import PlacementMoveModal from '@views/compute/wizard/PlacementMoveModal'
+import placementApproval from '@/utils/placementApproval'
+import { checkPlacement } from '@/utils/placement'
 
 export default {
   name: 'StartVirtualMachine',
   components: {
-    TooltipLabel
+    TooltipLabel,
+    PlacementMoveModal
   },
+  mixins: [placementApproval],
   props: {
     resource: {
       type: Object,
@@ -237,8 +251,6 @@ export default {
       if (this.loading) return
       this.formRef.value.validate().then(() => {
         const values = toRaw(this.form)
-
-        this.loading = true
         const params = {
           id: this.resource.id
         }
@@ -247,25 +259,51 @@ export default {
             params[key] = values[key]
           }
         }
-        postAPI('startVirtualMachine', params).then(json => {
-          const jobId = json.startvirtualmachineresponse.jobid
-          this.$pollJob({
-            jobId,
-            title: this.$t('label.action.start.instance'),
-            description: this.resource.name,
-            loadingMessage: `${this.$t('label.action.start.instance')} ${this.resource.name}`,
-            catchMessage: this.$t('error.fetching.async.job.result'),
-            successMessage: `${this.$t('label.action.start.instance')} ${this.resource.name}`,
-            response: (result) => { return result.virtualmachine && result.virtualmachine.password ? `The password of VM <b>${result.virtualmachine.displayname}</b> is <b>${result.virtualmachine.password}</b>` : null }
-          })
-          this.closeAction()
-        }).catch(error => {
-          this.$notifyError(error)
-        }).finally(() => {
-          this.loading = false
-        })
+        if (!this.asksPlacement(params)) {
+          this.approvalRun(params)
+          return
+        }
+        this.beginApproval(params)
       }).catch(error => {
         this.formRef.value.scrollToField(error.errorFields[0].name)
+      })
+    },
+    // A start that an Admin pinned to a pod, cluster or host chooses its own placement; any other start is checked first.
+    asksPlacement (params) {
+      return 'checkPlacement' in this.$store.getters.apis && !params.podid && !params.clusterid && !params.hostid
+    },
+    approvalCheck () {
+      return checkPlacement({ virtualmachineid: this.resource.id })
+    },
+    approvalRefusal (reason) {
+      return this.$t('message.placement.start.refused', { reason })
+    },
+    approvalPost (params, verdict) {
+      return postAPI('startVirtualMachine', { ...params, migratevolumes: true, placementtoken: verdict.placementtoken })
+    },
+    approvalPoll (response, handlers) {
+      this.$pollJob({ jobId: response.startvirtualmachineresponse.jobid, ...this.jobOptions(), ...handlers })
+    },
+    jobOptions () {
+      return {
+        title: this.$t('label.action.start.instance'),
+        description: this.resource.name,
+        loadingMessage: `${this.$t('label.action.start.instance')} ${this.resource.name}`,
+        catchMessage: this.$t('error.fetching.async.job.result'),
+        successMessage: `${this.$t('label.action.start.instance')} ${this.resource.name}`,
+        response: (result) => { return result.virtualmachine && result.virtualmachine.password ? `The password of VM <b>${result.virtualmachine.displayname}</b> is <b>${result.virtualmachine.password}</b>` : null }
+      }
+    },
+    approvalRun (params) {
+      this.loading = true
+      postAPI('startVirtualMachine', params).then(json => {
+        const jobId = json.startvirtualmachineresponse.jobid
+        this.$pollJob({ jobId, ...this.jobOptions() })
+        this.closeAction()
+      }).catch(error => {
+        this.$notifyError(error)
+      }).finally(() => {
+        this.loading = false
       })
     },
     closeAction () {

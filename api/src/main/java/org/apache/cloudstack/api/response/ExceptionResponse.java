@@ -73,6 +73,10 @@ public class ExceptionResponse extends BaseResponse {
         return idList;
     }
 
+    public Integer getCSErrorCode() {
+        return csErrorCode;
+    }
+
     public void setCSErrorCode(int cserrcode) {
         this.csErrorCode = cserrcode;
     }

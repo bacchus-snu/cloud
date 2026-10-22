@@ -135,10 +135,7 @@
                       :selectedGuestOsCategoryId="form.guestoscategoryid"
                       :imageItems="imageType === 'isoid' ? options.isos : imageType === 'volumeid' ? options.volumes : imageType === 'snapshotid' ? options.snapshots : options.templates"
                       :imagesLoading="imageType === 'isoid' ? loading.isos : imageType === 'volumeid' ? loading.volumes : imageType === 'snapshotid' ? loading.snapshots : loading.templates"
-                      :diskSizeSelectionAllowed="imageType !== 'isoid' && imageType !== 'volumeid' && imageType !== 'snapshotid'"
-                      :diskSizeSelectionDeployAsIsMessageVisible="template && template.deployasis"
-                      :rootDiskOverrideDisabled="rootDiskSizeFixed > 0 || (template && template.deployasis) || showOverrideDiskOfferingOption"
-                      :rootDiskOverrideChecked="form.rootdisksizeitem"
+                      :diskSizeSelectionAllowed="false"
                       :isoHypervisor="form.hypervisor"
                       :isoHypervisorItems="hypervisorSelectOptions"
                       :filterOption="filterOption"
@@ -147,7 +144,6 @@
                       @change-guest-os-category="onSelectGuestOsCategory"
                       @handle-image-search-filter="filters => fetchImages(filters)"
                       @update-image="updateFieldValue"
-                      @update-disk-size="updateFieldValue"
                       @change-iso-hypervisor="value => form.hypervisor = value" />
                     <a-card
                       v-else
@@ -165,23 +161,7 @@
                           :key="templateKey"
                           @handle-search-filter="filters => fetchAllTemplates(filters)"
                           @update-template-iso="updateFieldValue" />
-                        <div v-if="!isTemplateHypervisorExternal">
-                          {{ $t('label.override.rootdisk.size') }}
-                          <a-switch
-                            v-model:checked="form.rootdisksizeitem"
-                            :disabled="rootDiskSizeFixed > 0 || (template && template.deployasis) || showOverrideDiskOfferingOption"
-                            @change="val => { showRootDiskSizeChanger = val }"
-                            style="margin-left: 10px;"/>
-                          <div v-if="(template && template.deployasis)">  {{ $t('message.deployasis') }} </div>
-                        </div>
-                        <disk-size-selection
-                          v-if="showRootDiskSizeChanger"
-                          input-decorator="rootdisksize"
-                          :preFillContent="dataPreFill"
-                          :isCustomized="true"
-                          :minDiskSize="dataPreFill.minrootdisksize"
-                          @update-disk-size="updateFieldValue"
-                          style="margin-top: 10px;"/>
+                        <div v-if="template && template.deployasis">{{ $t('message.deployasis') }}</div>
                       </div>
                       <div v-else>
                         {{ $t('message.iso.desc') }}
@@ -216,9 +196,6 @@
                     </a-form-item>
                     <a-form-item class="form-item-hidden">
                       <a-input v-model:value="form.snapshotid" />
-                    </a-form-item>
-                    <a-form-item class="form-item-hidden">
-                      <a-input v-model:value="form.rootdisksize" />
                     </a-form-item>
                   </div>
                 </template>
@@ -258,6 +235,7 @@
                       :loading="loading.serviceOfferings"
                       :preFillContent="dataPreFill"
                       :show-gpu-filter="zone.gputotal && zone.gputotal > 0"
+                      :gpuQuota="gpuQuota"
                       :minimum-cpunumber="templateConfigurationExists && selectedTemplateConfiguration && selectedTemplateConfiguration.cpunumber ? selectedTemplateConfiguration.cpunumber : 0"
                       :minimum-cpuspeed="templateConfigurationExists && selectedTemplateConfiguration && selectedTemplateConfiguration.cpuspeed ? selectedTemplateConfiguration.cpuspeed : 0"
                       :minimum-memory="templateConfigurationExists && selectedTemplateConfiguration && selectedTemplateConfiguration.memory ? selectedTemplateConfiguration.memory : 0"
@@ -272,10 +250,11 @@
                       :preFillContent="dataPreFill"
                       :computeOfferingId="instanceConfig.computeofferingid"
                       :isConstrained="isOfferingConstrained(serviceOffering)"
-                      :minCpu="'serviceofferingdetails' in serviceOffering ? serviceOffering.serviceofferingdetails.mincpunumber*1 : 0"
-                      :maxCpu="'serviceofferingdetails' in serviceOffering ? serviceOffering.serviceofferingdetails.maxcpunumber*1 : Number.MAX_SAFE_INTEGER"
+                      :cpuStep="cpuStep"
+                      :minCpu="minCpu"
+                      :maxCpu="maxCpu"
                       :minMemory="'serviceofferingdetails' in serviceOffering ? serviceOffering.serviceofferingdetails.minmemory*1 : 0"
-                      :maxMemory="'serviceofferingdetails' in serviceOffering ? serviceOffering.serviceofferingdetails.maxmemory*1 : Number.MAX_SAFE_INTEGER"
+                      :maxMemory="maxMemory"
                       :isCustomized="serviceOffering.iscustomized"
                       :isCustomizedIOps="'iscustomizediops' in serviceOffering && serviceOffering.iscustomizediops"
                       @handler-error="handlerError"
@@ -298,69 +277,32 @@
                         <a-input v-model:value="form.memory"/>
                       </a-form-item>
                     </span>
-                    <span v-if="imageType!=='isoid' && !isTemplateHypervisorExternal">
-                      {{ $t('label.override.root.diskoffering') }}
-                      <a-switch
-                        v-model:checked="showOverrideDiskOfferingOption"
-                        :checked="serviceOffering && !serviceOffering.diskofferingstrictness && showOverrideDiskOfferingOption"
-                        :disabled="(serviceOffering && serviceOffering.diskofferingstrictness)"
-                        @change="val => { updateOverrideRootDiskShowParam(val) }"
-                        style="margin-left: 10px;"/>
-                    </span>
-                    <span v-if="imageType!=='isoid' && serviceOffering && !serviceOffering.diskofferingstrictness">
-                      <a-step
-                        :status="zoneSelected ? 'process' : 'wait'"
-                        v-if="template && !template.deployasis && template.childtemplates && template.childtemplates.length > 0" >
-                        <template #description>
-                          <div v-if="zoneSelected">
-                            <multi-disk-selection
-                              :items="template.childtemplates"
-                              :diskOfferings="options.diskOfferings"
-                              :zoneId="zoneId"
-                              @select-multi-disk-offering="updateMultiDiskOffering($event)" />
-                          </div>
-                        </template>
-                      </a-step>
-                      <a-step
-                        v-else
-                        :status="zoneSelected ? 'process' : 'wait'">
-                        <template #description>
-                          <div v-if="zoneSelected">
-                            <disk-offering-selection
-                              v-if="showOverrideDiskOfferingOption"
-                              :items="options.diskOfferings"
-                              :row-count="rowCount.diskOfferings"
-                              :zoneId="zoneId"
-                              :value="overrideDiskOffering ? overrideDiskOffering.id : ''"
-                              :loading="loading.diskOfferings"
-                              :preFillContent="dataPreFill"
-                              :isIsoSelected="imageType==='isoid'"
-                              :isRootDiskOffering="true"
-                              @on-selected-root-disk-size="onSelectRootDiskSize"
-                              @select-disk-offering-item="($event) => updateOverrideDiskOffering($event)"
-                              @handle-search-filter="($event) => handleSearchFilter('diskOfferings', $event)"
-                            ></disk-offering-selection>
-                            <disk-size-selection
-                              v-if="(overrideDiskOffering && (overrideDiskOffering.iscustomized || overrideDiskOffering.iscustomizediops || overrideDiskOffering.encrypt)) || (serviceOffering && serviceOffering.encryptroot)"
-                              input-decorator="rootdisksize"
-                              :preFillContent="dataPreFill"
-                              :minDiskSize="dataPreFill.minrootdisksize"
-                              :rootDiskSelected="overrideDiskOffering"
-                              :isCustomized="overrideDiskOffering && overrideDiskOffering.iscustomized"
-                              :kmsKeys="options.kmsKeys"
-                              :loadingKmsKeys="loading.kmsKeys"
-                              :computeOfferingEncryptRoot="serviceOffering && serviceOffering.encryptroot"
-                              @handler-error="handlerError"
-                              @update-disk-size="updateFieldValue"
-                              @update-root-disk-iops-value="updateIOPSValue"
-                              @update-root-kms-key="updateRootKmsKey"/>
-                            <a-form-item class="form-item-hidden">
-                              <a-input v-model:value="form.rootdisksize"/>
-                            </a-form-item>
-                          </div>
-                        </template>
-                      </a-step>
-                    </span>
+                  </div>
+                </template>
+              </a-step>
+              <a-step
+                v-if="osDiskShown"
+                :title="$t('label.os.disk')"
+                :status="zoneSelected ? 'process' : 'wait'">
+                <template #description>
+                  <div v-if="zoneSelected">
+                    <p>{{ $t('message.os.disk') }}</p>
+                    <disk-size-selection
+                      input-decorator="rootdisksize"
+                      :key="'os-disk-' + template.id"
+                      :preFillContent="dataPreFill"
+                      :isCustomized="true"
+                      :minDiskSize="rootDiskMin"
+                      :maxDiskSize="maxStorage"
+                      :initialDiskSize="rootDiskDefault"
+                      :kmsKeys="options.kmsKeys"
+                      :loadingKmsKeys="loading.kmsKeys"
+                      :computeOfferingEncryptRoot="!!(serviceOffering && serviceOffering.encryptroot)"
+                      @update-disk-size="updateFieldValue"
+                      @update-root-kms-key="updateRootKmsKey" />
+                    <a-form-item class="form-item-hidden">
+                      <a-input v-model:value="form.rootdisksize" />
+                    </a-form-item>
                   </div>
                 </template>
               </a-step>
@@ -401,6 +343,7 @@
                       v-if="diskOffering && (diskOffering.iscustomized || diskOffering.iscustomizediops || diskOffering.encrypt)"
                       input-decorator="size"
                       :preFillContent="dataPreFill"
+                      :maxDiskSize="maxStorage"
                       :diskSelected="diskSelected"
                       :isCustomized="diskOffering.iscustomized"
                       :kmsKeys="options.kmsKeys"
@@ -416,6 +359,17 @@
                   <div v-else-if="isTemplateHypervisorExternal" style="margin-bottom: 20px; margin-top: 7px">
                     {{ $t('message.host.external.datadisk') }}
                   </div>
+                </template>
+              </a-step>
+              <a-step
+                v-if="zoneSelected && !isTemplateHypervisorExternal && (imageType === 'templateid' || imageType === 'volumeid')"
+                :title="$t('label.placement')"
+                :status="zoneSelected ? 'process' : 'wait'">
+                <template #description>
+                  <placement-step
+                    :request="placementRequest"
+                    :zoneid="zoneId"
+                    :capacityOfferingId="capacityOfferingId" />
                 </template>
               </a-step>
               <a-step
@@ -934,6 +888,13 @@
         </a-affix>
       </a-col>
     </a-row>
+    <placement-move-modal
+      :visible="moveVisible"
+      :verdict="moveVerdict"
+      operation="deploy"
+      :busy="loading.deploy"
+      @approve="approveMove"
+      @reject="rejectMove" />
   </div>
 </template>
 
@@ -970,11 +931,17 @@ import TooltipLabel from '@/components/widgets/TooltipLabel'
 import InstanceNicsNetworkSelectListView from '@/components/view/InstanceNicsNetworkSelectListView'
 import DetailsInput from '@/components/widgets/DetailsInput'
 import DeployInstanceBackupSelection from '@views/compute/wizard/DeployInstanceBackupSelection'
+import PlacementStep from '@views/compute/wizard/PlacementStep'
+import PlacementMoveModal from '@views/compute/wizard/PlacementMoveModal'
 import { SET_LEASE_API } from '@/utils/lease'
+import { checkPlacement, fetchCapabilities, isMoveRequired, placementAction, vcpuMinimum, vcpuStep } from '@/utils/placement'
+import { gpuRemaining, limitTagsOf, loadQuota, remainingLimit, remainingStorage } from '@/utils/limits'
 
 export default {
   name: 'Wizard',
   components: {
+    PlacementStep,
+    PlacementMoveModal,
     OwnershipSelection,
     InfoCard,
     DeployButtons,
@@ -1139,7 +1106,6 @@ export default {
       ],
       templateUserDataParams: [],
       templateUserDataValues: {},
-      overrideDiskOffering: {},
       initDataConfig: {},
       defaultnetworkid: '',
       networkConfig: [],
@@ -1147,14 +1113,16 @@ export default {
       userdataTabKey: 'listUserData' in this.$store.getters.apis ? 'userdataregistered' : 'userdatatext',
       dataPreFill: {},
       showDetails: false,
-      showRootDiskSizeChanger: false,
-      showOverrideDiskOfferingOption: false,
       securitygroupids: [],
       rootDiskSizeFixed: 0,
+      capabilities: {},
+      quota: null,
+      moveVisible: false,
+      moveVerdict: null,
+      pendingDeploy: null,
       hasError: false,
       error: false,
       diskSelected: {},
-      rootDiskSelected: {},
       diskIOpsMin: 0,
       diskIOpsMax: 0,
       minIops: 0,
@@ -1186,14 +1154,106 @@ export default {
     }
   },
   computed: {
-    rootDiskSize () {
-      return this.showRootDiskSizeChanger && this.rootDiskSizeFixed > 0
-    },
     isNormalAndDomainUser () {
       return ['DomainAdmin', 'User'].includes(this.$store.getters.userInfo.roletype)
     },
     isNormalUserOrProject () {
       return ['User'].includes(this.$store.getters.userInfo.roletype) || store.getters.project.id
+    },
+    // The OS disk is the root of a Template deployment: it has a size of its own unless the offering fixes one.
+    osDiskShown () {
+      return this.zoneSelected && this.imageType === 'templateid' && !!this.template && !this.template.deployasis &&
+        !this.isTemplateHypervisorExternal && !(this.rootDiskSizeFixed > 0)
+    },
+    // what the OS disk shows: its own value, or the default when the field was not set
+    rootDiskSizeToSend () {
+      const chosen = Number(this.form.rootdisksize)
+      return chosen > 0 ? chosen : this.rootDiskDefault
+    },
+    // the Template's size in whole GiB
+    templateSizeGiB () {
+      return Math.ceil((this.template && this.template.size ? this.template.size : 0) / (1024 * 1024 * 1024))
+    },
+    // the floor and the default are the operator's, raised to the Template's size
+    rootDiskMin () {
+      return Math.max(this.templateSizeGiB, Number(this.capabilities.rootdisksizemin) || 0)
+    },
+    rootDiskDefault () {
+      return Math.max(this.rootDiskMin, Number(this.capabilities.rootdisksizedefault) || 0)
+    },
+    // Storage is bounded by the remaining storage quota alone, as the server reports it: each disk may be that large and
+    // the placement step judges what the disks add up to.
+    maxStorage () {
+      return remainingStorage(this.quota)
+    },
+    gpuQuota () {
+      return gpuRemaining(this.quota)
+    },
+    cpuStep () {
+      return vcpuStep(this.capabilities)
+    },
+    offeringLimitTag () {
+      return limitTagsOf(this.serviceOffering)[0]
+    },
+    minCpu () {
+      const details = this.serviceOffering && this.serviceOffering.serviceofferingdetails
+      return details ? vcpuMinimum(details.mincpunumber * 1, this.cpuStep) : 0
+    },
+    maxCpu () {
+      const details = this.serviceOffering && this.serviceOffering.serviceofferingdetails
+      const offeringMax = details ? details.maxcpunumber * 1 : Number.MAX_SAFE_INTEGER
+      const remaining = remainingLimit(this.quota, 'cpu', this.offeringLimitTag)
+      return remaining === null ? offeringMax : Math.min(offeringMax, remaining)
+    },
+    maxMemory () {
+      const details = this.serviceOffering && this.serviceOffering.serviceofferingdetails
+      const offeringMax = details ? details.maxmemory * 1 : Number.MAX_SAFE_INTEGER
+      const remaining = remainingLimit(this.quota, 'memory', this.offeringLimitTag)
+      return remaining === null ? offeringMax : Math.min(offeringMax, remaining)
+    },
+    // the CPU-only offering whose capacity the placement step shows; a GPU offering has no such figures
+    capacityOfferingId () {
+      return this.serviceOffering && this.serviceOffering.id && !this.serviceOffering.gpucardname ? this.serviceOffering.id : ''
+    },
+    // the combination as checkPlacement takes it, for a new Instance from a Template or from a detached volume
+    placementRequest () {
+      const offering = this.serviceOffering
+      if (!this.zoneId || !offering || !offering.id) {
+        return {}
+      }
+      const request = { serviceofferingid: offering.id }
+      if (this.imageType === 'templateid' && this.form.templateid) {
+        request.templateid = this.form.templateid
+        request.zoneid = this.zoneId
+        if (this.osDiskShown && this.rootDiskSizeToSend > 0) {
+          request.rootdisksize = this.rootDiskSizeToSend
+        }
+        const dataDisks = this.dataDiskSizes
+        if (dataDisks) {
+          request.datadisksizes = dataDisks
+        }
+      } else if (this.imageType === 'volumeid' && this.form.volumeid) {
+        request.volumeid = this.form.volumeid
+      } else {
+        return {}
+      }
+      if (offering.iscustomized) {
+        if (this.form.cpunumber) {
+          request['details[0].cpuNumber'] = this.form.cpunumber
+        }
+        if (this.form.memory) {
+          request['details[0].memory'] = this.form.memory
+        }
+      }
+      return request
+    },
+    // the sizes of the data disks the Instance is created with, in GiB, as one list
+    dataDiskSizes () {
+      if (this.imageType !== 'templateid' || !this.diskOffering || !this.diskOffering.id) {
+        return null
+      }
+      const size = this.diskOffering.iscustomized ? Number(this.form.size) : Number(this.diskOffering.disksize)
+      return size > 0 ? String(size) : null
     },
     diskSize () {
       const customRootDiskSize = _.get(this.instanceConfig, 'rootdisksize', null)
@@ -1201,14 +1261,13 @@ export default {
       let computeOfferingDiskSize = _.get(this.serviceOffering, 'rootdisksize', null)
       computeOfferingDiskSize = computeOfferingDiskSize > 0 ? computeOfferingDiskSize : null
       const diskOfferingDiskSize = _.get(this.diskOffering, 'disksize', null)
-      const overrideDiskOfferingDiskSize = _.get(this.overrideDiskOffering, 'disksize', null)
 
       let rootDiskSize
       let dataDiskSize
       if (this.vm.isoid != null) {
         rootDiskSize = this.diskOffering?.iscustomized ? customDataDiskSize : diskOfferingDiskSize
       } else {
-        rootDiskSize = this.overrideDiskOffering?.iscustomized ? customRootDiskSize : overrideDiskOfferingDiskSize || computeOfferingDiskSize || this.dataPreFill.minrootdisksize
+        rootDiskSize = this.osDiskShown ? customRootDiskSize : computeOfferingDiskSize
         dataDiskSize = this.diskOffering?.iscustomized ? customDataDiskSize : diskOfferingDiskSize
       }
 
@@ -1222,7 +1281,7 @@ export default {
       return size.join(' | ')
     },
     rootDiskOffering () {
-      const rootDiskOffering = this.vm.isoid != null ? this.diskOffering : this.overrideDiskOffering
+      const rootDiskOffering = this.vm.isoid != null ? this.diskOffering : null
 
       const id = _.get(rootDiskOffering, 'id', null)
       const displayText = _.get(rootDiskOffering, 'displaytext', null)
@@ -1560,7 +1619,7 @@ export default {
       return this.diskSelected?.iscustomizediops || false
     },
     isCustomizedIOPS () {
-      return this.rootDiskSelected?.iscustomizediops || this.serviceOffering?.iscustomizediops || false
+      return this.serviceOffering?.iscustomizediops || false
     },
     deployMenuOptions () {
       return [this.form.startvm ? this.$t('label.launch.vm.and.stay') : this.$t('label.create.vm.and.stay')]
@@ -1624,13 +1683,6 @@ export default {
         }
 
         this.serviceOffering = _.find(this.options.serviceOfferings, (option) => option.id === instanceConfig.computeofferingid)
-
-        instanceConfig.overridediskofferingid = this.rootDiskSelected?.id || this.serviceOffering?.diskofferingid
-        if (instanceConfig.overridediskofferingid) {
-          this.overrideDiskOffering = _.find(this.options.diskOfferings, (option) => option.id === instanceConfig.overridediskofferingid)
-        } else {
-          this.overrideDiskOffering = null
-        }
 
         if (this.iso && this.serviceOffering?.diskofferingid) {
           this.diskOffering = _.find(this.options.diskOfferings, (option) => option.id === this.serviceOffering.diskofferingid)
@@ -1762,12 +1814,6 @@ export default {
     }
   },
   diskOffering (newValue) {
-    // Fetch KMS keys if encryption is enabled
-    if (newValue && newValue.encrypt && this.zoneId) {
-      this.fetchKmsKeys()
-    }
-  },
-  overrideDiskOffering (newValue) {
     // Fetch KMS keys if encryption is enabled
     if (newValue && newValue.encrypt && this.zoneId) {
       this.fetchKmsKeys()
@@ -1943,7 +1989,17 @@ export default {
         })
       })
     },
+    // the operator's bounds of the inputs, and the owner's quota: the only maximum of an input
+    fetchLimits () {
+      fetchCapabilities(this.owner.domainid || undefined).then(capabilities => {
+        this.capabilities = capabilities
+      }).catch(() => {})
+      loadQuota(this.owner, this.$store.getters.userInfo, this.$store.getters.apis).then(quota => {
+        this.quota = quota
+      })
+    },
     async fetchData () {
+      this.fetchLimits()
       this.architectureTypes.opts = this.$fetchCpuArchitectureTypes()
       if (this.queryArchId) {
         this.architectureTypes.opts = this.architectureTypes.opts.filter(o => o.id === this.queryArchId)
@@ -1981,15 +2037,6 @@ export default {
       return 'serviceofferingdetails' in serviceOffering && 'mincpunumber' in serviceOffering.serviceofferingdetails &&
         'maxmemory' in serviceOffering.serviceofferingdetails && 'maxcpunumber' in serviceOffering.serviceofferingdetails &&
         'minmemory' in serviceOffering.serviceofferingdetails
-    },
-    updateOverrideRootDiskShowParam (val) {
-      if (val) {
-        this.showRootDiskSizeChanger = false
-      } else {
-        this.rootDiskSelected = null
-        this.form.overridediskofferingid = undefined
-      }
-      this.showOverrideDiskOfferingOption = val
     },
     async fetchDataByZone (zoneId) {
       this.fillValue('zoneid')
@@ -2115,8 +2162,6 @@ export default {
         if (template) {
           this.resetTemplateAssociatedResources()
           this.updateTemplateParameters()
-          var size = template.size / (1024 * 1024 * 1024) || 0 // bytes to GB
-          this.dataPreFill.minrootdisksize = Math.ceil(size)
           this.updateTemplateLinkedUserData(template.userdataid)
           this.userdataDefaultOverridePolicy = template.userdatapolicy
           this.form.dynamicscalingenabled = template.isdynamicallyscalable
@@ -2218,13 +2263,6 @@ export default {
         return
       }
       this.form.diskofferingid = id
-    },
-    updateOverrideDiskOffering (id) {
-      if (id === '0') {
-        this.form.overridediskofferingid = undefined
-        return
-      }
-      this.form.overridediskofferingid = id
     },
     updateMultiDiskOffering (value) {
       this.form.multidiskoffering = value
@@ -2432,8 +2470,8 @@ export default {
           deployVmData.templateid = values.isoid
         }
 
-        if (this.showRootDiskSizeChanger && values.rootdisksize && values.rootdisksize > 0) {
-          deployVmData.rootdisksize = values.rootdisksize
+        if (this.osDiskShown && this.rootDiskSizeToSend > 0) {
+          deployVmData.rootdisksize = this.rootDiskSizeToSend
         } else if (this.rootDiskSizeFixed > 0 && !this.template?.deployasis) {
           deployVmData.rootdisksize = this.rootDiskSizeFixed
         }
@@ -2463,12 +2501,6 @@ export default {
         }
         if (this.selectedTemplateConfiguration) {
           deployVmData['details[0].configurationId'] = this.selectedTemplateConfiguration.id
-        }
-        if (!this.serviceOffering.diskofferingstrictness && values.overridediskofferingid && !values.isoid) {
-          deployVmData.overridediskofferingid = values.overridediskofferingid
-          if (values.rootdisksize && values.rootdisksize > 0) {
-            deployVmData.rootdisksize = values.rootdisksize
-          }
         }
         if (this.isCustomizedIOPS) {
           deployVmData['details[0].minIops'] = this.minIops
@@ -2575,10 +2607,6 @@ export default {
           })
         }
 
-        const title = this.$t('label.launch.vm')
-        const description = values.name || ''
-        const password = this.$t('label.password')
-
         deployVmData = Object.fromEntries(
           Object.entries(deployVmData).filter(([key, value]) => value !== undefined))
 
@@ -2596,56 +2624,7 @@ export default {
           }
         }
 
-        postAPI('deployVirtualMachine', deployVmData).then(response => {
-          const jobId = response.deployvirtualmachineresponse.jobid
-          if (jobId) {
-            this.$pollJob({
-              jobId,
-              title,
-              description,
-              successMethod: result => {
-                const vm = result.jobresult.virtualmachine
-                const name = vm.displayname || vm.name || vm.id
-                if (vm.password) {
-                  this.$notification.success({
-                    message: password + ` ${this.$t('label.for')} ` + name,
-                    description: vm.password,
-                    btn: () => h(
-                      Button,
-                      {
-                        type: 'primary',
-                        size: 'small',
-                        onClick: () => this.copyToClipboard(vm.password)
-                      },
-                      () => [this.$t('label.copy.password')]
-                    ),
-                    duration: 0
-                  })
-                }
-                this.performPostDeployBackupActions(vm)
-                eventBus.emit('vm-refresh-data')
-              },
-              loadingMessage: `${title} ${this.$t('label.in.progress')}`,
-              catchMessage: this.$t('error.fetching.async.job.result'),
-              action: {
-                isFetchData: false
-              }
-            })
-          }
-          // Sending a refresh in case it hasn't picked up the new VM
-          new Promise(resolve => setTimeout(resolve, 3000)).then(() => {
-            eventBus.emit('vm-refresh-data')
-          })
-          if (!values.stayonpage) {
-            this.$router.back()
-          }
-        }).catch(error => {
-          this.$notifyError(error)
-          this.loading.deploy = false
-        }).finally(() => {
-          this.form.stayonpage = false
-          this.loading.deploy = false
-        })
+        this.deploy(deployVmData, values)
       }).catch(err => {
         this.formRef.value.scrollToField(err.errorFields[0].name)
         if (err) {
@@ -2661,6 +2640,115 @@ export default {
             message: this.$t('message.request.failed'),
             description: this.$t('error.form.message')
           })
+        }
+      })
+    },
+    // A deployment from a detached volume asks for the placement first: when the volumes must move before the start, their
+    // owner approves exactly that move and the deployment carries the approval it was given.
+    async deploy (deployVmData, values) {
+      if (this.imageType !== 'volumeid' || !('checkPlacement' in this.$store.getters.apis)) {
+        this.postDeploy(deployVmData, values)
+        return
+      }
+      await this.askMove(deployVmData, values)
+    },
+    // The check is advisory: when it cannot be made the deployment goes on without an approval, which never moves
+    // anything. `refused` is the error of a deployment the server turned back for want of an approval: it is shown when
+    // the check finds no move to approve, rather than sent again.
+    async askMove (deployVmData, values, refused) {
+      const verdict = await checkPlacement(this.placementRequest).catch(() => null)
+      if (verdict && placementAction(verdict) === 'approve') {
+        this.pendingDeploy = { deployVmData, values }
+        this.moveVerdict = verdict
+        this.moveVisible = true
+        this.loading.deploy = false
+        return
+      }
+      if (refused) {
+        this.form.stayonpage = false
+        this.loading.deploy = false
+        this.$notifyError(refused)
+        return
+      }
+      if (!verdict) {
+        this.$notification.warning({ message: this.$t('label.placement'), description: this.$t('message.placement.check.failed') })
+      }
+      this.postDeploy(deployVmData, values)
+    },
+    approveMove (verdict) {
+      const { deployVmData, values } = this.pendingDeploy
+      this.moveVisible = false
+      this.postDeploy(deployVmData, values, verdict)
+    },
+    rejectMove () {
+      this.moveVisible = false
+      this.pendingDeploy = null
+      this.form.stayonpage = false
+      this.loading.deploy = false
+    },
+    postDeploy (deployVmData, values, approval) {
+      const title = this.$t('label.launch.vm')
+      const description = values.name || ''
+      const password = this.$t('label.password')
+      const data = approval ? { ...deployVmData, migratevolumes: true, placementtoken: approval.placementtoken } : deployVmData
+      let reasking = false
+      this.loading.deploy = true
+      postAPI('deployVirtualMachine', data).then(response => {
+        const jobId = response.deployvirtualmachineresponse.jobid
+        if (jobId) {
+          this.$pollJob({
+            jobId,
+            title,
+            description,
+            successMethod: result => {
+              const vm = result.jobresult.virtualmachine
+              const name = vm.displayname || vm.name || vm.id
+              if (vm.password) {
+                this.$notification.success({
+                  message: password + ` ${this.$t('label.for')} ` + name,
+                  description: vm.password,
+                  btn: () => h(
+                    Button,
+                    {
+                      type: 'primary',
+                      size: 'small',
+                      onClick: () => this.copyToClipboard(vm.password)
+                    },
+                    () => [this.$t('label.copy.password')]
+                  ),
+                  duration: 0
+                })
+              }
+              this.performPostDeployBackupActions(vm)
+              eventBus.emit('vm-refresh-data')
+            },
+            loadingMessage: `${title} ${this.$t('label.in.progress')}`,
+            catchMessage: this.$t('error.fetching.async.job.result'),
+            action: {
+              isFetchData: false
+            }
+          })
+        }
+        // Sending a refresh in case it hasn't picked up the new VM
+        new Promise(resolve => setTimeout(resolve, 3000)).then(() => {
+          eventBus.emit('vm-refresh-data')
+        })
+        if (!values.stayonpage) {
+          this.$router.back()
+        }
+      }).catch(error => {
+        // the server wants a move that was not approved, or approved for what it no longer sees: the owner is shown the
+        // verdict as it stands now and approves it
+        if (isMoveRequired(error)) {
+          reasking = true
+          this.askMove(deployVmData, values, error)
+          return
+        }
+        this.$notifyError(error)
+      }).finally(() => {
+        if (!reasking) {
+          this.form.stayonpage = false
+          this.loading.deploy = false
         }
       })
     },
@@ -3066,6 +3154,10 @@ export default {
           volumes[volumeFilters[idx]] = _.isEmpty(resItem.listvolumesresponse) ? { count: 0, volume: [] } : resItem.listvolumesresponse
           this.options.volumes = { ...volumes }
         })
+        // the wizard opened for one volume starts with that volume chosen
+        if (this.queryVolumeId && !this.form.volumeid && Object.values(this.options.volumes).some(entry => entry.volume.some(volume => volume.id === this.queryVolumeId))) {
+          this.updateFieldValueForVolume(this.queryVolumeId)
+        }
       }).catch((reason) => {
         console.log(reason)
       }).finally(() => {
@@ -3191,7 +3283,7 @@ export default {
       this.form.isoid = undefined
       this.resetTemplatesList()
       this.resetIsosList()
-      this.imageType = this.queryIsoId ? 'isoid' : 'templateid'
+      this.imageType = this.queryIsoId ? 'isoid' : this.queryVolumeId ? 'volumeid' : 'templateid'
       this.form.backupofferingid = undefined
       this.selectedBackupOffering = null
       this.fetchZoneOptions()
@@ -3509,7 +3601,6 @@ export default {
       }
       if (offering && offering.rootdisksize > 0) {
         this.rootDiskSizeFixed = offering.rootdisksize
-        this.showRootDiskSizeChanger = false
       }
 
       if (this.isLeaseFeatureEnabled) {
@@ -3521,7 +3612,6 @@ export default {
         this.onToggleLeaseData()
       }
 
-      this.form.rootdisksizeitem = this.showRootDiskSizeChanger && this.rootDiskSizeFixed > 0
       this.formModel = toRaw(this.form)
     },
     handlerError (error) {
@@ -3529,9 +3619,6 @@ export default {
     },
     onSelectDiskSize (rowSelected) {
       this.diskSelected = rowSelected
-    },
-    onSelectRootDiskSize (rowSelected) {
-      this.rootDiskSelected = rowSelected
     },
     updateIOPSValue (input, value) {
       this[input] = value

@@ -68,18 +68,33 @@
         />
       </a-form-item>
     </a-form>
+    <a-alert v-if="refusal" class="attach-refused" type="error" show-icon :message="refusal" />
+    <a-alert v-if="working" class="attach-working" type="info" show-icon :message="$t('message.placement.working.attach')" />
     <div class="actions">
       <a-button @click="closeAction">{{ $t('label.cancel') }}</a-button>
       <a-button type="primary" ref="submit" @click="handleSubmit">{{ $t('label.ok') }}</a-button>
     </div>
+    <placement-move-modal
+      :visible="moveVisible"
+      :verdict="moveVerdict"
+      operation="attach"
+      @approve="approveMove"
+      @reject="rejectMove" />
   </a-spin>
 </template>
 <script>
 import { ref, reactive, toRaw } from 'vue'
 import { getAPI, postAPI } from '@/api'
+import PlacementMoveModal from '@views/compute/wizard/PlacementMoveModal'
+import placementApproval from '@/utils/placementApproval'
+import { checkPlacement } from '@/utils/placement'
 
 export default {
   name: 'AttachVolume',
+  components: {
+    PlacementMoveModal
+  },
+  mixins: [placementApproval],
   props: {
     resource: {
       type: Object,
@@ -144,29 +159,57 @@ export default {
       if (this.loading) return
       this.formRef.value.validate().then(() => {
         const values = toRaw(this.form)
-
-        this.loading = true
-        postAPI('attachVolume', {
+        const params = {
           id: this.resource.id,
           virtualmachineid: values.virtualmachineid,
           deviceid: values.deviceid
-        }).then(response => {
-          this.$pollJob({
-            jobId: response.attachvolumeresponse.jobid,
-            title: this.$t('label.action.attach.disk'),
-            description: this.resource.id,
-            errorMessage: `${this.$t('message.attach.volume.failed')}: ${this.resource.name || this.resource.id}`,
-            loadingMessage: `${this.$t('message.attach.volume.progress')}: ${this.resource.name || this.resource.id}`,
-            catchMessage: this.$t('error.fetching.async.job.result')
-          })
-          this.closeAction()
-        }).catch(error => {
-          this.$notifyError(error)
-        }).finally(() => {
-          this.loading = false
-        })
+        }
+        if (!this.asksPlacement(values.virtualmachineid)) {
+          this.approvalRun(params)
+          return
+        }
+        this.beginApproval(params)
       }).catch((error) => {
         this.formRef.value.scrollToField(error.errorFields[0].name)
+      })
+    },
+    // Only a running instance takes a volume from another host through an approved move; a stopped one records the
+    // attachment and its next start decides.
+    asksPlacement (virtualmachineid) {
+      const machine = this.virtualmachines.find(vm => vm.id === virtualmachineid)
+      return 'checkPlacement' in this.$store.getters.apis && !!machine && machine.state === 'Running'
+    },
+    approvalCheck (params) {
+      return checkPlacement({ virtualmachineid: params.virtualmachineid, volumeid: this.resource.id })
+    },
+    approvalRefusal (reason) {
+      return this.$t('message.placement.none', { reason })
+    },
+    approvalPost (params, verdict) {
+      return postAPI('attachVolume', { ...params, migratevolume: true, placementtoken: verdict.placementtoken })
+    },
+    approvalPoll (response, handlers) {
+      this.$pollJob({ ...this.jobOptions(response), ...handlers })
+    },
+    jobOptions (response) {
+      return {
+        jobId: response.attachvolumeresponse.jobid,
+        title: this.$t('label.action.attach.disk'),
+        description: this.resource.id,
+        errorMessage: `${this.$t('message.attach.volume.failed')}: ${this.resource.name || this.resource.id}`,
+        loadingMessage: `${this.$t('message.attach.volume.progress')}: ${this.resource.name || this.resource.id}`,
+        catchMessage: this.$t('error.fetching.async.job.result')
+      }
+    },
+    approvalRun (params) {
+      this.loading = true
+      postAPI('attachVolume', params).then(response => {
+        this.$pollJob(this.jobOptions(response))
+        this.closeAction()
+      }).catch(error => {
+        this.$notifyError(error)
+      }).finally(() => {
+        this.loading = false
       })
     }
   }

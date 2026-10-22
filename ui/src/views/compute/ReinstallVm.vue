@@ -80,6 +80,9 @@
         input-decorator="rootdisksize"
         :diskSelected="diskOffering"
         :isCustomized="diskOffering.iscustomized"
+        :minDiskSize="rootDiskMin"
+        :maxDiskSize="maxStorage"
+        :initialDiskSize="rootDiskDefault"
         @handler-error="handlerError"
         @update-disk-size="updateFieldValue"
         @update-root-disk-iops-value="updateFieldValue"
@@ -88,7 +91,7 @@
     <a-form-item v-if="!(diskOffering && diskOffering.iscustomized)">
       <template #label>
         <tooltip-label
-          :title="$t('label.override.rootdisk.size')"
+          :title="$t('label.os.disk.size.change')"
           :tooltip="apiParams.rootdisksize.description"
         />
       </template>
@@ -100,6 +103,9 @@
         v-if="overrideDiskSize"
         input-decorator="rootdisksize"
         :isCustomized="true"
+        :minDiskSize="rootDiskMin"
+        :maxDiskSize="maxStorage"
+        :initialDiskSize="rootDiskDefault"
         @update-disk-size="(input, value) => updateFieldValue('overrideRootDiskSize', value)"
         style="margin-top: 10px;"
       />
@@ -138,6 +144,8 @@ import OsBasedImageSelection from '@views/compute/wizard/OsBasedImageSelection'
 import TemplateIsoSelection from '@views/compute/wizard/TemplateIsoSelection'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
 import _ from 'lodash'
+import { fetchCapabilities } from '@/utils/placement'
+import { loadQuota, remainingStorage } from '@/utils/limits'
 
 export default {
   name: 'ReinstallVM',
@@ -184,6 +192,9 @@ export default {
       imageSearchFilters: null,
       templateid: null,
       templateKey: 0,
+      capabilities: {},
+      quota: null,
+      currentTemplate: null,
       dataPreFill: {
         templateid: this.resource.templateid,
         diskofferingid: this.resource.diskofferingid
@@ -195,8 +206,29 @@ export default {
   },
   created () {
     this.fetchData()
+    this.fetchLimits()
   },
   computed: {
+    // The new root is bounded as the root of a new instance is: the operator's floor, raised to the size of the template
+    // it is made from (the chosen one, else the one it has), and the remaining storage quota above.
+    templateSizeGiB () {
+      let template = this.currentTemplate
+      if (this.templateid) {
+        for (const entry of Object.values(this.options.templates)) {
+          template = (entry.template || []).find(option => option.id === this.templateid) || template
+        }
+      }
+      return Math.ceil((template && template.size ? template.size : 0) / (1024 * 1024 * 1024))
+    },
+    rootDiskMin () {
+      return Math.max(this.templateSizeGiB, Number(this.capabilities.rootdisksizemin) || 0)
+    },
+    rootDiskDefault () {
+      return Math.max(this.rootDiskMin, Number(this.capabilities.rootdisksizedefault) || 0)
+    },
+    maxStorage () {
+      return remainingStorage(this.quota)
+    },
     isNormalAndDomainUser () {
       return ['DomainAdmin', 'User'].includes(this.$store.getters.userInfo.roletype)
     },
@@ -214,6 +246,21 @@ export default {
     }
   },
   methods: {
+    fetchLimits () {
+      fetchCapabilities(this.resource.domainid).then(capabilities => {
+        this.capabilities = capabilities
+      }).catch(() => {})
+      loadQuota(this.resource, this.$store.getters.userInfo, this.$store.getters.apis).then(quota => {
+        this.quota = quota
+      })
+      getAPI('listTemplates', {
+        id: this.resource.templateid,
+        templatefilter: this.isNormalAndDomainUser ? 'executable' : 'all',
+        isready: true
+      }).then(response => {
+        this.currentTemplate = response?.listtemplatesresponse?.template?.[0] || null
+      }).catch(() => {})
+    },
     fetchData () {
       this.fetchDiskOfferings({})
       if (this.isModernImageSelection) {

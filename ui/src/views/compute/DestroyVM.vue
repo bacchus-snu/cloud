@@ -63,6 +63,11 @@
           </a-form-item>
           <p v-else v-html="$t('label.volume.empty')" />
 
+          <a-form-item v-if="keepRoot !== null" class="keep-root-volume">
+            <a-checkbox v-model:checked="keepRoot">{{ $t('label.keep.root.disk') }}</a-checkbox>
+            <p class="keep-root-volume-hint">{{ $t('message.keep.root.disk') }}</p>
+          </a-form-item>
+
           <div :span="24" class="action-button">
             <a-button @click="closeAction">{{ $t('label.cancel') }}</a-button>
             <a-button :loading="loading" ref="submit" type="primary" @click="handleSubmit">{{ $t('label.ok') }}</a-button>
@@ -121,6 +126,10 @@
               </template>
               <a-switch v-model:checked="expunge" v-focus="true" />
             </a-form-item>
+            <a-form-item v-if="keepRoot !== null" class="keep-root-volume">
+              <a-checkbox v-model:checked="keepRoot">{{ $t('label.keep.root.disk') }}</a-checkbox>
+              <p class="keep-root-volume-hint">{{ $t('message.keep.root.disk') }}</p>
+            </a-form-item>
           </a-form>
         </div>
 
@@ -144,6 +153,7 @@ import { ref, reactive, toRaw } from 'vue'
 import { getAPI, postAPI } from '@/api'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
 import BulkActionProgress from '@/components/view/BulkActionProgress'
+import { fetchCapabilities } from '@/utils/placement'
 
 export default {
   name: 'DestroyVM',
@@ -184,7 +194,9 @@ export default {
       selectedItemsProgress: [],
       showGroupActionModal: false,
       modalInfo: {},
-      expunge: false
+      expunge: false,
+      // whether the root disk stays as a volume; null until the operator's default is known, and then it is not sent
+      keepRoot: null
     }
   },
   beforeCreate () {
@@ -197,8 +209,16 @@ export default {
       volumeids: [{ type: 'array' }]
     })
     this.fetchData()
+    this.fetchKeepRootDefault()
   },
   methods: {
+    fetchKeepRootDefault () {
+      fetchCapabilities(this.selectedRowKeys.length === 0 ? this.resource.domainid : undefined).then(capabilities => {
+        if (typeof capabilities.keeprootvolumedefault === 'boolean') {
+          this.keepRoot = capabilities.keeprootvolumedefault
+        }
+      }).catch(() => {})
+    },
     fetchData () {
       if (this.selectedRowKeys.length === 0) {
         this.fetchVolumes()
@@ -269,6 +289,9 @@ export default {
           if (values.expunge) {
             params.expunge = values.expunge
           }
+          if (this.keepRoot !== null) {
+            params.keeprootvolume = this.keepRoot
+          }
           this.loading = true
           try {
             const jobId = await this.destroyVM(params)
@@ -338,6 +361,9 @@ export default {
         }
         if (this.expunge) {
           params.expunge = this.expunge
+        }
+        if (this.keepRoot !== null) {
+          params.keeprootvolume = this.keepRoot
         }
         promises.push(this.callGroupApi(params))
       })

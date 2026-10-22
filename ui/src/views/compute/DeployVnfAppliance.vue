@@ -178,7 +178,8 @@
                       :preFillContent="dataPreFill"
                       :computeOfferingId="vnfAppConfig.computeofferingid"
                       :isConstrained="isOfferingConstrained(serviceOffering)"
-                      :minCpu="'serviceofferingdetails' in serviceOffering ? serviceOffering.serviceofferingdetails.mincpunumber*1 : 0"
+                      :cpuStep="cpuStep"
+                      :minCpu="'serviceofferingdetails' in serviceOffering ? cpuMinimum(serviceOffering.serviceofferingdetails.mincpunumber*1) : 0"
                       :maxCpu="'serviceofferingdetails' in serviceOffering ? serviceOffering.serviceofferingdetails.maxcpunumber*1 : Number.MAX_SAFE_INTEGER"
                       :minMemory="'serviceofferingdetails' in serviceOffering ? serviceOffering.serviceofferingdetails.minmemory*1 : 0"
                       :maxMemory="'serviceofferingdetails' in serviceOffering ? serviceOffering.serviceofferingdetails.maxmemory*1 : Number.MAX_SAFE_INTEGER"
@@ -841,6 +842,7 @@ import { ref, reactive, toRaw, nextTick } from 'vue'
 import { getAPI, postAPI } from '@/api'
 import _ from 'lodash'
 import { mixin, mixinDevice } from '@/utils/mixin.js'
+import vcpuStepMixin from '@/utils/vcpuStep'
 import store from '@/store'
 import eventBus from '@/config/eventBus'
 
@@ -900,7 +902,7 @@ export default {
       default: () => {}
     }
   },
-  mixins: [mixin, mixinDevice],
+  mixins: [mixin, mixinDevice, vcpuStepMixin],
   data () {
     return {
       zoneId: '',

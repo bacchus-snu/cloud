@@ -27,6 +27,7 @@
       :compute-items="offerings"
       :loading="loading"
       :rowCount="total"
+      :gpuQuota="gpuQuota"
       size="small"
       @select-compute-item="($event) => updateComputeOffering($event)"
       @handle-search-filter="($event) => fetchData($event)" />
@@ -38,13 +39,14 @@
       :memory-input-decorator="memoryKey"
       :computeOfferingId="selectedOffering.id"
       :isConstrained="'serviceofferingdetails' in selectedOffering"
+      :cpuStep="cpuStep"
       :initialCpuValue="getInitialCpuValue()"
       :minCpu="getMinCpu()"
-      :maxCpu="'serviceofferingdetails' in selectedOffering ? selectedOffering.serviceofferingdetails.maxcpunumber*1 : Number.MAX_SAFE_INTEGER"
+      :maxCpu="maxCpu"
       :cpuSpeed="getCPUSpeed()"
       :initialMemoryValue="getInitialMemoryValue()"
       :minMemory="getMinMemory()"
-      :maxMemory="'serviceofferingdetails' in selectedOffering ? selectedOffering.serviceofferingdetails.maxmemory*1 : Number.MAX_SAFE_INTEGER"
+      :maxMemory="maxMemory"
       :isCustomized="selectedOffering.iscustomized"
       :isCustomizedIOps="'iscustomizediops' in selectedOffering && selectedOffering.iscustomizediops"
       @update-compute-cpunumber="updateFieldValue"
@@ -60,6 +62,13 @@
       @handler-error="handlerError"
       @update-disk-size="updateFieldValue"
       @update-root-disk-iops-value="updateIOPSValue"/>
+
+    <placement-step
+      v-if="showPlacement"
+      :request="placementRequest"
+      :zoneid="resource.zoneid"
+      :virtualmachineid="resource.id"
+      :capacityOfferingId="capacityOfferingId" />
 
     <a-form-item :label="$t('label.automigrate.volume')">
       <template #label>
@@ -82,7 +91,10 @@ import { getAPI, postAPI } from '@/api'
 import ComputeOfferingSelection from '@views/compute/wizard/ComputeOfferingSelection'
 import ComputeSelection from '@views/compute/wizard/ComputeSelection'
 import DiskSizeSelection from '@views/compute/wizard/DiskSizeSelection'
+import PlacementStep from '@views/compute/wizard/PlacementStep'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
+import { fetchCapabilities, vcpuMinimum, vcpuStep } from '@/utils/placement'
+import { gpuRemaining, gpuTypeOf, limitTagsOf, loadQuota, remainingLimit } from '@/utils/limits'
 
 export default {
   name: 'ScaleVM',
@@ -90,6 +102,7 @@ export default {
     ComputeOfferingSelection,
     ComputeSelection,
     DiskSizeSelection,
+    PlacementStep,
     TooltipLabel
   },
   props: {
@@ -116,7 +129,59 @@ export default {
       minIopsKey: 'details[0].minIops',
       maxIopsKey: 'details[0].maxIops',
       fixedOfferingKvm: false,
-      minDiskSize: 0
+      minDiskSize: 0,
+      capabilities: {},
+      quota: null,
+      currentOffering: null
+    }
+  },
+  computed: {
+    cpuStep () {
+      return vcpuStep(this.capabilities)
+    },
+    // The remaining GPU quota of each type, as the deployment wizard has it, plus the GPUs the instance holds now in their
+    // own type: a change replaces them within the type, while a change across types or from an offering without a GPU
+    // adds nothing back.
+    gpuQuota () {
+      const remaining = gpuRemaining(this.quota)
+      const held = Number(this.resource.gpucount) || 0
+      const type = held > 0 ? gpuTypeOf(this.currentOffering, remaining) : null
+      if (type && remaining[type] !== null) {
+        remaining[type] += held
+      }
+      return remaining
+    },
+    // Quota is the only maximum: what is left of it and what the instance already holds, since a change replaces the
+    // instance's own amount. An instance on a GPU offering holds none of the CPU-only quota.
+    maxCpu () {
+      const offeringMax = 'serviceofferingdetails' in this.selectedOffering ? this.selectedOffering.serviceofferingdetails.maxcpunumber * 1 : Number.MAX_SAFE_INTEGER
+      return this.boundedByQuota(offeringMax, 'cpu', this.resource.cpunumber)
+    },
+    maxMemory () {
+      const offeringMax = 'serviceofferingdetails' in this.selectedOffering ? this.selectedOffering.serviceofferingdetails.maxmemory * 1 : Number.MAX_SAFE_INTEGER
+      return this.boundedByQuota(offeringMax, 'memory', this.resource.memory)
+    },
+    // the root keeps its size on a change to a compute-only root; a size is offered only for a disk offering that takes one
+    rootSizeApplies () {
+      return !!this.selectedDiskOffering && this.selectedDiskOffering.iscustomized === true
+    },
+    showPlacement () {
+      return this.resource.state === 'Stopped' && !!this.selectedOffering && !!this.selectedOffering.id
+    },
+    capacityOfferingId () {
+      return this.showPlacement && !this.selectedOffering.gpucardname ? this.selectedOffering.id : ''
+    },
+    placementRequest () {
+      const request = { virtualmachineid: this.resource.id, serviceofferingid: this.selectedOffering.id }
+      if (this.selectedOffering.iscustomized) {
+        if (this.params[this.cpuNumberKey]) {
+          request[this.cpuNumberKey] = this.params[this.cpuNumberKey]
+        }
+        if (this.params[this.memoryKey]) {
+          request[this.memoryKey] = this.params[this.memoryKey]
+        }
+      }
+      return request
     }
   },
   beforeCreate () {
@@ -128,8 +193,28 @@ export default {
       pageSize: 10,
       page: 1
     })
+    fetchCapabilities(this.resource.domainid).then(capabilities => {
+      this.capabilities = capabilities
+    }).catch(() => {})
+    loadQuota(this.resource, this.$store.getters.userInfo, this.$store.getters.apis).then(quota => {
+      this.quota = quota
+    })
+    if (Number(this.resource.gpucount) > 0 && this.resource.serviceofferingid) {
+      getAPI('listServiceOfferings', { id: this.resource.serviceofferingid, state: 'all' }).then(response => {
+        this.currentOffering = response?.listserviceofferingsresponse?.serviceoffering?.[0] || null
+      }).catch(() => {})
+    }
   },
   methods: {
+    boundedByQuota (offeringMax, type, own) {
+      const tag = limitTagsOf(this.selectedOffering)[0]
+      const remaining = remainingLimit(this.quota, type, tag)
+      if (remaining === null) {
+        return offeringMax
+      }
+      const held = Number(this.resource.gpucount) > 0 ? 0 : Number(own) || 0
+      return Math.min(offeringMax, remaining + held)
+    },
     fetchData (options) {
       this.loading = true
       this.total = 0
@@ -155,7 +240,7 @@ export default {
       })
     },
     getMinCpu () {
-      return this.selectedOffering?.serviceofferingdetails?.mincpunumber * 1 || 1
+      return vcpuMinimum(this.selectedOffering?.serviceofferingdetails?.mincpunumber * 1 || 1, this.cpuStep)
     },
     getInitialCpuValue () {
       const offeringMinCpu = this.getMinCpu()
@@ -219,7 +304,7 @@ export default {
       delete this.params[this.rootDiskSizeKey]
 
       this.params.serviceofferingid = id
-      this.selectedOffering = this.offeringsMap[id]
+      this.selectedOffering = this.offeringsMap[id] || {}
       this.selectedDiskOffering = null
       if (this.selectedOffering.diskofferingid) {
         getAPI('listDiskOfferings', {
@@ -236,6 +321,9 @@ export default {
       this.params.automigrate = this.autoMigrate
     },
     updateFieldValue (name, value) {
+      if (name === this.rootDiskSizeKey && !this.rootSizeApplies) {
+        return
+      }
       this.params[name] = value
     },
     closeAction () {

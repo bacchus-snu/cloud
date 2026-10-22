@@ -33,12 +33,14 @@ import org.apache.cloudstack.framework.jobs.AsyncJobDispatcher;
 import org.apache.cloudstack.framework.jobs.AsyncJobManager;
 import org.apache.cloudstack.jobs.JobInfo;
 
+import com.cloud.exception.CloudException;
 import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.user.Account;
 import com.cloud.user.User;
 import com.cloud.utils.component.AdapterBase;
 import com.cloud.utils.component.ComponentContext;
 import com.cloud.utils.db.EntityManager;
+import com.cloud.utils.exception.CloudRuntimeException;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
@@ -131,6 +133,12 @@ public class ApiAsyncJobDispatcher extends AdapterBase implements AsyncJobDispat
             ExceptionResponse response = new ExceptionResponse();
             response.setErrorCode(errorCode);
             response.setErrorText(errorMsg);
+            // the same code a request that fails before its job gets, so a client tells the failures apart in both cases
+            if (e instanceof CloudRuntimeException) {
+                response.setCSErrorCode(((CloudRuntimeException)e).getCSErrorCode());
+            } else if (e instanceof CloudException) {
+                response.setCSErrorCode(((CloudException)e).getCSErrorCode());
+            }
             response.setResponseName((cmdObj == null) ? "unknowncommandresponse" : cmdObj.getCommandName());
 
             _asyncJobMgr.completeAsyncJob(job.getId(), JobInfo.Status.FAILED, errorCode, ApiSerializerHelper.toSerializedString(response));

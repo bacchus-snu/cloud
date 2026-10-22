@@ -150,18 +150,22 @@ public interface CapacityManager {
     /**
      * Free compute capacity of a host: total × cluster overprovisioning factor − used − reserved, from the host's
      * CPU and memory capacity entries. The values are negative when used and reserved exceed the total.
+     * The free cores are the host's registered pool cores that no VM holds; 0 on a host that does not run VMs on
+     * pool cores.
      */
     final class HostFreeCapacity {
         private final long freeCpuMhz;
         private final long freeMemoryBytes;
         private final int cpus;
         private final int speedMhz;
+        private final int freeCores;
 
-        public HostFreeCapacity(long freeCpuMhz, long freeMemoryBytes, int cpus, int speedMhz) {
+        public HostFreeCapacity(long freeCpuMhz, long freeMemoryBytes, int cpus, int speedMhz, int freeCores) {
             this.freeCpuMhz = freeCpuMhz;
             this.freeMemoryBytes = freeMemoryBytes;
             this.cpus = cpus;
             this.speedMhz = speedMhz;
+            this.freeCores = freeCores;
         }
 
         public long getFreeCpuMhz() {
@@ -179,6 +183,10 @@ public interface CapacityManager {
         public int getSpeedMhz() {
             return speedMhz;
         }
+
+        public int getFreeCores() {
+            return freeCores;
+        }
     }
 
     /**
@@ -195,10 +203,23 @@ public interface CapacityManager {
     }
 
     /**
-     * @return true when the host reports no CPU or no memory capacity; such a host can run only VMs that are
-     * exempt from host capacity
+     * @return true when the host reports no CPU or no memory capacity, or runs VMs on pool cores and has none
+     * registered; such a host can run only VMs that are exempt from host capacity
      */
     boolean hasNoComputeCapacity(Host host);
+
+    /**
+     * @return true when the host does not run VMs on pool cores, or has at least ceil(vcpus/2) free pool cores
+     */
+    default boolean checkIfHostHasPoolCores(Host host, int vcpus) {
+        return checkIfHostHasPoolCores(host, vcpus, 1);
+    }
+
+    /**
+     * @return true when the host does not run VMs on pool cores, or has ceil(vcpus/2) free pool cores for each of
+     *         the given number of VMs
+     */
+    boolean checkIfHostHasPoolCores(Host host, int vcpus, int vms);
 
     /**
      * Free capacity by the same formula the admission checks use, with the cluster's overprovisioning factors and

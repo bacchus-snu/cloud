@@ -55,6 +55,12 @@ public class VirtualMachineMetadataTO {
     // resource tags
     private final Map<String, String> resourceTags;
 
+    /**
+     * The host's CPU cores dedicated to the VM, each the thread ids of one core in ascending order; vCPU 2k runs on
+     * the first thread of the k-th core and 2k+1 on its second. Null when the VM is not placed on dedicated cores.
+     */
+    private List<int[]> cores;
+
     public VirtualMachineMetadataTO(
             String name, String internalName, String displayName, String instanceUuid, Integer cpuCores, Integer memory, Long created, Long started,
             String ownerDomainUuid, String ownerDomainName, String ownerAccountUuid, String ownerAccountName, String ownerProjectUuid, String ownerProjectName,
@@ -179,4 +185,12 @@ public class VirtualMachineMetadataTO {
     }
 
     public Map<String, String> getResourceTags() { return resourceTags; }
+
+    public List<int[]> getCores() {
+        return cores;
+    }
+
+    public void setCores(List<int[]> cores) {
+        this.cores = cores;
+    }
 }

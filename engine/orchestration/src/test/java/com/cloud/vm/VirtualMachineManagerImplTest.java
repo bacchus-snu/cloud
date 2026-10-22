@@ -64,6 +64,8 @@ import com.cloud.resource.ResourceManager;
 import com.cloud.storage.clvm.ClvmPoolManager;
 import org.apache.cloudstack.api.ApiConstants;
 import org.apache.cloudstack.context.CallContext;
+import org.apache.cloudstack.engine.orchestration.service.NetworkOrchestrationService;
+import org.apache.cloudstack.engine.orchestration.service.VolumeOrchestrationService;
 import org.apache.cloudstack.engine.subsystem.api.storage.StoragePoolAllocator;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeDataFactory;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeInfo;
@@ -98,12 +100,19 @@ import com.cloud.agent.AgentManager;
 import com.cloud.agent.api.Command;
 import com.cloud.agent.api.PrepareExternalProvisioningAnswer;
 import com.cloud.agent.api.RebootCommand;
+import com.cloud.agent.api.StartAnswer;
 import com.cloud.agent.api.StartCommand;
 import com.cloud.agent.api.StopAnswer;
 import com.cloud.agent.api.StopCommand;
 import com.cloud.agent.api.routing.NetworkElementCommand;
 import com.cloud.agent.api.to.NicTO;
+import com.cloud.agent.api.to.VirtualMachineMetadataTO;
 import com.cloud.agent.api.to.VirtualMachineTO;
+import com.cloud.agent.manager.Commands;
+import com.cloud.capacity.HostPoolCoreManager;
+import com.cloud.exception.InsufficientServerCapacityException;
+import com.cloud.hypervisor.HypervisorGuru;
+import com.cloud.serializer.GsonHelper;
 import com.cloud.api.query.dao.UserVmJoinDao;
 import com.cloud.api.query.vo.UserVmJoinVO;
 import com.cloud.dc.ClusterDetailsDao;
@@ -2146,4 +2155,175 @@ public class VirtualMachineManagerImplTest {
         verify(clvmPoolManagerMock, times(1)).setClvmLockHostId(3L, destHostId);
     }
 
+    private HostVO kvmHost(long id) {
+        HostVO host = mock(HostVO.class);
+        Mockito.lenient().when(host.getId()).thenReturn(id);
+        Mockito.lenient().when(host.getHypervisorType()).thenReturn(HypervisorType.KVM);
+        return host;
+    }
+
+    private ServiceOfferingVO startOffering(int cpu, Long vgpuProfileId) {
+        ServiceOfferingVO offering = mock(ServiceOfferingVO.class);
+        Mockito.lenient().when(offering.getCpu()).thenReturn(cpu);
+        Mockito.lenient().when(offering.getVgpuProfileId()).thenReturn(vgpuProfileId);
+        return offering;
+    }
+
+    /**
+     * Starts a KVM user VM through orchestrateStart, planning the given hosts in turn, with a start command that
+     * succeeds on the agent.
+     *
+     * @return the commands sent to the agents, in order, and the avoid set the start left in the plan
+     */
+    private Pair<List<Commands>, ExcludeList> startWithPoolCores(ServiceOfferingVO offering, HostPoolCoreManager poolCores, HostVO... hosts)
+            throws Exception {
+        VMInstanceVO vmInstance = new VMInstanceVO();
+        ReflectionTestUtils.setField(vmInstance, "id", 1L);
+        ReflectionTestUtils.setField(vmInstance, "accountId", 1L);
+        ReflectionTestUtils.setField(vmInstance, "uuid", "vm-uuid");
+        ReflectionTestUtils.setField(vmInstance, "serviceOfferingId", 2L);
+        ReflectionTestUtils.setField(vmInstance, "instanceName", "myVm");
+        ReflectionTestUtils.setField(vmInstance, "type", VirtualMachine.Type.User);
+        ReflectionTestUtils.setField(vmInstance, "dataCenterId", 1L);
+        ReflectionTestUtils.setField(vmInstance, "hypervisorType", HypervisorType.KVM);
+
+        VirtualMachineGuru vmGuru = mock(VirtualMachineGuru.class);
+        Mockito.lenient().when(vmGuru.finalizeStart(any(), anyLong(), any(), any())).thenReturn(true);
+        User user = mock(User.class);
+        Account account = mock(Account.class);
+        Account owner = mock(Account.class);
+        ReservationContext ctx = mock(ReservationContext.class);
+        Mockito.lenient().when(ctx.getJournal()).thenReturn(mock(Journal.class));
+        ItWorkVO work = mock(ItWorkVO.class);
+        Mockito.lenient().when(work.getStep()).thenReturn(ItWorkVO.Step.Prepare);
+        Mockito.lenient().when(_workDao.findById(any())).thenReturn(work);
+        Mockito.lenient().when(_workDao.updateStep(any(), any())).thenReturn(true);
+        VirtualMachineTemplate template = mock(VirtualMachineTemplate.class);
+
+        Mockito.lenient().when(vmInstanceDaoMock.findByUuid("vm-uuid")).thenReturn(vmInstance);
+        Mockito.lenient().doReturn(vmGuru).when(virtualMachineManagerImpl).getVmGuru(vmInstance);
+        Mockito.lenient().doReturn(new Ternary<>(vmInstance, ctx, work)).when(virtualMachineManagerImpl)
+                .changeToStartState(vmGuru, vmInstance, user, account, owner, offering, template);
+        Mockito.lenient().when(serviceOfferingDaoMock.findById(1L, 2L)).thenReturn(offering);
+        Mockito.lenient().when(_entityMgr.findById(Account.class, 1L)).thenReturn(owner);
+        Mockito.lenient().when(_entityMgr.findByIdIncludingRemoved(VirtualMachineTemplate.class, vmInstance.getTemplateId())).thenReturn(template);
+        Mockito.lenient().doNothing().when(virtualMachineManagerImpl).checkIfTemplateNeededForCreatingVmVolumes(vmInstance);
+
+        Cluster cluster = mock(Cluster.class);
+        Mockito.lenient().when(cluster.getId()).thenReturn(1L);
+        Pod pod = mock(Pod.class);
+        Mockito.lenient().when(pod.getId()).thenReturn(2L);
+        List<DeployDestination> destinations = new ArrayList<>();
+        for (HostVO host : hosts) {
+            DeployDestination dest = mock(DeployDestination.class);
+            Mockito.lenient().when(dest.getHost()).thenReturn(host);
+            Mockito.lenient().when(dest.getPod()).thenReturn(pod);
+            Mockito.lenient().when(dest.getCluster()).thenReturn(cluster);
+            destinations.add(dest);
+        }
+        Mockito.lenient().when(_dpMgr.planDeployment(any(VirtualMachineProfileImpl.class), any(DataCenterDeployment.class), any(ExcludeList.class),
+                any(DeploymentPlanner.class))).thenReturn(destinations.get(0), destinations.subList(1, destinations.size()).toArray(new DeployDestination[0]));
+        Mockito.lenient().when(_stateMachine.transitTo(any(), any(), any(), any())).thenReturn(true);
+        ClusterDetailsVO ratio = mock(ClusterDetailsVO.class);
+        Mockito.lenient().when(ratio.getValue()).thenReturn("1.0");
+        Mockito.lenient().when(_clusterDetailsDao.findDetail(eq(1L), anyString())).thenReturn(ratio);
+        Mockito.lenient().doNothing().when(virtualMachineManagerImpl).checkAndAttemptMigrateVmAcrossCluster(any(), any(), any());
+        Mockito.lenient().doNothing().when(virtualMachineManagerImpl).updateVmMetadataManufacturerAndProduct(any(), any());
+        Mockito.lenient().doNothing().when(virtualMachineManagerImpl).setVmNetworkDetails(any(), any());
+        Mockito.lenient().doReturn(true).when(virtualMachineManagerImpl).cleanup(any(), any(), any(), any(), Mockito.anyBoolean());
+
+        HypervisorGuru hvGuru = mock(HypervisorGuru.class);
+        Mockito.lenient().when(_hvGuruMgr.getGuru(HypervisorType.KVM)).thenReturn(hvGuru);
+        Mockito.lenient().when(hvGuru.implement(any())).thenAnswer(i -> {
+            VirtualMachineTO to = new VirtualMachineTO(1L, "myVm", VirtualMachine.Type.User, offering.getCpu(), 2000, 1024L, 1024L, null, null,
+                    false, false, null);
+            to.setDetails(new HashMap<>());
+            to.setDisks(new DiskTO[0]);
+            to.setMetadata(new VirtualMachineMetadataTO(null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null));
+            return to;
+        });
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "_networkMgr", mock(NetworkOrchestrationService.class));
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "volumeMgr", mock(VolumeOrchestrationService.class));
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "hostPoolCoreManager", poolCores);
+
+        List<Commands> sent = new ArrayList<>();
+        Mockito.lenient().when(agentManagerMock.send(anyLong(), any(Commands.class))).thenAnswer(i -> {
+            Commands cmds = i.getArgument(1);
+            sent.add(cmds);
+            com.cloud.agent.api.Answer[] answers = {new StartAnswer(cmds.getCommand(StartCommand.class))};
+            cmds.setAnswers(answers);
+            return answers;
+        });
+
+        DataCenterDeployment plan = mock(DataCenterDeployment.class);
+        Mockito.lenient().when(plan.getDataCenterId()).thenReturn(1L);
+        CallContext callContext = mock(CallContext.class);
+        Mockito.lenient().when(callContext.getCallingAccount()).thenReturn(account);
+        Mockito.lenient().when(callContext.getCallingUser()).thenReturn(user);
+        try (MockedStatic<CallContext> ignored = Mockito.mockStatic(CallContext.class)) {
+            when(CallContext.current()).thenReturn(callContext);
+            virtualMachineManagerImpl.orchestrateStart("vm-uuid", new HashMap<>(), plan, mock(DeploymentPlanner.class));
+        }
+        ArgumentCaptor<ExcludeList> avoids = ArgumentCaptor.forClass(ExcludeList.class);
+        verify(plan).setAvoids(avoids.capture());
+        return new Pair<>(sent, avoids.getValue());
+    }
+
+    private static List<String> coresSentIn(Commands cmds) {
+        List<int[]> cores = cmds.getCommand(StartCommand.class).getVirtualMachine().getMetadata().getCores();
+        return cores == null ? null : cores.stream().map(c -> c[0] + "," + c[1]).collect(Collectors.toList());
+    }
+
+    @Test
+    public void coresAllocatedOnStartAreCarriedInTheStartCommand() throws Exception {
+        HostVO host = kvmHost(1L);
+        ServiceOfferingVO offering = startOffering(4, null);
+        HostPoolCoreManager poolCores = mock(HostPoolCoreManager.class);
+        when(poolCores.allocatePoolCores(any(VirtualMachine.class), eq(host), eq(4)))
+                .thenReturn(List.of(new HostPoolCoreManager.PoolCore(0, 8, 24), new HostPoolCoreManager.PoolCore(0, 9, 25)));
+
+        List<Commands> sent = startWithPoolCores(offering, poolCores, host).first();
+
+        assertEquals(1, sent.size());
+        assertEquals(List.of("8,24", "9,25"), coresSentIn(sent.get(0)));
+        StartCommand delivered = GsonHelper.getGson().fromJson(GsonHelper.getGson().toJson(sent.get(0).getCommand(StartCommand.class)), StartCommand.class);
+        List<int[]> deliveredCores = delivered.getVirtualMachine().getMetadata().getCores();
+        assertEquals(2, deliveredCores.size());
+        assertTrue(Arrays.equals(new int[] {8, 24}, deliveredCores.get(0)));
+        assertTrue(Arrays.equals(new int[] {9, 25}, deliveredCores.get(1)));
+        InOrder order = Mockito.inOrder(_stateMachine, poolCores, agentManagerMock);
+        order.verify(_stateMachine).transitTo(any(), eq(VirtualMachine.Event.OperationRetry), eq(new Pair<>(null, 1L)), any());
+        order.verify(poolCores).allocatePoolCores(any(VirtualMachine.class), eq(host), eq(4));
+        order.verify(agentManagerMock).send(eq(1L), any(Commands.class));
+    }
+
+    @Test
+    public void startMovesToAnotherHostWhenTheCoresWereTaken() throws Exception {
+        HostVO busy = kvmHost(1L);
+        HostVO free = kvmHost(2L);
+        ServiceOfferingVO offering = startOffering(2, null);
+        HostPoolCoreManager poolCores = mock(HostPoolCoreManager.class);
+        when(poolCores.allocatePoolCores(any(VirtualMachine.class), eq(busy), eq(2)))
+                .thenThrow(new InsufficientServerCapacityException("taken", Host.class, 1L));
+        when(poolCores.allocatePoolCores(any(VirtualMachine.class), eq(free), eq(2))).thenReturn(List.of(new HostPoolCoreManager.PoolCore(1, 30, 62)));
+
+        Pair<List<Commands>, ExcludeList> result = startWithPoolCores(offering, poolCores, busy, free);
+
+        assertEquals(1, result.first().size());
+        assertEquals(List.of("30,62"), coresSentIn(result.first().get(0)));
+        assertTrue(result.second().getHostsToAvoid().contains(1L));
+        verify(agentManagerMock, never()).send(eq(1L), any(Commands.class));
+    }
+
+    @Test
+    public void gpuVmStartsWithoutCores() throws Exception {
+        HostPoolCoreManager poolCores = mock(HostPoolCoreManager.class);
+
+        List<Commands> sent = startWithPoolCores(startOffering(12, 5L), poolCores, kvmHost(1L)).first();
+
+        assertEquals(1, sent.size());
+        assertNull(coresSentIn(sent.get(0)));
+        verify(poolCores, never()).allocatePoolCores(any(), any(), Mockito.anyInt());
+    }
 }

@@ -163,6 +163,10 @@ public class CapabilitiesResponse extends BaseResponse {
     @Param(description = "Excluded and obsolete VPN customer gateway cryptographic parameters")
     private Map<String, Object> vpnCustomerGatewayParameters;
 
+    @SerializedName(ApiConstants.POOL_VCPU_STEP)
+    @Param(description = "The vCPU count of an Instance without a vGPU profile must be a multiple of this value", since = "4.23.0.100")
+    private Integer poolVcpuStep;
+
     public void setSecurityGroupsEnabled(boolean securityGroupsEnabled) {
         this.securityGroupsEnabled = securityGroupsEnabled;
     }
@@ -297,5 +301,9 @@ public class CapabilitiesResponse extends BaseResponse {
 
     public void setVpnCustomerGatewayParameters(Map<String, Object> vpnCustomerGatewayParameters) {
         this.vpnCustomerGatewayParameters = vpnCustomerGatewayParameters;
+    }
+
+    public void setPoolVcpuStep(Integer poolVcpuStep) {
+        this.poolVcpuStep = poolVcpuStep;
     }
 }

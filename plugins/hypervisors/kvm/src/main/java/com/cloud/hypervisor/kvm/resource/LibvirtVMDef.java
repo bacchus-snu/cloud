@@ -26,6 +26,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import com.cloud.cpu.CPU;
 import org.apache.cloudstack.api.ApiConstants.IoDriverPolicy;
@@ -193,6 +194,17 @@ public class LibvirtVMDef {
                 resourceTags.appendChild(tag); // </resource_tag>
             }
             instance.appendChild(resourceTags); // </resource_tags>
+
+            List<int[]> assignedCores = metaTO.getCores();
+            if (assignedCores != null && !assignedCores.isEmpty()) {
+                Element cores = doc.createElement("cloudstack:cores");
+                for (int[] threads : assignedCores) {
+                    Element core = doc.createElement("cloudstack:core");
+                    core.setTextContent(Arrays.stream(threads).mapToObj(String::valueOf).collect(Collectors.joining(",")));
+                    cores.appendChild(core);
+                }
+                instance.appendChild(cores);
+            }
 
             metadata.appendChild(instance); // </cloudstack:instance>
             doc.appendChild(metadata); // </metadata>

@@ -106,6 +106,7 @@ import com.cloud.capacity.Capacity;
 import com.cloud.capacity.CapacityManager;
 import com.cloud.capacity.CapacityState;
 import com.cloud.capacity.CapacityVO;
+import com.cloud.capacity.HostPoolCoreManager;
 import com.cloud.capacity.dao.CapacityDao;
 import com.cloud.cluster.ClusterManager;
 import com.cloud.configuration.Config;
@@ -272,6 +273,8 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
     private ConfigurationDao _configDao;
     @Inject
     private HostTagsDao _hostTagsDao;
+    @Inject
+    private HostPoolCoreManager hostPoolCoreManager;
     @Inject
     private GuestOSCategoryDao _guestOSCategoryDao;
     @Inject
@@ -1057,6 +1060,9 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
                 // delete host details
                 logger.debug("Deleting details from database for host with UUID [{}].", host.getUuid());
                 _hostDetailsDao.deleteDetails(hostId);
+
+                logger.debug("Deleting pool cores from database for host with UUID [{}].", host.getUuid());
+                hostPoolCoreManager.removeHostPoolCores(hostId);
 
                 // if host is GPU enabled, delete GPU entries
                 logger.debug("Deleting GPU entries from database for host with UUID [{}].", host.getUuid());

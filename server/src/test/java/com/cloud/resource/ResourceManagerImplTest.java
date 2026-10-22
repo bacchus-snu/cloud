@@ -19,6 +19,18 @@ package com.cloud.resource;
 
 import com.cloud.agent.AgentManager;
 import com.cloud.agent.api.StartupCommand;
+import com.cloud.capacity.HostPoolCoreManager;
+import com.cloud.dc.dao.DedicatedResourceDao;
+import com.cloud.gpu.dao.HostGpuGroupsDao;
+import com.cloud.host.dao.HostDetailsDao;
+import com.cloud.host.dao.HostTagsDao;
+import com.cloud.user.AccountManager;
+import com.cloud.utils.db.SearchCriteria;
+import com.cloud.utils.db.Transaction;
+import com.cloud.utils.db.TransactionCallback;
+import org.apache.cloudstack.annotation.dao.AnnotationDao;
+import org.apache.cloudstack.context.CallContext;
+import org.springframework.test.util.ReflectionTestUtils;
 import com.cloud.agent.api.GetVncPortAnswer;
 import com.cloud.agent.api.GetVncPortCommand;
 import com.cloud.capacity.dao.CapacityDao;
@@ -1392,5 +1404,50 @@ public class ResourceManagerImplTest {
         Mockito.verify(hostDao).findByDataCenterId(zoneId);
         Mockito.verify(hostDao).findByClusterId(clusterId, Host.Type.Routing);
         Mockito.verify(hostDao).findByPodId(podId, Host.Type.Routing);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void deleteHostRemovesItsPoolCoresInTheRemovalTransaction() throws Exception {
+        HostPoolCoreManager poolCores = Mockito.mock(HostPoolCoreManager.class);
+        ReflectionTestUtils.setField(resourceManager, "hostPoolCoreManager", poolCores);
+        ReflectionTestUtils.setField(resourceManager, "_accountMgr", Mockito.mock(AccountManager.class));
+        ReflectionTestUtils.setField(resourceManager, "_hostDetailsDao", Mockito.mock(HostDetailsDao.class));
+        ReflectionTestUtils.setField(resourceManager, "_hostGpuGroupsDao", Mockito.mock(HostGpuGroupsDao.class));
+        ReflectionTestUtils.setField(resourceManager, "_hostTagsDao", Mockito.mock(HostTagsDao.class));
+        ReflectionTestUtils.setField(resourceManager, "_dedicatedDao", Mockito.mock(DedicatedResourceDao.class));
+        ReflectionTestUtils.setField(resourceManager, "annotationDao", Mockito.mock(AnnotationDao.class));
+        when(host.getClusterId()).thenReturn(null);
+        Mockito.doReturn(true).when(resourceManager).canDeleteHost(host);
+        when(storagePoolHostDao.listByHostIdIncludingRemoved(hostId)).thenReturn(new ArrayList<>());
+        ResourceStateAdapter adapter = Mockito.mock(ResourceStateAdapter.class);
+        when(adapter.deleteHost(host, true, false)).thenReturn(new ResourceStateAdapter.DeleteHostAnswer(true));
+        resourceManager.registerResourceStateAdapter("deleteHostRemovesItsPoolCores", adapter);
+        Mockito.doReturn(true).when(resourceManager).resourceStateTransitTo(any(Host.class), any(ResourceState.Event.class), anyLong());
+        when(capacityDao.createSearchCriteria()).thenReturn(Mockito.mock(SearchCriteria.class));
+        boolean[] inTransaction = {false};
+        Mockito.doAnswer(i -> {
+            Assert.assertTrue("pool cores removed outside the host removal transaction", inTransaction[0]);
+            return null;
+        }).when(poolCores).removeHostPoolCores(hostId);
+
+        try (MockedStatic<CallContext> callContext = Mockito.mockStatic(CallContext.class);
+             MockedStatic<Transaction> transaction = Mockito.mockStatic(Transaction.class)) {
+            callContext.when(CallContext::current).thenReturn(Mockito.mock(CallContext.class));
+            transaction.when(() -> Transaction.execute(any(TransactionCallback.class))).thenAnswer(i -> {
+                inTransaction[0] = true;
+                try {
+                    return ((TransactionCallback<Object>) i.getArgument(0)).doInTransaction(null);
+                } finally {
+                    inTransaction[0] = false;
+                }
+            });
+
+            Assert.assertTrue(resourceManager.doDeleteHost(hostId, true, false));
+        } finally {
+            resourceManager.unregisterResourceStateAdapter("deleteHostRemovesItsPoolCores");
+        }
+
+        verify(poolCores).removeHostPoolCores(hostId);
     }
 }

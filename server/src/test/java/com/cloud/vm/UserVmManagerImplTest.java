@@ -89,6 +89,7 @@ import org.apache.cloudstack.engine.subsystem.api.storage.Scope;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeDataFactory;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeInfo;
 import org.apache.cloudstack.framework.config.ConfigKey;
+import org.apache.cloudstack.framework.config.impl.ConfigDepotImpl;
 import org.apache.cloudstack.framework.jobs.impl.AsyncJobVO;
 import org.apache.cloudstack.resourcelimit.Reserver;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
@@ -117,6 +118,7 @@ import com.cloud.configuration.Resource;
 import com.cloud.dc.DataCenter;
 import com.cloud.dc.DataCenterVO;
 import com.cloud.dc.dao.DataCenterDao;
+import com.cloud.dc.dao.DedicatedResourceDao;
 import com.cloud.deploy.DataCenterDeployment;
 import com.cloud.deploy.DeployDestination;
 import com.cloud.deploy.DeploymentPlanner;
@@ -161,6 +163,7 @@ import com.cloud.offering.NetworkOffering;
 import com.cloud.offering.ServiceOffering;
 import com.cloud.offerings.NetworkOfferingVO;
 import com.cloud.offerings.dao.NetworkOfferingDao;
+import com.cloud.org.Grouping;
 import com.cloud.resourcelimit.CheckedReservation;
 import com.cloud.server.ManagementService;
 import com.cloud.service.ServiceOfferingVO;
@@ -205,6 +208,7 @@ import com.cloud.utils.exception.ExceptionProxyObject;
 import com.cloud.utils.fsm.NoTransitionException;
 import com.cloud.vm.dao.NicDao;
 import com.cloud.vm.dao.UserVmDao;
+import com.cloud.vm.dao.VMInstanceDao;
 import com.cloud.vm.dao.VMInstanceDetailsDao;
 import com.cloud.vm.snapshot.VMSnapshotVO;
 import com.cloud.vm.snapshot.dao.VMSnapshotDao;
@@ -4545,5 +4549,125 @@ public class UserVmManagerImplTest {
         InvalidParameterValueException ex = Assert.assertThrows(InvalidParameterValueException.class, () ->
                 userVmManagerImpl.verifyVmLimits(userVmVoMock, customParameters));
         Assert.assertTrue(ex.getMessage().startsWith("The CPU speed of this offering"));
+    }
+
+    private ServiceOfferingVO poolOffering(Integer cpu, Long vgpuProfileId) {
+        ServiceOfferingVO offering = mock(ServiceOfferingVO.class);
+        lenient().when(offering.getId()).thenReturn(serviceOfferingId);
+        lenient().when(offering.getCpu()).thenReturn(cpu);
+        lenient().when(offering.getRamSize()).thenReturn(cpu == null ? null : 1024);
+        lenient().when(offering.getSpeed()).thenReturn(2000);
+        lenient().when(offering.getVgpuProfileId()).thenReturn(vgpuProfileId);
+        lenient().when(offering.getState()).thenReturn(ServiceOffering.State.Active);
+        lenient().when(offering.isDynamic()).thenReturn(cpu == null);
+        return offering;
+    }
+
+    private void deployInBasicZone(ServiceOfferingVO offering) throws Exception {
+        DataCenter zone = mock(DataCenter.class);
+        when(zone.getId()).thenReturn(zoneId);
+        when(zone.getAllocationState()).thenReturn(Grouping.AllocationState.Enabled);
+        NetworkVO defaultNetwork = mock(NetworkVO.class);
+        when(networkModel.getExclusiveGuestNetwork(zoneId)).thenReturn(defaultNetwork);
+        when(_networkDao.findById(anyLong())).thenReturn(defaultNetwork);
+        VMTemplateVO template = mock(VMTemplateVO.class);
+        when(template.getId()).thenReturn(templateId);
+        when(template.getHypervisorType()).thenReturn(Hypervisor.HypervisorType.KVM);
+        when(templateDao.findByIdIncludingRemoved(templateId)).thenReturn(template);
+        ReflectionTestUtils.setField(userVmManagerImpl, "_dedicatedDao", mock(DedicatedResourceDao.class));
+        when(_serviceOfferingDao.findById(serviceOfferingId)).thenReturn(offering);
+        userVmManagerImpl.createBasicSecurityGroupVirtualMachine(zone, offering, template, null, accountMock, "vm", "vm", null, null, null, null,
+                null, HTTPMethod.GET, null, null, null, null, null, null, true, null, null, new HashMap<>(), null, null, null, null, false, null,
+                null, null, null);
+    }
+
+    private static void assertVcpuStepRefused(org.junit.function.ThrowingRunnable operation) {
+        InvalidParameterValueException ex = assertThrows(InvalidParameterValueException.class, operation);
+        assertEquals("The number of vCPUs of an Instance without a vGPU profile must be a multiple of 2; 3 is not", ex.getMessage());
+    }
+
+    @Test
+    public void oddVcpuRejectedForCpuOnly() {
+        assertVcpuStepRefused(() -> userVmManagerImpl.validatePoolVcpuStep(VirtualMachine.Type.User, poolOffering(3, null), 3, 1L));
+        userVmManagerImpl.validatePoolVcpuStep(VirtualMachine.Type.User, poolOffering(4, null), 4, 1L);
+        userVmManagerImpl.validatePoolVcpuStep(VirtualMachine.Type.User, poolOffering(3, 5L), 3, 1L);
+
+        assertVcpuStepRefused(() -> deployInBasicZone(poolOffering(3, null)));
+
+        VMInstanceDao vmInstanceDao = mock(VMInstanceDao.class);
+        ReflectionTestUtils.setField(userVmManagerImpl, "_vmInstanceDao", vmInstanceDao);
+        VMInstanceVO stopped = mock(VMInstanceVO.class);
+        when(stopped.getState()).thenReturn(VirtualMachine.State.Stopped);
+        when(stopped.getType()).thenReturn(VirtualMachine.Type.User);
+        when(stopped.getDomainId()).thenReturn(1L);
+        when(vmInstanceDao.findById(vmId)).thenReturn(stopped);
+        ServiceOfferingVO threeVcpus = poolOffering(3, null);
+        when(_serviceOfferingDao.findById(serviceOfferingId)).thenReturn(threeVcpus);
+        assertVcpuStepRefused(() -> userVmManagerImpl.upgradeVirtualMachine(vmId, serviceOfferingId, new HashMap<>()));
+
+        ServiceOfferingVO custom = poolOffering(null, null);
+        when(userVmVoMock.getType()).thenReturn(VirtualMachine.Type.User);
+        when(userVmVoMock.getDomainId()).thenReturn(1L);
+        when(accountDao.findById(anyLong())).thenReturn(callerAccount);
+        when(_serviceOfferingDao.findById(anyLong())).thenReturn(custom);
+        when(_serviceOfferingDao.findByIdIncludingRemoved(anyLong(), anyLong())).thenReturn(custom);
+        when(serviceOfferingDetailsDao.listDetailsKeyPairs(anyLong())).thenReturn(Map.of(ApiConstants.MIN_CPU_NUMBER, "1",
+                ApiConstants.MAX_CPU_NUMBER, "8", ApiConstants.MIN_MEMORY, "256", ApiConstants.MAX_MEMORY, "8192"));
+        Map<String, String> details = new HashMap<>();
+        details.put(VmDetailConstants.CPU_NUMBER, "3");
+        details.put(VmDetailConstants.MEMORY, "1024");
+        assertVcpuStepRefused(() -> userVmManagerImpl.verifyVmLimits(userVmVoMock, details));
+    }
+
+    @Test
+    public void oddVcpuRejectedOnRunningScale() {
+        VMInstanceDao vmInstanceDao = mock(VMInstanceDao.class);
+        ReflectionTestUtils.setField(userVmManagerImpl, "_vmInstanceDao", vmInstanceDao);
+        VMInstanceVO running = mock(VMInstanceVO.class);
+        when(running.getState()).thenReturn(VirtualMachine.State.Running);
+        when(running.getType()).thenReturn(VirtualMachine.Type.User);
+        when(running.getDomainId()).thenReturn(1L);
+        when(running.getHostId()).thenReturn(7L);
+        when(running.getHypervisorType()).thenReturn(Hypervisor.HypervisorType.KVM);
+        when(vmInstanceDao.findById(vmId)).thenReturn(running);
+        HostVO host = mock(HostVO.class);
+        when(hostDao.findById(7L)).thenReturn(host);
+        when(host.checkHostServiceOfferingAndTemplateTags(any(), any(), any())).thenReturn(true);
+        ServiceOfferingVO threeVcpus = poolOffering(3, null);
+        when(_serviceOfferingDao.findById(serviceOfferingId)).thenReturn(threeVcpus);
+
+        assertVcpuStepRefused(() -> userVmManagerImpl.upgradeVirtualMachine(vmId, serviceOfferingId, new HashMap<>()));
+    }
+
+    @Test
+    public void vcpuStepIsASetting() {
+        ConfigDepotImpl depot = mock(ConfigDepotImpl.class);
+        lenient().when(depot.getConfigStringValue(UserVmManager.VmPoolVcpuStep.key(), ConfigKey.Scope.Domain, 7L)).thenReturn("1");
+        lenient().when(depot.getConfigStringValue(UserVmManager.VmPoolVcpuStep.key(), ConfigKey.Scope.Domain, 8L)).thenReturn("4");
+        lenient().when(depot.getConfigStringValue(UserVmManager.VmPoolVcpuStep.key(), ConfigKey.Scope.Domain, 10L)).thenReturn("0");
+        ConfigKey.init(depot);
+        try {
+            assertEquals(1, UserVmManager.poolVcpuStep(7L));
+            assertEquals(4, UserVmManager.poolVcpuStep(8L));
+            assertEquals(2, UserVmManager.poolVcpuStep(9L));
+            assertEquals(1, UserVmManager.poolVcpuStep(10L));
+
+            userVmManagerImpl.validatePoolVcpuStep(VirtualMachine.Type.User, poolOffering(3, null), 3, 7L);
+            for (int vcpus : new int[] {2, 6}) {
+                assertThrows(InvalidParameterValueException.class,
+                        () -> userVmManagerImpl.validatePoolVcpuStep(VirtualMachine.Type.User, poolOffering(vcpus, null), vcpus, 8L));
+            }
+            userVmManagerImpl.validatePoolVcpuStep(VirtualMachine.Type.User, poolOffering(8, null), 8, 8L);
+            assertThrows(InvalidParameterValueException.class,
+                    () -> userVmManagerImpl.validatePoolVcpuStep(VirtualMachine.Type.User, poolOffering(3, null), 3, 9L));
+            userVmManagerImpl.validatePoolVcpuStep(VirtualMachine.Type.User, poolOffering(3, null), 3, 10L);
+
+            for (VirtualMachine.Type systemType : new VirtualMachine.Type[] {VirtualMachine.Type.ConsoleProxy,
+                    VirtualMachine.Type.SecondaryStorageVm, VirtualMachine.Type.DomainRouter}) {
+                userVmManagerImpl.validatePoolVcpuStep(systemType, poolOffering(1, null), 1, 8L);
+            }
+        } finally {
+            ConfigKey.init(null);
+        }
     }
 }

@@ -1376,6 +1376,12 @@ public class ApiConstants {
     public static final String SHAREDFSVM_MIN_CPU_COUNT = "sharedfsvmmincpucount";
     public static final String SHAREDFSVM_MIN_RAM_SIZE = "sharedfsvmminramsize";
 
+    public static final String CORE = "core";
+    public static final String CORES = "cores";
+    public static final String NODE = "node";
+    public static final String THREADS = "threads";
+    public static final String POOL_VCPU_STEP = "poolvcpustep";
+
     // Object Storage related
     public static final String BUCKET_AVAILABLE = "bucketavailable";
     public static final String BUCKET_LIMIT = "bucketlimit";

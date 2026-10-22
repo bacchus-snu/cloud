@@ -37,6 +37,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import org.apache.cloudstack.framework.messagebus.MessageBus;
 import org.apache.cloudstack.utils.bytescale.ByteScaleUtils;
@@ -54,11 +55,14 @@ import org.mockito.quality.Strictness;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import com.cloud.capacity.dao.CapacityDao;
+import com.cloud.capacity.dao.HostCoreAssignmentDao;
+import com.cloud.capacity.dao.HostPoolCoreDao;
 import com.cloud.dc.ClusterDetailsDao;
 import com.cloud.dc.ClusterDetailsVO;
 import com.cloud.host.Host;
 import com.cloud.host.HostVO;
 import com.cloud.host.dao.HostDao;
+import com.cloud.hypervisor.Hypervisor.HypervisorType;
 import com.cloud.offering.ServiceOffering;
 import com.cloud.resource.ResourceState;
 import com.cloud.service.ServiceOfferingVO;
@@ -66,6 +70,7 @@ import com.cloud.service.dao.ServiceOfferingDao;
 import com.cloud.utils.Pair;
 import com.cloud.utils.db.Transaction;
 import com.cloud.utils.db.TransactionCallback;
+import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.utils.fsm.StateMachine2;
 import com.cloud.vm.UserVmVO;
 import com.cloud.vm.VMInstanceVO;
@@ -93,6 +98,8 @@ public class CapacityManagerImplTest {
     UserVmDao userVmDao;
     @Mock
     MessageBus messageBus;
+    @Mock
+    HostPoolCoreManager hostPoolCoreManager;
 
     @Spy
     @InjectMocks
@@ -584,5 +591,230 @@ public class CapacityManagerImplTest {
         assertTrue(capacityManager.hasNoComputeCapacity(mockHost(8, 2000L, 0L)));
         assertTrue(capacityManager.hasNoComputeCapacity(mockHost(8, 0L, 16 * GIB)));
         assertFalse(capacityManager.hasNoComputeCapacity(mockHost(8, 2000L, 16 * GIB)));
+    }
+
+    private HostVO mockKvmHost(int cpus, long speed, long memory) {
+        HostVO h = mockHost(cpus, speed, memory);
+        lenient().when(h.getHypervisorType()).thenReturn(HypervisorType.KVM);
+        return h;
+    }
+
+    /**
+     * Replaces the pool-core manager by a real one over in-memory rows: the host registers cores 0..registered-1 on
+     * node 0, and other VMs hold the first {@code used} of them. A release here removes the VM's rows; its condition
+     * on the VM's state is covered by HostPoolCoreManagerImplTest.
+     */
+    @SuppressWarnings("unchecked")
+    private List<HostCoreAssignmentVO> useRealPoolCoreManager(int registered, int used) {
+        List<HostCoreAssignmentVO> rows = Collections.synchronizedList(new ArrayList<>());
+        HostPoolCoreDao hostPoolCoreDao = mock(HostPoolCoreDao.class);
+        HostCoreAssignmentDao assignmentDao = mock(HostCoreAssignmentDao.class);
+        List<HostPoolCoreVO> cores = new ArrayList<>();
+        for (int c = 0; c < registered; c++) {
+            cores.add(new HostPoolCoreVO(HOST_ID, c, c + 64, 0));
+        }
+        lenient().when(hostPoolCoreDao.listByHostId(HOST_ID)).thenReturn(cores);
+        lenient().when(assignmentDao.listByHostId(HOST_ID)).thenAnswer(i -> new ArrayList<>(rows));
+        lenient().when(assignmentDao.releaseIfNotRunning(anyLong())).thenAnswer(i -> {
+            long vmId = i.getArgument(0);
+            int before = rows.size();
+            rows.removeIf(r -> r.getVmId() == vmId);
+            return before - rows.size();
+        });
+        lenient().doAnswer(i -> {
+            long vmId = i.getArgument(1);
+            rows.removeIf(r -> r.getVmId() == vmId);
+            for (Integer core : (List<Integer>) i.getArgument(2)) {
+                rows.add(new HostCoreAssignmentVO(i.getArgument(0), core, vmId));
+            }
+            return null;
+        }).when(assignmentDao).assign(anyLong(), anyLong(), anyList());
+        for (int c = 0; c < used; c++) {
+            rows.add(new HostCoreAssignmentVO(HOST_ID, c, 1000L + c));
+        }
+        HostPoolCoreManagerImpl real = new HostPoolCoreManagerImpl() {
+            @Override
+            protected <T, E extends Exception> T withHostLock(long hostId, HostLockedOperation<T, E> operation, Supplier<E> lockTimeout) throws E {
+                return operation.run();
+            }
+        };
+        real.hostPoolCoreDao = hostPoolCoreDao;
+        real.hostCoreAssignmentDao = assignmentDao;
+        ReflectionTestUtils.setField(capacityManager, "hostPoolCoreManager", real);
+        return rows;
+    }
+
+    private HostPoolCoreManager poolCoreManager() {
+        return (HostPoolCoreManager) ReflectionTestUtils.getField(capacityManager, "hostPoolCoreManager");
+    }
+
+    @Test
+    public void admissionCountsWholeCores() {
+        HostVO host = mockKvmHost(8, 2000L, 64 * GIB);
+        mockCapacityRows(capacity(1L, Capacity.CAPACITY_TYPE_CPU, 6000L, 0L, 16000L),
+                capacity(2L, Capacity.CAPACITY_TYPE_MEMORY, 0L, 0L, 64 * GIB),
+                capacity(3L, Capacity.CAPACITY_TYPE_CPU_CORE, 3L, 0L, 8L));
+        mockClusterRatios("1.0", "1.0");
+        useRealPoolCoreManager(4, 3);
+        ServiceOfferingVO twoVcpus = mockOffering(CPU_OFFERING_ID, 2, 2000, 1024, null);
+        ServiceOfferingVO fourVcpus = mockOffering(CPU_OFFERING_ID, 4, 2000, 1024, null);
+
+        assertTrue(capacityManager.checkIfHostHasCapacity(host, 4 * 2000, GIB, false, 1.0f, 1.0f, true));
+        assertTrue(capacityManager.checkIfHostHasCpuCapabilityAndCapacity(host, twoVcpus, true).second());
+        assertFalse(capacityManager.checkIfHostHasCpuCapabilityAndCapacity(host, fourVcpus, true).second());
+        assertTrue(capacityManager.checkIfHostHasPoolCores(host, 1));
+        assertTrue(capacityManager.checkIfHostHasPoolCores(host, 2));
+        assertFalse(capacityManager.checkIfHostHasPoolCores(host, 3));
+        assertEquals(1, capacityManager.getFreeCapacity(host).getFreeCores());
+        assertTrue(capacityManager.checkIfHostHasCpuCapabilityAndCapacity(host,
+                mockOffering(GPU_OFFERING_ID, 12, 2000, 1024, GPU_PROFILE_ID), true).second());
+    }
+
+    @Test
+    public void hostWithoutPoolCoresOffersNoCpuOnlyCapacity() {
+        HostVO host = mockKvmHost(8, 2000L, 16 * GIB);
+        mockCapacityRows(capacity(1L, Capacity.CAPACITY_TYPE_CPU, 0L, 0L, 16000L),
+                capacity(2L, Capacity.CAPACITY_TYPE_MEMORY, 0L, 0L, 16 * GIB),
+                capacity(3L, Capacity.CAPACITY_TYPE_CPU_CORE, 0L, 0L, 8L));
+        mockClusterRatios("1.0", "1.0");
+        useRealPoolCoreManager(0, 0);
+
+        assertTrue(capacityManager.hasNoComputeCapacity(host));
+        assertFalse(capacityManager.checkIfHostHasCpuCapabilityAndCapacity(host, mockOffering(CPU_OFFERING_ID, 2, 2000, 1024, null), true).second());
+        assertEquals(0, capacityManager.getFreeCapacity(host).getFreeCores());
+        assertTrue(capacityManager.checkIfHostHasCpuCapabilityAndCapacity(host,
+                mockOffering(GPU_OFFERING_ID, 12, 2000, 1024, GPU_PROFILE_ID), true).second());
+
+        useRealPoolCoreManager(4, 0);
+        assertFalse(capacityManager.hasNoComputeCapacity(host));
+        assertFalse(capacityManager.hasNoComputeCapacity(mockHost(8, 2000L, 16 * GIB)));
+    }
+
+    @Test
+    public void mhzCheckNeverBindsWhenTheCoresAdmit() {
+        int poolCores = 8;
+        int hostSpeed = 2400;
+        HostVO host = mockKvmHost(2 * poolCores, hostSpeed, 64 * GIB);
+        mockClusterRatios("1.0", "1.0");
+        for (int usedCores = 0; usedCores <= poolCores; usedCores++) {
+            mockCapacityRows(capacity(1L, Capacity.CAPACITY_TYPE_CPU, 2L * usedCores * hostSpeed, 0L, 2L * poolCores * hostSpeed),
+                    capacity(2L, Capacity.CAPACITY_TYPE_MEMORY, 0L, 0L, 64 * GIB),
+                    capacity(3L, Capacity.CAPACITY_TYPE_CPU_CORE, 2L * usedCores, 0L, 2L * poolCores));
+            useRealPoolCoreManager(poolCores, usedCores);
+            for (int vcpus = 1; vcpus <= 2 * poolCores + 1; vcpus++) {
+                boolean coresAdmit = HostPoolCoreManager.coresForVcpus(vcpus) <= poolCores - usedCores;
+                Pair<Boolean, Boolean> result = capacityManager.checkIfHostHasCpuCapabilityAndCapacity(host,
+                        mockOffering(CPU_OFFERING_ID, vcpus, hostSpeed, 1024, null), true);
+                assertEquals(String.format("%d vCPU with %d cores used", vcpus, usedCores), coresAdmit, result.first() && result.second());
+            }
+        }
+    }
+
+    @Test
+    public void coresAllocatedOnStartReleasedOnStop() throws Exception {
+        List<HostCoreAssignmentVO> rows = useRealPoolCoreManager(4, 0);
+        poolCoreManager().allocatePoolCores(mockVm(VM_ID, CPU_OFFERING_ID, HOST_ID, null), mockKvmHost(8, 2000L, 128 * GIB), 4);
+        assertEquals(2, rows.size());
+
+        stopCpuOnlyVm(0, VirtualMachine.State.Stopping, VirtualMachine.Event.OperationSucceeded);
+
+        assertTrue(rows.isEmpty());
+    }
+
+    @Test
+    public void coresReleasedOnPowerOff() throws Exception {
+        List<HostCoreAssignmentVO> rows = useRealPoolCoreManager(4, 1);
+        poolCoreManager().allocatePoolCores(mockVm(VM_ID, CPU_OFFERING_ID, HOST_ID, null), mockKvmHost(8, 2000L, 128 * GIB), 4);
+        assertEquals(3, rows.size());
+
+        stopCpuOnlyVm(3600, VirtualMachine.State.Running, VirtualMachine.Event.FollowAgentPowerOffReport);
+
+        assertEquals(1, rows.size());
+        assertEquals(1000L, rows.get(0).getVmId());
+    }
+
+    @Test
+    public void coresReleasedOnEveryTransitionIntoStopped() {
+        Object[][] transitions = {
+                {VirtualMachine.State.Starting, VirtualMachine.Event.OperationFailed},
+                {VirtualMachine.State.Starting, VirtualMachine.Event.AgentReportStopped},
+                {VirtualMachine.State.Running, VirtualMachine.Event.AgentReportStopped},
+                {VirtualMachine.State.Stopping, VirtualMachine.Event.AgentReportStopped},
+                {VirtualMachine.State.Migrating, VirtualMachine.Event.FollowAgentPowerOffReport},
+        };
+        for (Object[] transition : transitions) {
+            Mockito.clearInvocations(hostPoolCoreManager);
+            stopCpuOnlyVm(0, (VirtualMachine.State) transition[0], (VirtualMachine.Event) transition[1]);
+            verify(hostPoolCoreManager).releasePoolCores(VM_ID);
+        }
+    }
+
+    @Test
+    public void coresReleasedEvenWhenCapacityReleaseFails() {
+        VMInstanceVO vm = mockVm(VM_ID, CPU_OFFERING_ID, null, HOST_ID);
+        HostVO host = mockKvmHost(8, 2000L, 16 * GIB);
+        when(hostDao.findById(HOST_ID)).thenReturn(host);
+        Mockito.doThrow(new CloudRuntimeException("capacity release failed")).when(capacityManager)
+                .releaseVmCapacity(any(VirtualMachine.class), Mockito.anyBoolean(), Mockito.anyBoolean(), any(Host.class));
+
+        org.junit.Assert.assertThrows(CloudRuntimeException.class, () -> capacityManager.postStateTransitionEvent(
+                new StateMachine2.Transition<>(VirtualMachine.State.Stopping, VirtualMachine.Event.OperationSucceeded, VirtualMachine.State.Stopped, null),
+                vm, true, new Pair<>(HOST_ID, null)));
+
+        verify(hostPoolCoreManager).releasePoolCores(VM_ID);
+    }
+
+    @Test
+    public void poolCoresCountedForEachVm() {
+        HostVO host = mockKvmHost(16, 2000L, 64 * GIB);
+        useRealPoolCoreManager(8, 3);
+
+        assertTrue(capacityManager.checkIfHostHasPoolCores(host, 4, 2));
+        assertFalse(capacityManager.checkIfHostHasPoolCores(host, 4, 3));
+        assertTrue(capacityManager.checkIfHostHasPoolCores(host, 3, 2));
+        assertFalse(capacityManager.checkIfHostHasPoolCores(host, 3, 3));
+        assertTrue(capacityManager.checkIfHostHasPoolCores(host, 1, 5));
+        assertFalse(capacityManager.checkIfHostHasPoolCores(host, 1, 6));
+        assertTrue(capacityManager.checkIfHostHasPoolCores(mockHost(16, 2000L, 64 * GIB), 4, 100));
+    }
+
+    @Test
+    public void coresKeptWhileTheVmMayRun() {
+        VMInstanceVO vm = mockVm(VM_ID, CPU_OFFERING_ID, HOST_ID, HOST_ID);
+        HostVO host = mockKvmHost(8, 2000L, 16 * GIB);
+        lenient().when(hostDao.findById(HOST_ID)).thenReturn(host);
+        VirtualMachine.State[][] transitions = {
+                {VirtualMachine.State.Running, VirtualMachine.State.Stopping},
+                {VirtualMachine.State.Starting, VirtualMachine.State.Running},
+                {VirtualMachine.State.Stopping, VirtualMachine.State.Running},
+                {VirtualMachine.State.Running, VirtualMachine.State.Running},
+        };
+        VirtualMachine.Event[] events = {VirtualMachine.Event.StopRequested, VirtualMachine.Event.OperationSucceeded,
+                VirtualMachine.Event.OperationFailed, VirtualMachine.Event.FollowAgentPowerOnReport};
+        for (int i = 0; i < events.length; i++) {
+            capacityManager.postStateTransitionEvent(new StateMachine2.Transition<>(transitions[i][0], events[i], transitions[i][1], null),
+                    vm, true, new Pair<>(HOST_ID, HOST_ID));
+        }
+
+        verify(hostPoolCoreManager, never()).releasePoolCores(anyLong());
+    }
+
+    @Test
+    public void updateCapacityForHostSweepsStaleAssignments() {
+        ReflectionTestUtils.setField(capacityManager, "_vmCapacityReleaseInterval", 0);
+        ReflectionTestUtils.setField(capacityManager, "clusterValuesCache",
+                new LazyCache<Long, Pair<String, String>>(16, 60, clusterId -> new Pair<>("1.0", "1.0")));
+        when(vmInstanceDao.listIdServiceOfferingForUpVmsByHostId(HOST_ID)).thenAnswer(i -> new ArrayList<>());
+        when(vmInstanceDao.listIdServiceOfferingForVmsMigratingFromHost(HOST_ID)).thenAnswer(i -> new ArrayList<>());
+        when(vmInstanceDao.listByLastHostId(HOST_ID)).thenAnswer(i -> new ArrayList<>());
+        when(capacityDao.listByHostIdTypes(eq(HOST_ID), anyList())).thenAnswer(i -> List.of(capacity(1L, Capacity.CAPACITY_TYPE_CPU, 0L, 0L, 16000L),
+                capacity(2L, Capacity.CAPACITY_TYPE_MEMORY, 0L, 0L, 16 * GIB), capacity(3L, Capacity.CAPACITY_TYPE_CPU_CORE, 0L, 0L, 8L)));
+
+        capacityManager.updateCapacityForHost(mockKvmHost(8, 2000L, 16 * GIB));
+        verify(hostPoolCoreManager).removeStaleAssignments(HOST_ID);
+
+        Mockito.clearInvocations(hostPoolCoreManager);
+        capacityManager.updateCapacityForHost(mockHost(8, 2000L, 16 * GIB));
+        verify(hostPoolCoreManager, never()).removeStaleAssignments(anyLong());
     }
 }

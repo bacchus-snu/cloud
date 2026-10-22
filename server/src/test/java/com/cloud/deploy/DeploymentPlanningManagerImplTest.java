@@ -201,6 +201,9 @@ public class DeploymentPlanningManagerImplTest {
     CapacityManager capacityMgr;
 
     @Inject
+    ResourceManager resourceManager;
+
+    @Inject
     ServiceOfferingDetailsDao serviceOfferingDetailsDao;
 
     @Inject
@@ -650,7 +653,7 @@ public class DeploymentPlanningManagerImplTest {
      * Root requires encryption, last host supports it
      */
     @Test
-    public void passEncRootLastHostSupportingEncryptionTest() {
+    public void passEncRootLastHostSupportingEncryptionTest() throws Exception {
         HostVO host = Mockito.spy(new HostVO("host"));
         Map<String, String> hostDetails = new HashMap<>() {{
             put(Host.HOST_VOLUME_ENCRYPTION, "true");
@@ -661,26 +664,51 @@ public class DeploymentPlanningManagerImplTest {
         VolumeVO vol1 = new VolumeVO("vol1", dataCenterId, podId, 1L, 1L, instanceId, "folder", "path", Storage.ProvisioningType.THIN, (long) 10 << 30, Volume.Type.ROOT);
         vol1.setPassphraseId(1L);
 
-        setupMocksForPlanDeploymentHostTests(host, vol1);
-
-        VMInstanceVO vm = (VMInstanceVO) vmProfile.getVirtualMachine();
-        vm.setLastHostId(hostId);
+        setupMocksForLastHostTests(host, vol1);
+        Mockito.doReturn(new Pair<Host, Map<Volume, StoragePool>>(host, new HashMap<>())).when(_dpm).findPotentialDeploymentResources(ArgumentMatchers.anyList(),
+                ArgumentMatchers.anyMap(), ArgumentMatchers.any(ExcludeList.class), ArgumentMatchers.any(), ArgumentMatchers.anyList(),
+                ArgumentMatchers.any(), ArgumentMatchers.any());
 
         // host id is null here so we pick up last host id
         DataCenterDeployment plan = new DataCenterDeployment(dataCenterId, podId, clusterId, null, null, null);
         try {
             DeployDestination dest = _dpm.planDeployment(vmProfile, plan, avoids, null);
-            Assert.assertEquals(dest.getHost(), host);
-        } catch (Exception ex) {
-            ex.printStackTrace();
+
+            Assert.assertSame(host, dest.getHost());
+            verify(_dpm).lastHostHasCapacity(ArgumentMatchers.eq(host), ArgumentMatchers.any(), ArgumentMatchers.anyInt(), ArgumentMatchers.anyLong(),
+                    ArgumentMatchers.anyFloat(), ArgumentMatchers.anyFloat());
+        } finally {
+            Mockito.when(resourceManager.isGPUDeviceAvailable(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.anyLong())).thenReturn(false);
         }
+    }
+
+    /**
+     * Makes the given host the VM's last host, with enough capacity and GPU devices, and no other host suitable, so
+     * that a destination can only be the last host.
+     */
+    private void setupMocksForLastHostTests(HostVO host, VolumeVO vol1) {
+        setupMocksForPlanDeploymentHostTests(host, vol1);
+        Mockito.when(vmProfile.getVirtualMachine().getLastHostId()).thenReturn(hostId);
+        Mockito.doReturn(List.of()).when(_dpm).findSuitableHosts(ArgumentMatchers.any(VirtualMachineProfile.class),
+                ArgumentMatchers.any(DeploymentPlan.class), ArgumentMatchers.any(ExcludeList.class), ArgumentMatchers.anyInt());
+        Mockito.when(clusterDetailsDao.findDetail(clusterId, "cpuOvercommitRatio")).thenReturn(new ClusterDetailsVO(clusterId, "cpuOvercommitRatio", "1"));
+        Mockito.when(clusterDetailsDao.findDetail(clusterId, "memoryOvercommitRatio")).thenReturn(new ClusterDetailsVO(clusterId, "memoryOvercommitRatio", "1"));
+        Mockito.doReturn(true).when(_dpm).lastHostHasCapacity(ArgumentMatchers.any(Host.class), ArgumentMatchers.any(), ArgumentMatchers.anyInt(),
+                ArgumentMatchers.anyLong(), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyFloat());
+        Mockito.when(resourceManager.isGPUDeviceAvailable(ArgumentMatchers.any(), ArgumentMatchers.eq(host), ArgumentMatchers.anyLong())).thenReturn(true);
+        VMTemplateVO template = Mockito.mock(VMTemplateVO.class);
+        Mockito.when(template.getArch()).thenReturn(CPU.CPUArch.amd64);
+        Mockito.when(vmProfile.getTemplate()).thenReturn(template);
+        Mockito.when(avoids.shouldAvoid(ArgumentMatchers.any(DataCenter.class))).thenReturn(false);
+        Mockito.when(avoids.shouldAvoid(ArgumentMatchers.any(Host.class))).thenReturn(false);
+        Mockito.clearInvocations(hostDao);
     }
 
     /**
      * Root requires encryption, last host does not support it
      */
     @Test
-    public void failEncRootLastHostNotSupportingEncryptionTest() {
+    public void failEncRootLastHostNotSupportingEncryptionTest() throws Exception {
         HostVO host = Mockito.spy(new HostVO("host"));
         Map<String, String> hostDetails = new HashMap<>() {{
             put(Host.HOST_VOLUME_ENCRYPTION, "false");
@@ -691,17 +719,40 @@ public class DeploymentPlanningManagerImplTest {
         VolumeVO vol1 = new VolumeVO("vol1", dataCenterId, podId, 1L, 1L, instanceId, "folder", "path", Storage.ProvisioningType.THIN, (long) 10 << 30, Volume.Type.ROOT);
         vol1.setPassphraseId(1L);
 
-        setupMocksForPlanDeploymentHostTests(host, vol1);
+        setupMocksForLastHostTests(host, vol1);
 
-        VMInstanceVO vm = (VMInstanceVO) vmProfile.getVirtualMachine();
-        vm.setLastHostId(hostId);
         // host id is null here so we pick up last host id
         DataCenterDeployment plan = new DataCenterDeployment(dataCenterId, podId, clusterId, null, null, null);
         try {
             DeployDestination dest = _dpm.planDeployment(vmProfile, plan, avoids, null);
+
             Assert.assertNull("Destination should be null since last host doesn't support encryption and root requires it", dest);
-        } catch (Exception ex) {
-            ex.printStackTrace();
+            verify(hostDao, Mockito.atLeastOnce()).findById(hostId);
+            verify(_dpm, Mockito.never()).lastHostHasCapacity(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.anyInt(),
+                    ArgumentMatchers.anyLong(), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyFloat());
+        } finally {
+            Mockito.when(resourceManager.isGPUDeviceAvailable(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.anyLong())).thenReturn(false);
+        }
+    }
+
+    @Test
+    public void lastHostNeedsFreePoolCores() {
+        HostVO lastHost = new HostVO("last");
+        ServiceOfferingVO poolOffering = new ServiceOfferingVO("pool", 4, 1024, 2000, 1, 1, false, "vm", false, Type.User, false);
+        ServiceOfferingVO gpuOffering = Mockito.spy(new ServiceOfferingVO("gpu", 12, 1024, 2000, 1, 1, false, "vm", false, Type.User, false));
+        Mockito.doReturn(5L).when(gpuOffering).getVgpuProfileId();
+        Mockito.when(capacityMgr.checkIfHostHasCpuCapability(lastHost, 4, 2000)).thenReturn(true);
+        Mockito.when(capacityMgr.checkIfHostHasCapacity(ArgumentMatchers.eq(lastHost), ArgumentMatchers.anyInt(), ArgumentMatchers.anyLong(),
+                ArgumentMatchers.anyBoolean(), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyBoolean())).thenReturn(true);
+        try {
+            Mockito.when(capacityMgr.checkIfHostHasPoolCores(lastHost, 4)).thenReturn(false);
+            assertFalse(_dpm.lastHostHasCapacity(lastHost, poolOffering, 8000, 1L << 30, 1f, 1f));
+            assertTrue(_dpm.lastHostHasCapacity(lastHost, gpuOffering, 24000, 1L << 30, 1f, 1f));
+
+            Mockito.when(capacityMgr.checkIfHostHasPoolCores(lastHost, 4)).thenReturn(true);
+            assertTrue(_dpm.lastHostHasCapacity(lastHost, poolOffering, 8000, 1L << 30, 1f, 1f));
+        } finally {
+            Mockito.when(capacityMgr.checkIfHostHasPoolCores(ArgumentMatchers.any(Host.class), ArgumentMatchers.anyInt())).thenReturn(true);
         }
     }
 
@@ -891,6 +942,7 @@ public class DeploymentPlanningManagerImplTest {
 
         Mockito.when(capacityMgr.checkIfHostReachMaxGuestLimit(host)).thenReturn(false);
         Mockito.when(capacityMgr.checkIfHostHasCpuCapability(ArgumentMatchers.any(Host.class), ArgumentMatchers.anyInt(), ArgumentMatchers.anyInt())).thenReturn(true);
+        Mockito.when(capacityMgr.checkIfHostHasPoolCores(ArgumentMatchers.any(Host.class), ArgumentMatchers.anyInt())).thenReturn(true);
         Mockito.when(capacityMgr.checkIfHostHasCapacity(
             ArgumentMatchers.any(),
                 ArgumentMatchers.anyInt(),

@@ -119,6 +119,19 @@ public interface UserVmManager extends UserVmService {
             "Advanced", Boolean.class, "enforce.resource.limit.on.backup.validation.vm", "false", "If set to true, validation VMs will be accounted in the resource limit of the " +
             "account/domain.", true, ConfigKey.Scope.Account);
 
+    ConfigKey<Integer> VmPoolVcpuStep = new ConfigKey<>(ConfigKey.CATEGORY_ADVANCED, Integer.class, "vm.pool.vcpu.step", "2",
+            "The vCPU count of an Instance without a vGPU profile must be a multiple of this value when it is deployed or scaled. " +
+                    "Such an Instance runs on ceil(vCPUs/2) dedicated host cores, so with an odd count the sibling thread of its last core stays idle. " +
+                    "Values below 1 count as 1.", true, ConfigKey.Scope.Domain);
+
+    /**
+     * @return the vCPU step for Instances without a vGPU profile owned in the domain
+     */
+    static int poolVcpuStep(Long domainId) {
+        Integer step = VmPoolVcpuStep.valueIn(domainId);
+        return step == null || step < 1 ? 1 : step;
+    }
+
     static final int MAX_USER_DATA_LENGTH_BYTES = 2048;
 
     public  static  final String CKS_NODE = "cksnode";

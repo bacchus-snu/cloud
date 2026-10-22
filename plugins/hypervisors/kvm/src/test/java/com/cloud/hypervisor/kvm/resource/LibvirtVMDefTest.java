@@ -20,12 +20,23 @@
 package com.cloud.hypervisor.kvm.resource;
 
 import java.io.File;
+import java.io.StringReader;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
 
+import javax.xml.parsers.DocumentBuilderFactory;
+
 import junit.framework.TestCase;
 
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import org.xml.sax.InputSource;
+
+import com.cloud.agent.api.to.VirtualMachineMetadataTO;
 import com.cloud.hypervisor.kvm.resource.LibvirtVMDef.ChannelDef;
 import com.cloud.hypervisor.kvm.resource.LibvirtVMDef.DiskDef;
 import com.cloud.hypervisor.kvm.resource.LibvirtVMDef.MemBalloonDef;
@@ -586,6 +597,59 @@ public class LibvirtVMDefTest extends TestCase {
         LibvirtVMDef.CpuModeDef cpuModeDef = new LibvirtVMDef.CpuModeDef();
         cpuModeDef.setTopology(-1, -1, 4);
         assertEquals("<cpu></cpu>", cpuModeDef.toString());
+    }
+
+    private static final String CLOUDSTACK_NS = "http://cloudstack.apache.org/instance";
+
+    private static VirtualMachineMetadataTO metadata(List<int[]> cores) {
+        VirtualMachineMetadataTO metadata = new VirtualMachineMetadataTO("web", "i-2-41-VM", "web", "7c3e2a10", 4, 8192, 0L, 0L,
+                "d-uuid", "ROOT", "a-uuid", "alice", "", "", "cpu", List.of("cpu"), "zone", "z-uuid", "pod", "p-uuid", "cluster", "c-uuid",
+                new HashMap<>());
+        metadata.setCores(cores);
+        return metadata;
+    }
+
+    private static String withoutIndentation(String xml) {
+        return xml.replaceAll(">\\s+<", "><").trim();
+    }
+
+    private static Element lastChildElement(Element parent) {
+        Element last = null;
+        NodeList children = parent.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            if (children.item(i).getNodeType() == Node.ELEMENT_NODE) {
+                last = (Element) children.item(i);
+            }
+        }
+        return last;
+    }
+
+    @Test
+    public void metadataCarriesCoreAssignment() throws Exception {
+        String expectedCores = "<cloudstack:cores>\n" +
+                "  <cloudstack:core>8,24</cloudstack:core>\n" +
+                "  <cloudstack:core>9,25</cloudstack:core>\n" +
+                "</cloudstack:cores>";
+
+        String xml = new LibvirtVMDef.MetadataDef(metadata(List.of(new int[] {8, 24}, new int[] {9, 25}))).toString();
+
+        assertTrue(xml, withoutIndentation(xml).contains("<cloudstack:resource_tags/>" + withoutIndentation(expectedCores) + "</cloudstack:instance>"));
+        assertFalse(xml, xml.contains("cloudstack:type"));
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        factory.setNamespaceAware(true);
+        Document doc = factory.newDocumentBuilder().parse(new InputSource(new StringReader(xml)));
+        Element instance = (Element) doc.getDocumentElement().getElementsByTagNameNS(CLOUDSTACK_NS, "instance").item(0);
+        Element cores = lastChildElement(instance);
+        assertEquals(CLOUDSTACK_NS, cores.getNamespaceURI());
+        assertEquals("cores", cores.getLocalName());
+        NodeList assigned = cores.getElementsByTagNameNS(CLOUDSTACK_NS, "core");
+        assertEquals(2, assigned.getLength());
+        assertEquals("8,24", assigned.item(0).getTextContent());
+        assertEquals("9,25", assigned.item(1).getTextContent());
+
+        String gpuXml = new LibvirtVMDef.MetadataDef(metadata(null)).toString();
+        assertFalse(gpuXml, gpuXml.contains("cores"));
+        assertTrue(gpuXml, withoutIndentation(gpuXml).contains("<cloudstack:resource_tags/></cloudstack:instance>"));
     }
 
     @Test

@@ -745,7 +745,8 @@ public class KubernetesClusterManagerImpl extends ManagerBase implements Kuberne
                 if (logger.isDebugEnabled()) {
                     logger.debug("Checking host: {} for capacity already reserved {}", hostVO, reserved);
                 }
-                if (hostCapacityExempt || capacityManager.checkIfHostHasCapacity(hostVO, cpu_requested * reserved, ram_requested * reserved, false, cpuOvercommitRatio, memoryOvercommitRatio, true)) {
+                if (hostCapacityExempt || (capacityManager.checkIfHostHasCapacity(hostVO, cpu_requested * reserved, ram_requested * reserved, false, cpuOvercommitRatio, memoryOvercommitRatio, true)
+                        && capacityManager.checkIfHostHasPoolCores(hostVO, offering.getCpu(), reserved))) {
                     logger.debug("Found host {} to have enough capacity, CPU={} RAM={}", hostVO, cpu_requested * reserved, toHumanReadableSize(ram_requested * reserved));
                     hostEntry.setValue(new Pair<HostVO, Integer>(hostVO, reserved));
                     suitable_host_found = true;

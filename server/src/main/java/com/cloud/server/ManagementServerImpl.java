@@ -4940,6 +4940,7 @@ public class ManagementServerImpl extends MutualExclusiveIdsManagerBase implemen
             capabilities.put(ApiConstants.EXTENSIONS_PATH, extensionsManager.getExtensionsPath());
         }
         capabilities.put(ApiConstants.ADDITONAL_CONFIG_ENABLED, UserVmManager.EnableAdditionalVmConfig.valueIn(caller.getId()));
+        capabilities.put(ApiConstants.POOL_VCPU_STEP, UserVmManager.poolVcpuStep(domainId));
 
         Map<String, Object> vpnParams = getVpnCustomerGatewayParameters(domainId);
         if (!vpnParams.isEmpty()) {

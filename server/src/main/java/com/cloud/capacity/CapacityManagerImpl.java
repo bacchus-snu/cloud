@@ -136,6 +136,8 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
 
     @Inject
     ClusterDetailsDao _clusterDetailsDao;
+    @Inject
+    HostPoolCoreManager hostPoolCoreManager;
     private int _vmCapacityReleaseInterval;
     long _extraBytesPerVolume = 0;
 
@@ -170,7 +172,8 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
         Integer cpus = host.getCpus();
         Long speed = host.getSpeed();
         Long memory = host.getTotalMemory();
-        return cpus == null || cpus <= 0 || speed == null || speed <= 0 || memory == null || memory <= 0;
+        return cpus == null || cpus <= 0 || speed == null || speed <= 0 || memory == null || memory <= 0
+                || (HostPoolCoreManager.usesPoolCores(host) && hostPoolCoreManager.listPoolCores(host.getId()).isEmpty());
     }
 
     @Override
@@ -181,20 +184,34 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
             return null;
         }
         Pair<String, String> clusterValues = getClusterValues(host.getClusterId());
-        return computeFreeCapacity(host, capacityCpu, capacityMem, Float.parseFloat(clusterValues.first()),
-                Float.parseFloat(clusterValues.second()), true);
-    }
-
-    private HostFreeCapacity computeFreeCapacity(Host host, CapacityVO capacityCpu, CapacityVO capacityMem, float cpuOvercommitRatio,
-            float memoryOvercommitRatio, boolean considerReservedCapacity) {
-        long totalCpu = (long)(capacityCpu.getTotalCapacity() * cpuOvercommitRatio);
-        long totalMem = (long)(capacityMem.getTotalCapacity() * memoryOvercommitRatio);
-        long reservedCpu = considerReservedCapacity ? capacityCpu.getReservedCapacity() : 0;
-        long reservedMem = considerReservedCapacity ? capacityMem.getReservedCapacity() : 0;
         int cpus = host.getCpus() == null ? 0 : host.getCpus();
         int speed = host.getSpeed() == null ? 0 : host.getSpeed().intValue();
-        return new HostFreeCapacity(totalCpu - (reservedCpu + capacityCpu.getUsedCapacity()),
-                totalMem - (reservedMem + capacityMem.getUsedCapacity()), cpus, speed);
+        return new HostFreeCapacity(freeCapacity(capacityCpu, Float.parseFloat(clusterValues.first()), true),
+                freeCapacity(capacityMem, Float.parseFloat(clusterValues.second()), true), cpus, speed,
+                HostPoolCoreManager.usesPoolCores(host) ? hostPoolCoreManager.countFreePoolCores(host.getId()) : 0);
+    }
+
+    /**
+     * The free capacity by which a host admits a VM: total × overprovisioning factor − used − reserved.
+     */
+    private static long freeCapacity(CapacityVO capacity, float overcommitRatio, boolean considerReservedCapacity) {
+        long total = (long)(capacity.getTotalCapacity() * overcommitRatio);
+        long reserved = considerReservedCapacity ? capacity.getReservedCapacity() : 0;
+        return total - (reserved + capacity.getUsedCapacity());
+    }
+
+    @Override
+    public boolean checkIfHostHasPoolCores(Host host, int vcpus, int vms) {
+        if (!HostPoolCoreManager.usesPoolCores(host)) {
+            return true;
+        }
+        long needed = (long) HostPoolCoreManager.coresForVcpus(vcpus) * vms;
+        int free = hostPoolCoreManager.countFreePoolCores(host.getId());
+        if (needed > free) {
+            logger.debug("{} has {} free pool cores, fewer than the {} that {} VMs of {} vCPUs need", host, free, needed, vms, vcpus);
+            return false;
+        }
+        return true;
     }
 
     @DB
@@ -545,10 +562,8 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
                     logger.debug("considerReservedCapacity is" + considerReservedCapacity + " , not considering reserved capacity for calculating free capacity");
                 }
             }
-            HostFreeCapacity freeCapacity = computeFreeCapacity(host, capacityCpu, capacityMem, cpuOvercommitRatio, memoryOvercommitRatio,
-                    considerReservedCapacity);
-            long freeCpu = freeCapacity.getFreeCpuMhz();
-            long freeMem = freeCapacity.getFreeMemoryBytes();
+            long freeCpu = freeCapacity(capacityCpu, cpuOvercommitRatio, considerReservedCapacity);
+            long freeMem = freeCapacity(capacityMem, memoryOvercommitRatio, considerReservedCapacity);
 
             if (logger.isDebugEnabled()) {
                 logger.debug("Free CPU: " + freeCpu + " , Requested CPU: " + cpu);
@@ -717,6 +732,13 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
     public void updateCapacityForHost(final Host host) {
         if (HypervisorType.External.equals(host.getHypervisorType())) {
             return;
+        }
+        if (HostPoolCoreManager.usesPoolCores(host)) {
+            try {
+                hostPoolCoreManager.removeStaleAssignments(host.getId());
+            } catch (Exception e) {
+                logger.warn("Unable to remove the stale pool core assignments of {}", host, e);
+            }
         }
         long usedCpuCore = 0;
         long reservedCpuCore = 0;
@@ -1017,6 +1039,15 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
       boolean reserveOnStop = _vmCapacityReleaseInterval > 0;
       boolean reportedStopped = event == Event.AgentReportStopped || event == Event.AgentReportShutdowned || event == Event.FollowAgentPowerOffReport;
 
+      if (!HostPoolCoreManager.holdsCores(newState)) {
+        // A release missed here is recovered by the periodic removal of stale assignments.
+        try {
+          hostPoolCoreManager.releasePoolCores(vm.getId());
+        } catch (Exception e) {
+          logger.warn("Failed to release the pool cores of {}", vm, e);
+        }
+      }
+
       if (oldState == State.Starting) {
         if (newState != State.Running) {
           releaseVmCapacity(vm, false, false, oldHost);
@@ -1142,7 +1173,7 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
 
         boolean hostHasCpuCapability = checkIfHostHasCpuCapability(host, offering.getCpu(), offering.getSpeed());
         boolean hostHasCapacity = checkIfHostHasCapacity(host, cpu_requested, ram_requested, false, cpuOvercommitRatio, memoryOvercommitRatio,
-                considerReservedCapacity);
+                considerReservedCapacity) && checkIfHostHasPoolCores(host, offering.getCpu());
 
         return new Pair<>(hostHasCpuCapability, hostHasCapacity);
     }

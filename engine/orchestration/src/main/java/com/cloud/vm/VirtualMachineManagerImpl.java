@@ -178,6 +178,7 @@ import com.cloud.api.query.dao.UserVmJoinDao;
 import com.cloud.api.query.vo.DomainRouterJoinVO;
 import com.cloud.api.query.vo.UserVmJoinVO;
 import com.cloud.capacity.CapacityManager;
+import com.cloud.capacity.HostPoolCoreManager;
 import com.cloud.configuration.Resource;
 import com.cloud.dc.ClusterDetailsDao;
 import com.cloud.dc.ClusterDetailsVO;
@@ -350,6 +351,8 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
     private UserVmService _userVmService;
     @Inject
     private CapacityManager _capacityMgr;
+    @Inject
+    private HostPoolCoreManager hostPoolCoreManager;
     @Inject
     private NicDao _nicsDao;
     @Inject
@@ -1515,6 +1518,8 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
                 }
 
                 try {
+                    final List<int[]> poolCores = allocatePoolCores(vm, offering, dest.getHost());
+
                     resetVmNicsDeviceId(vm.getId());
 
                     processPrepareExternalProvisioning(firstStart, dest.getHost(), vmProfile, dest.getDataCenter());
@@ -1549,6 +1554,12 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
 
                     final VirtualMachineTO vmTO = hvGuru.implement(vmProfile);
                     updateVmMetadataManufacturerAndProduct(vmTO, vm);
+                    if (poolCores != null) {
+                        if (vmTO.getMetadata() == null) {
+                            throw new ExecutionException(String.format("The start command of %s has no metadata to carry its pool cores", vm));
+                        }
+                        vmTO.getMetadata().setCores(poolCores);
+                    }
 
                     checkAndSetEnterSetupMode(vmTO, params);
 
@@ -1751,6 +1762,19 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
             String message = String.format(messageTmpl, vm.getHostName(), vm.getUuid(), details);
             throw new CloudRuntimeException(message, lastKnownError);
         }
+    }
+
+    /**
+     * @return the pool cores assigned to the VM on the host, each as its thread ids, or null when the VM does not
+     *         run on pool cores
+     */
+    private List<int[]> allocatePoolCores(VMInstanceVO vm, ServiceOffering offering, Host host) throws InsufficientServerCapacityException {
+        if (CapacityManager.isHostCapacityExempt(offering) || !HostPoolCoreManager.usesPoolCores(host)) {
+            return null;
+        }
+        return hostPoolCoreManager.allocatePoolCores(vm, host, offering.getCpu()).stream()
+                .map(HostPoolCoreManager.PoolCore::getThreads)
+                .collect(Collectors.toList());
     }
 
     private boolean canExposeError(Account account) {

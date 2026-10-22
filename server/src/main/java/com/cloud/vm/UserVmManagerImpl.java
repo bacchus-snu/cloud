@@ -1343,6 +1343,21 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
     }
 
 
+    /**
+     * A user Instance without a vGPU profile runs on whole host cores, two vCPUs per core, so its vCPU count must be a
+     * multiple of the owner domain's {@code vm.pool.vcpu.step}. System VMs are not subject to it.
+     */
+    protected void validatePoolVcpuStep(VirtualMachine.Type vmType, ServiceOffering offering, Integer vcpus, long domainId) {
+        if (vmType != VirtualMachine.Type.User || vcpus == null || CapacityManager.isHostCapacityExempt(offering)) {
+            return;
+        }
+        int step = UserVmManager.poolVcpuStep(domainId);
+        if (vcpus % step != 0) {
+            throw new InvalidParameterValueException(String.format("The number of vCPUs of an Instance without a vGPU profile must be a multiple of %d; %d is not",
+                    step, vcpus));
+        }
+    }
+
     private void validateOfferingMaxResource(ServiceOfferingVO offering) {
         Integer maxCPUCores = ConfigurationManagerImpl.VM_SERVICE_OFFERING_MAX_CPU_CORES.value() == 0 ? Integer.MAX_VALUE: ConfigurationManagerImpl.VM_SERVICE_OFFERING_MAX_CPU_CORES.value();
         if (offering.getCpu() > maxCPUCores) {
@@ -1412,6 +1427,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         } else {
             validateOfferingMaxResource(newServiceOffering);
         }
+        validatePoolVcpuStep(vmInstance.getType(), newServiceOffering, newServiceOffering.getCpu(), vmInstance.getDomainId());
         ServiceOfferingVO currentServiceOffering = serviceOfferingDao.findByIdIncludingRemoved(vmInstance.getId(), vmInstance.getServiceOfferingId());
 
         validateDiskOfferingChecks(currentServiceOffering, newServiceOffering);
@@ -2204,6 +2220,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             validateCustomParameters(newServiceOffering, customParameters);
             newServiceOffering = serviceOfferingDao.getComputeOffering(newServiceOffering, customParameters);
         }
+        validatePoolVcpuStep(vmInstance.getType(), newServiceOffering, newServiceOffering.getCpu(), vmInstance.getDomainId());
 
         // Check that the specified service offering ID is valid
         _itMgr.checkIfCanUpgrade(vmInstance, newServiceOffering);
@@ -3002,6 +3019,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                 customParameters.put(VmDetailConstants.CPU_SPEED, details.get(VmDetailConstants.CPU_SPEED));
             }
             validateCustomParameters(svcOffering, customParameters);
+            validatePoolVcpuStep(vmInstance.getType(), svcOffering, (int) newCpu, vmInstance.getDomainId());
         } else {
             if (details.containsKey(VmDetailConstants.CPU_NUMBER) || details.containsKey(VmDetailConstants.MEMORY) ||
                     details.containsKey(VmDetailConstants.CPU_SPEED)) {
@@ -4423,6 +4441,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         } else {
             validateOfferingMaxResource(offering);
         }
+        validatePoolVcpuStep(VirtualMachine.Type.User, offering, offering.getCpu(), owner.getDomainId());
         // check if account/domain is with in resource limits to create a new vm
         boolean isIso = Storage.ImageFormat.ISO == template.getFormat();
 
@@ -9728,7 +9747,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                 KvmAdditionalConfigAllowList, XenServerAdditionalConfigAllowList, VmwareAdditionalConfigAllowList, DestroyRootVolumeOnVmDestruction,
                 EnforceStrictResourceLimitHostTagCheck, StrictHostTags, AllowUserForceStopVm, VmDistinctHostNameScope,
                 VmwareAdditionalDetailsFromOvaEnabled, VmwareAllowedAdditionalDetailsFromOva, AllowDifferentHostTagsOfferingsForVmScale,
-                AutoMigrateVmOnLiveScaleInsufficientCapacity, EnforceResourceLimitOnValidationVm};
+                AutoMigrateVmOnLiveScaleInsufficientCapacity, EnforceResourceLimitOnValidationVm, VmPoolVcpuStep};
     }
 
     @Override

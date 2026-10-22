@@ -55,6 +55,8 @@
   <bean id="autoScaleVmGroupVmMapDaoImpl" class="com.cloud.network.as.dao.AutoScaleVmGroupVmMapDaoImpl" />
   <bean id="autoScaleVmProfileDaoImpl" class="com.cloud.network.as.dao.AutoScaleVmProfileDaoImpl" />
   <bean id="capacityDaoImpl" class="com.cloud.capacity.dao.CapacityDaoImpl" />
+  <bean id="hostCoreAssignmentDaoImpl" class="com.cloud.capacity.dao.HostCoreAssignmentDaoImpl" />
+  <bean id="hostPoolCoreDaoImpl" class="com.cloud.capacity.dao.HostPoolCoreDaoImpl" />
   <bean id="certificateDaoImpl" class="com.cloud.certificate.dao.CertificateDaoImpl" />
   <bean id="crlDaoImpl" class="com.cloud.certificate.dao.CrlDaoImpl" />
   <bean id="clusterVSMMapDaoImpl" class="com.cloud.dc.dao.ClusterVSMMapDaoImpl" />

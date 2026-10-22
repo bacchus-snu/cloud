@@ -54,6 +54,7 @@ import org.apache.cloudstack.api.command.admin.guest.AddGuestOsCategoryCmd;
 import org.apache.cloudstack.api.command.admin.guest.DeleteGuestOsCategoryCmd;
 import org.apache.cloudstack.api.command.admin.guest.UpdateGuestOsCategoryCmd;
 import org.apache.cloudstack.api.command.user.address.ListPublicIpAddressesCmd;
+import org.apache.cloudstack.api.command.user.config.ListCapabilitiesCmd;
 import org.apache.cloudstack.api.command.user.guest.ListGuestOsCategoriesCmd;
 import org.apache.cloudstack.api.command.user.ssh.RegisterSSHKeyPairCmd;
 import org.apache.cloudstack.api.command.user.userdata.DeleteUserDataCmd;
@@ -67,11 +68,14 @@ import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStoreDriver
 import org.apache.cloudstack.framework.config.ConfigDepot;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
+import org.apache.cloudstack.framework.config.impl.ConfigDepotImpl;
 import org.apache.cloudstack.framework.config.impl.ConfigurationVO;
+import org.apache.cloudstack.storage.datastore.db.ImageStoreDao;
 import org.apache.cloudstack.framework.extensions.manager.ExtensionsManager;
 import org.apache.cloudstack.userdata.UserDataManager;
 
 import com.cloud.cpu.CPU;
+import com.cloud.configuration.Config;
 import com.cloud.dc.DataCenterVO;
 import com.cloud.dc.Vlan.VlanType;
 import com.cloud.dc.dao.DataCenterDao;
@@ -97,6 +101,8 @@ import com.cloud.hypervisor.kvm.dpdk.DpdkHelper;
 import com.cloud.network.IpAddress;
 import com.cloud.network.IpAddressManagerImpl;
 import com.cloud.network.dao.IPAddressVO;
+import com.cloud.network.dao.NetworkDao;
+import com.cloud.projects.ProjectManager;
 import com.cloud.service.ServiceOfferingVO;
 import com.cloud.service.dao.ServiceOfferingDao;
 import com.cloud.service.dao.ServiceOfferingDetailsDao;
@@ -127,6 +133,7 @@ import com.cloud.utils.db.Filter;
 import com.cloud.utils.db.SearchBuilder;
 import com.cloud.utils.db.SearchCriteria;
 import com.cloud.utils.exception.CloudRuntimeException;
+import com.cloud.vm.UserVmManager;
 import com.cloud.vm.UserVmVO;
 import com.cloud.vm.VMInstanceDetailVO;
 import com.cloud.vm.VMInstanceVO;
@@ -2492,5 +2499,36 @@ public class ManagementServerImplTest {
         Assert.assertEquals(6L, deploymentPlan.getDataCenterId());
         Assert.assertEquals(5L, (long) deploymentPlan.getPodId());
         Assert.assertEquals(4L, (long) deploymentPlan.getClusterId());
+    }
+
+    @Test
+    public void listCapabilitiesReturnsThePoolVcpuStepOfTheCallersDomain() {
+        ConfigDepotImpl depot = mock(ConfigDepotImpl.class);
+        lenient().when(depot.getConfigStringValue(UserVmManager.VmPoolVcpuStep.key(), ConfigKey.Scope.Domain, 7L)).thenReturn("4");
+        ConfigKey.init(depot);
+        try {
+            Account caller = mock(Account.class);
+            lenient().when(caller.getId()).thenReturn(3L);
+            lenient().when(caller.getDomainId()).thenReturn(7L);
+            Mockito.doReturn(caller).when(spy).getCaller();
+            ReflectionTestUtils.setField(spy, "networkDao", mock(NetworkDao.class));
+            ReflectionTestUtils.setField(spy, "_imgStoreDao", mock(ImageStoreDao.class));
+            ReflectionTestUtils.setField(spy, "_projectMgr", mock(ProjectManager.class));
+            ReflectionTestUtils.setField(spy, "_configDao", configDao);
+            ReflectionTestUtils.setField(spy, "_accountService", accountManager);
+            lenient().when(configDao.getValue(Config.ApiLimitInterval.key())).thenReturn("1");
+            lenient().when(configDao.getValue(Config.ApiLimitMax.key())).thenReturn("1");
+            lenient().when(configDao.getValue("sharedfsvm.min.cpu.count")).thenReturn("2");
+            lenient().when(configDao.getValue("sharedfsvm.min.ram.size")).thenReturn("1024");
+            ListCapabilitiesCmd cmd = mock(ListCapabilitiesCmd.class);
+            lenient().when(cmd.getDomainId()).thenReturn(null);
+
+            Assert.assertEquals(4, spy.listCapabilities(cmd).get(ApiConstants.POOL_VCPU_STEP));
+
+            lenient().when(caller.getDomainId()).thenReturn(9L);
+            Assert.assertEquals(2, spy.listCapabilities(cmd).get(ApiConstants.POOL_VCPU_STEP));
+        } finally {
+            ConfigKey.init(null);
+        }
     }
 }

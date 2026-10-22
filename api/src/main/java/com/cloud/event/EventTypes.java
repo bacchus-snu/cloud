@@ -253,6 +253,11 @@ public class EventTypes {
     public static final String EVENT_GLOBAL_LOAD_BALANCER_DELETE = "GLOBAL.LB.DELETE";
     public static final String EVENT_GLOBAL_LOAD_BALANCER_UPDATE = "GLOBAL.LB.UPDATE";
 
+    // OpenID Connect provider events
+    public static final String EVENT_OIDC_PROVIDER_CREATE = "OIDC.PROVIDER.CREATE";
+    public static final String EVENT_OIDC_PROVIDER_UPDATE = "OIDC.PROVIDER.UPDATE";
+    public static final String EVENT_OIDC_PROVIDER_DELETE = "OIDC.PROVIDER.DELETE";
+
     // Role events
     public static final String EVENT_ROLE_CREATE = "ROLE.CREATE";
     public static final String EVENT_ROLE_UPDATE = "ROLE.UPDATE";

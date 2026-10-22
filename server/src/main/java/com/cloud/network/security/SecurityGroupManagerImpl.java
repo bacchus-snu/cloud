@@ -27,6 +27,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -48,6 +49,8 @@ import org.apache.cloudstack.api.command.user.securitygroup.RevokeSecurityGroupI
 import org.apache.cloudstack.api.command.user.securitygroup.UpdateSecurityGroupCmd;
 import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.engine.orchestration.service.NetworkOrchestrationService;
+import org.apache.cloudstack.framework.config.ConfigKey;
+import org.apache.cloudstack.framework.config.Configurable;
 import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
 import org.apache.cloudstack.framework.messagebus.MessageBus;
 import org.apache.cloudstack.framework.messagebus.PublishScope;
@@ -124,7 +127,8 @@ import com.cloud.vm.dao.NicSecondaryIpDao;
 import com.cloud.vm.dao.UserVmDao;
 import com.cloud.vm.dao.VMInstanceDao;
 
-public class SecurityGroupManagerImpl extends ManagerBase implements SecurityGroupManager, SecurityGroupService, StateListener<State, VirtualMachine.Event, VirtualMachine> {
+public class SecurityGroupManagerImpl extends ManagerBase implements SecurityGroupManager, SecurityGroupService, StateListener<State, VirtualMachine.Event, VirtualMachine>,
+        Configurable {
 
     @Inject
     SecurityGroupDao _securityGroupDao;
@@ -990,11 +994,98 @@ public class SecurityGroupManagerImpl extends ManagerBase implements SecurityGro
         if (groupVO == null) {
             Account accVO = _accountDao.findById(accountId);
             if (accVO != null) {
-                return createSecurityGroup(SecurityGroupManager.DEFAULT_GROUP_NAME, SecurityGroupManager.DEFAULT_GROUP_DESCRIPTION, accVO.getDomainId(), accVO.getId(),
-                        accVO.getAccountName());
+                SecurityGroupVO group = createSecurityGroup(SecurityGroupManager.DEFAULT_GROUP_NAME, SecurityGroupManager.DEFAULT_GROUP_DESCRIPTION, accVO.getDomainId(),
+                        accVO.getId(), accVO.getAccountName());
+                addTemplateRules(group, defaultGroupRules(accVO.getDomainId()));
+                return group;
             }
         }
         return groupVO;
+    }
+
+    @Override
+    public void applyDefaultSecurityGroupRules(long accountId) {
+        SecurityGroupVO group = createDefaultSecurityGroup(accountId);
+        Account account = _accountDao.findById(accountId);
+        if (group == null || account == null) {
+            return;
+        }
+        List<SecurityGroupRuleTemplate.Rule> template = defaultGroupRules(account.getDomainId());
+        if (template.isEmpty()) {
+            return;
+        }
+        int added = Transaction.execute((TransactionCallback<Integer>) status -> {
+            if (_securityGroupDao.acquireInLockTable(group.getId()) == null) {
+                logger.warn("Could not lock security group {} to add the default rules", group);
+                return 0;
+            }
+            try {
+                return addTemplateRules(group, template);
+            } finally {
+                _securityGroupDao.releaseFromLockTable(group.getId());
+            }
+        });
+        if (added > 0) {
+            scheduleRulesetUpdateToHosts(_securityGroupVMMapDao.listVmIdsBySecurityGroup(group.getId()), true, null);
+        }
+    }
+
+    /**
+     * @return the rules of the default group template for accounts of the domain; none if the stored value is no template
+     */
+    private List<SecurityGroupRuleTemplate.Rule> defaultGroupRules(long domainId) {
+        try {
+            return SecurityGroupRuleTemplate.parse(DefaultGroupIngressRules.valueIn(domainId));
+        } catch (InvalidParameterValueException e) {
+            logger.error("{} is not a rule template, so default security groups get no rules from it: {}", DefaultGroupIngressRules.key(), e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    /**
+     * Adds the template rules the group lacks; a rule of the own group admits the group itself.
+     *
+     * @return the number of rules added
+     */
+    private int addTemplateRules(SecurityGroupVO group, List<SecurityGroupRuleTemplate.Rule> template) {
+        if (template.isEmpty()) {
+            return 0;
+        }
+        List<SecurityGroupRuleVO> existing = _securityGroupRuleDao.listBySecurityGroupId(group.getId(), SecurityRuleType.IngressRule);
+        int added = 0;
+        for (SecurityGroupRuleTemplate.Rule rule : template) {
+            if (rule.isOwnGroup()) {
+                if (!hasRule(existing, rule, null, group.getId())) {
+                    _securityGroupRuleDao.persist(new SecurityGroupRuleVO(SecurityRuleType.IngressRule, group.getId(), rule.getStartPortOrType(),
+                            rule.getEndPortOrCode(), rule.getProtocol(), group.getId()));
+                    added++;
+                }
+                continue;
+            }
+            for (String cidr : rule.getCidrs()) {
+                if (!hasRule(existing, rule, cidr, null)) {
+                    _securityGroupRuleDao.persist(new SecurityGroupRuleVO(SecurityRuleType.IngressRule, group.getId(), rule.getStartPortOrType(),
+                            rule.getEndPortOrCode(), rule.getProtocol(), cidr));
+                    added++;
+                }
+            }
+        }
+        return added;
+    }
+
+    private static boolean hasRule(List<SecurityGroupRuleVO> rules, SecurityGroupRuleTemplate.Rule rule, String cidr, Long allowedGroupId) {
+        return rules.stream().anyMatch(r -> rule.getProtocol().equalsIgnoreCase(r.getProtocol()) && r.getStartPort() == rule.getStartPortOrType()
+                && r.getEndPort() == rule.getEndPortOrCode() && Objects.equals(r.getAllowedSourceIpCidr(), cidr) && Objects.equals(r.getAllowedNetworkId(), allowedGroupId));
+    }
+
+    @Override
+    public String getConfigComponentName() {
+        return SecurityGroupManager.class.getSimpleName();
+    }
+
+    @Override
+    public ConfigKey<?>[] getConfigKeys() {
+        return new ConfigKey<?>[] {DefaultGroupIngressRules};
     }
 
     @DB

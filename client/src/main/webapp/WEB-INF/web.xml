@@ -60,9 +60,19 @@
         <load-on-startup>7</load-on-startup>
     </servlet>
 
+    <servlet>
+        <servlet-name>oidcCallbackServlet</servlet-name>
+        <servlet-class>org.apache.cloudstack.oidc.OidcCallbackServlet</servlet-class>
+    </servlet>
+
     <servlet-mapping>
          <servlet-name>apiServlet</servlet-name>
          <url-pattern>/api/*</url-pattern>
+    </servlet-mapping>
+
+    <servlet-mapping>
+         <servlet-name>oidcCallbackServlet</servlet-name>
+         <url-pattern>/oidc/callback/*</url-pattern>
     </servlet-mapping>
 
     <servlet-mapping>

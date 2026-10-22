@@ -19,6 +19,9 @@ package com.cloud.network.security;
 import java.util.HashMap;
 import java.util.List;
 
+import org.apache.cloudstack.framework.config.ConfigKey;
+import org.apache.cloudstack.framework.config.ValidatedConfigKey;
+
 import com.cloud.uservm.UserVm;
 import com.cloud.utils.Pair;
 
@@ -33,9 +36,27 @@ public interface SecurityGroupManager {
     public static final int TIME_BETWEEN_CLEANUPS = 60;
     public static final int WORKER_THREAD_COUNT = 10;
 
+    ConfigKey<String> DefaultGroupIngressRules = new ValidatedConfigKey<>(ConfigKey.CATEGORY_NETWORK, String.class,
+            "network.securitygroups.default.ingress.rules", "",
+            "Ingress rules every new default security group gets, accounts and projects alike: a JSON array of rules, each with " +
+                    "\"protocol\" (tcp, udp, icmp, all or a protocol number), \"startport\" and \"endport\" for tcp and udp, \"icmptype\" and " +
+                    "\"icmpcode\" for icmp, and either \"cidrlist\" (an array of CIDRs) or \"owngroup\": true, which admits the traffic of the " +
+                    "account's own default group. Empty for no rules.",
+            true, ConfigKey.Scope.Domain, null, SecurityGroupRuleTemplate::validate);
+
     public SecurityGroupVO createSecurityGroup(String name, String description, Long domainId, Long accountId, String accountName);
 
+    /**
+     * Creates the account's default security group if it has none. A new group gets the rules of
+     * {@link #DefaultGroupIngressRules} for the account's domain.
+     */
     public SecurityGroupVO createDefaultSecurityGroup(Long accountId);
+
+    /**
+     * Adds to the account's default security group, creating it if needed, the rules of {@link #DefaultGroupIngressRules}
+     * that it lacks; rules the group has beyond them are kept. Idempotent.
+     */
+    void applyDefaultSecurityGroupRules(long accountId);
 
     public boolean addInstanceToGroups(UserVm userVm, List<Long> groups);
 

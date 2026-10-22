@@ -145,7 +145,19 @@ public class StringUtils extends org.apache.commons.lang3.StringUtils {
     private static final Pattern REGEX_PASSWORD_QUERYSTRING = Pattern.compile("(&|%26)?[^(&|%26)]*(([pP])assword|accesskey|secretkey)(=|%3D).*?(?=(%26|[&'\"]|$))");
 
     // removes a password/accesskey/ property from a response json object
-    private static final Pattern REGEX_PASSWORD_JSON = Pattern.compile("\"(([pP])assword|privatekey|accesskey|secretkey)\":\\s?\".*?\",?");
+    private static final Pattern REGEX_PASSWORD_JSON = Pattern.compile("\"(([pP])assword|privatekey|accesskey|secretkey|clientsecret|membershipsecret)\":\\s?\".*?\",?");
+
+    // client secrets of sign-in providers in a query string
+    private static final Pattern REGEX_SECRET_QUERYSTRING = Pattern.compile("(^|[?&]|%26)(clientsecret|membershipsecret)(=|%3D)[^&'\"\\s]*",
+            Pattern.CASE_INSENSITIVE);
+
+    // an OAuth 2.0 authorization response (a code or an error); state is also an ordinary parameter of many APIs,
+    // so it is masked only where it answers an authorization request
+    private static final Pattern REGEX_AUTHORIZATION_RESPONSE = Pattern.compile("(^|[?&])(code|error)=");
+
+    private static final Pattern REGEX_AUTHORIZATION_RESPONSE_SECRETS = Pattern.compile("(^|[?&])(code|state)=[^&'\"\\s]*");
+
+    private static final String MASK = "*****";
 
     private static final Pattern REGEX_PASSWORD_DETAILS = Pattern.compile("(&|%26)?details(\\[|%5B)\\d*(\\]|%5D)\\.key(=|%3D)(([pP])assword|accesskey|secretkey)(?=(%26|[&'\"]))");
 
@@ -162,6 +174,10 @@ public class StringUtils extends org.apache.commons.lang3.StringUtils {
             cleanResult = REGEX_PASSWORD_QUERYSTRING.matcher(stringToClean).replaceAll("");
             cleanResult = REGEX_PASSWORD_JSON.matcher(cleanResult).replaceAll("");
             cleanResult = REGEX_SESSION_KEY.matcher(cleanResult).replaceAll("");
+            cleanResult = REGEX_SECRET_QUERYSTRING.matcher(cleanResult).replaceAll("$1$2$3" + MASK);
+            if (REGEX_AUTHORIZATION_RESPONSE.matcher(cleanResult).find()) {
+                cleanResult = REGEX_AUTHORIZATION_RESPONSE_SECRETS.matcher(cleanResult).replaceAll("$1$2=" + MASK);
+            }
             final Matcher detailsMatcher = REGEX_PASSWORD_DETAILS.matcher(cleanResult);
             while (detailsMatcher.find()) {
                 final Matcher detailsIndexMatcher = REGEX_PASSWORD_DETAILS_INDEX.matcher(detailsMatcher.group());

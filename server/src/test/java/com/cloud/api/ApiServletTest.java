@@ -298,6 +298,57 @@ public class ApiServletTest {
                 Mockito.eq(InetAddress.getByName("127.0.0.1")), Mockito.anyString(), Mockito.isA(StringBuilder.class), Mockito.isA(HttpServletRequest.class), Mockito.isA(HttpServletResponse.class));
     }
 
+    @SuppressWarnings("unchecked")
+    @Test
+    public void loginThatEndsItsSessionIsAnsweredNormally() throws Exception {
+        Mockito.when(request.getMethod()).thenReturn("GET");
+        Mockito.when(request.getSession(Mockito.anyBoolean())).thenReturn(session);
+        HashMap<String, String[]> params = new HashMap<>();
+        params.put(ApiConstants.COMMAND, new String[] {"login"});
+        Mockito.when(request.getParameterMap()).thenReturn(params);
+        Mockito.when(authenticator.getAPIType()).thenReturn(APIAuthenticationType.LOGIN_API);
+        java.util.concurrent.atomic.AtomicBoolean invalidated = new java.util.concurrent.atomic.AtomicBoolean();
+        Mockito.when(authenticator.authenticate(Mockito.anyString(), Mockito.anyMap(), Mockito.any(), Mockito.any(), Mockito.anyString(), Mockito.any(), Mockito.any(),
+                Mockito.any())).thenAnswer(i -> {
+                    invalidated.set(true);
+                    return "refused";
+                });
+        Mockito.when(session.getAttribute(Mockito.anyString())).thenAnswer(i -> {
+            if (invalidated.get()) {
+                throw new IllegalStateException("the session was invalidated");
+            }
+            return null;
+        });
+
+        servlet.processRequestInContext(request, response);
+
+        Assert.assertEquals("an authenticator that ended the session is answered as any other", "refused", responseWriter.toString());
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    public void readOnlyAuthenticatorWithoutASessionGetsNone() throws Exception {
+        Mockito.when(request.getMethod()).thenReturn("GET");
+        Mockito.when(request.getSession(false)).thenReturn(null);
+        HashMap<String, String[]> params = new HashMap<>();
+        params.put(ApiConstants.COMMAND, new String[] {"listIdps"});
+        Mockito.when(request.getParameterMap()).thenReturn(params);
+        Mockito.when(authenticator.getAPIType()).thenReturn(APIAuthenticationType.READONLY_API);
+        Mockito.when(authenticator.authenticate(Mockito.anyString(), Mockito.anyMap(), Mockito.isNull(), Mockito.any(), Mockito.anyString(), Mockito.any(), Mockito.any(),
+                Mockito.any())).thenReturn("listed");
+        org.apache.logging.log4j.Logger logger = ApiServlet.LOGGER;
+        ApiServlet.LOGGER = Mockito.mock(org.apache.logging.log4j.Logger.class);
+        Mockito.when(ApiServlet.LOGGER.isTraceEnabled()).thenReturn(true);
+        try {
+            servlet.processRequestInContext(request, response);
+        } finally {
+            ApiServlet.LOGGER = logger;
+        }
+
+        Mockito.verify(request, Mockito.never()).getSession(true);
+        Assert.assertEquals("a call without a session is answered, also when tracing", "listed", responseWriter.toString());
+    }
+
     @Test
     public void getClientAddressWithXForwardedFor() throws UnknownHostException {
         setConfigValue("proxy.header.verify", "true");

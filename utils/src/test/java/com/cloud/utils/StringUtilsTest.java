@@ -20,6 +20,7 @@
 package com.cloud.utils;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -276,5 +277,33 @@ public class StringUtilsTest {
         Pair<String, String> output = StringUtils.getKeyValuePairWithSeparator(kp, "=");
         assertEquals(key, output.first());
         assertEquals(value, output.second());
+    }
+
+    @Test
+    public void secretsMaskedInLogs() {
+        String callback = "/client/oidc/callback/students?code=AbC-123_x.y&state=sT4te-value&iss=https%3A%2F%2Fid.example%2Fo";
+        String clean = StringUtils.cleanString(callback);
+        assertFalse(clean, clean.contains("AbC-123_x.y"));
+        assertFalse(clean, clean.contains("sT4te-value"));
+        assertTrue(clean, clean.startsWith("/client/oidc/callback/students?code="));
+        assertTrue(clean, clean.contains("&state="));
+        assertTrue("the issuer is no secret", clean.contains("iss=https%3A%2F%2Fid.example%2Fo"));
+
+        String denied = StringUtils.cleanString("command=oidcCallback&provider=students&error=access_denied&state=sT4te-value");
+        assertFalse(denied, denied.contains("sT4te-value"));
+        assertTrue(denied, denied.contains("error=access_denied"));
+
+        String create = StringUtils.cleanString("command=createOidcProvider&name=x&clientsecret=s3cr3t&membershipsecret=%7B%22private_key%22%3A%22k%22%7D&label=X");
+        assertFalse(create, create.contains("s3cr3t"));
+        assertFalse(create, create.contains("private_key"));
+        assertTrue(create, create.contains("label=X"));
+
+        String json = StringUtils.cleanString("{\"clientsecret\":\"s3cr3t\",\"membershipsecret\":\"k\",\"name\":\"x\"}");
+        assertFalse(json, json.contains("s3cr3t"));
+        assertFalse(json, json.contains("\"k\""));
+        assertTrue(json, json.contains("\"name\":\"x\""));
+
+        assertEquals("the state filter of other APIs stays readable", "command=listVirtualMachines&state=Running",
+                StringUtils.cleanString("command=listVirtualMachines&state=Running"));
     }
 }

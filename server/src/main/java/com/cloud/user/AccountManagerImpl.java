@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -318,6 +319,8 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
     private ProjectDao _projectDao;
     @Inject
     private AccountDetailsDao _accountDetailsDao;
+
+    private final Set<String> disableReasonDetails = ConcurrentHashMap.newKeySet();
     @Inject
     private DomainDao _domainDao;
     @Inject
@@ -401,7 +404,6 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
 
     private List<SecurityChecker> _securityCheckers;
     private int _cleanupInterval;
-    private static final String OAUTH2_PROVIDER_NAME = "oauth2";
     private List<String> apiNameList;
 
     protected static Map<String, UserTwoFactorAuthenticator> userTwoFactorAuthenticationProvidersMap = new HashMap<>();
@@ -909,12 +911,53 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
 
     @Override
     public boolean enableAccount(long accountId) {
-        boolean success = false;
-        AccountVO acctForUpdate = _accountDao.createForUpdate();
-        acctForUpdate.setState(State.ENABLED);
-        acctForUpdate.setNeedsCleanup(false);
-        success = _accountDao.update(accountId, acctForUpdate);
-        return success;
+        return Transaction.execute(new TransactionCallback<Boolean>() {
+            @Override
+            public Boolean doInTransaction(TransactionStatus status) {
+                AccountVO acctForUpdate = _accountDao.createForUpdate();
+                acctForUpdate.setState(State.ENABLED);
+                acctForUpdate.setNeedsCleanup(false);
+                boolean success = _accountDao.update(accountId, acctForUpdate);
+                if (success) {
+                    for (String detail : disableReasonDetails) {
+                        _accountDetailsDao.removeDetail(accountId, detail);
+                    }
+                }
+                return success;
+            }
+        });
+    }
+
+    @Override
+    public void addDisableReasonDetail(String detailName) {
+        disableReasonDetails.add(detailName);
+    }
+
+    @Override
+    public boolean stopResourcesOfDisabledAccount(long accountId) {
+        boolean pending = Transaction.execute(new TransactionCallback<Boolean>() {
+            @Override
+            public Boolean doInTransaction(TransactionStatus status) {
+                AccountVO account = _accountDao.lockRow(accountId, true);
+                return account != null && account.getState() == State.DISABLED && account.getNeedsCleanup();
+            }
+        });
+        if (!pending) {
+            return false;
+        }
+        boolean stopped;
+        try {
+            stopped = doDisableAccount(accountId);
+        } catch (ConcurrentOperationException | ResourceUnavailableException e) {
+            logger.warn("Stopping the resources of disabled account {} failed: {}", accountId, e.getMessage());
+            stopped = false;
+        }
+        if (stopped) {
+            AccountVO acctForUpdate = _accountDao.createForUpdate();
+            acctForUpdate.setNeedsCleanup(false);
+            _accountDao.update(accountId, acctForUpdate);
+        }
+        return stopped;
     }
 
     protected boolean lockAccount(long accountId) {
@@ -1644,9 +1687,10 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
             domainId = Domain.ROOT_DOMAIN;
         }
 
-        if (isPasswordChangeRequired && (source == User.Source.SAML2 || source == User.Source.SAML2DISABLED || source == User.Source.LDAP)) {
+        if (isPasswordChangeRequired && (source == User.Source.SAML2 || source == User.Source.SAML2DISABLED || source == User.Source.LDAP
+                || source == User.Source.OAUTH2)) {
             logger.warn("Enforcing password change is not permitted for source [{}].", source);
-            throw new InvalidParameterValueException("CloudStack does not support enforcing password change for SAML or LDAP users.");
+            throw new InvalidParameterValueException("CloudStack does not support enforcing password change for SAML, LDAP or OAuth users.");
         }
 
         Domain domain = _domainMgr.getDomain(domainId);
@@ -1732,16 +1776,16 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
         return userAccountDao.findById(user.getId());
     }
 
-    private void validateAndUpdatePasswordChangeRequired(User caller, UpdateUserCmd updateUserCmd, UserVO user, Account account) {
+    protected void validateAndUpdatePasswordChangeRequired(User caller, UpdateUserCmd updateUserCmd, UserVO user, Account account) {
         if (updateUserCmd.isPasswordChangeRequired()) {
             if (user.getState() != State.ENABLED || account.getState() != State.ENABLED) {
                 throw new CloudRuntimeException("CloudStack does not support enforcing password change for locked/disabled User or Account.");
             }
 
             User.Source userSource = user.getSource();
-            if (userSource == User.Source.SAML2 || userSource == User.Source.SAML2DISABLED || userSource == User.Source.LDAP) {
+            if (userSource == User.Source.SAML2 || userSource == User.Source.SAML2DISABLED || userSource == User.Source.LDAP || userSource == User.Source.OAUTH2) {
                 logger.warn("Enforcing password change is not permitted for source [{}].", user.getSource());
-                throw new InvalidParameterValueException("CloudStack does not support enforcing password change for SAML or LDAP users.");
+                throw new InvalidParameterValueException("CloudStack does not support enforcing password change for SAML, LDAP or OAuth users.");
             }
         }
 
@@ -1878,9 +1922,9 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
         }
 
         User.Source userSource = user.getSource();
-        if (userSource == User.Source.SAML2 || userSource == User.Source.SAML2DISABLED || userSource == User.Source.LDAP) {
+        if (userSource == User.Source.SAML2 || userSource == User.Source.SAML2DISABLED || userSource == User.Source.LDAP || userSource == User.Source.OAUTH2) {
             logger.warn("Unable to update the password for user [{}], as its source is [{}].", user, user.getSource().toString());
-            throw new InvalidParameterValueException("CloudStack does not support updating passwords for SAML or LDAP users. Please contact your cloud administrator for assistance.");
+            throw new InvalidParameterValueException("CloudStack does not support updating passwords for SAML, LDAP or OAuth users. Please contact your cloud administrator for assistance.");
         }
 
         passwordPolicy.verifyIfPasswordCompliesWithPasswordPolicies(newPassword, user.getUsername(), getAccount(user.getAccountId()).getDomainId());
@@ -3039,62 +3083,39 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
     }
 
     @Override
+    public UserAccount authenticateVerifiedUser(long userId, InetAddress loginIpAddress) {
+        UserAccount user = userAccountDao.findById(userId);
+        if (user == null || user.getRemoved() != null) {
+            logger.warn("No user with id {} may sign in", userId);
+            return null;
+        }
+        if (!Account.State.ENABLED.toString().equalsIgnoreCase(user.getState()) || !Account.State.ENABLED.toString().equalsIgnoreCase(user.getAccountState())) {
+            logger.info("User {} (or their account) is disabled/locked", user);
+            throw new CloudAuthenticationException(String.format("User %s (or their account) is disabled/locked. Please contact the administrator.", user.getUsername()));
+        }
+        return completeAuthentication(user, user.getUsername(), user.getDomainId(), loginIpAddress);
+    }
+
+    @Override
     public UserAccount authenticateUser(final String username, final String password, final Long domainId, final InetAddress loginIpAddress, final Map<String, Object[]> requestParameters) {
         long authStartTimeInMs = System.currentTimeMillis();
         UserAccount user = null;
-        final String[] oAuthProviderArray = (String[])requestParameters.get(ApiConstants.PROVIDER);
-        final String[] secretCodeArray = (String[])requestParameters.get(ApiConstants.SECRET_CODE);
-        String oauthProvider = ((oAuthProviderArray == null) ? null : oAuthProviderArray[0]);
-        String secretCode = ((secretCodeArray == null) ? null : secretCodeArray[0]);
-
-        if ((password != null && !password.isEmpty()) || (oauthProvider != null && secretCode != null)) {
+        if (password != null && !password.isEmpty()) {
             user = getUserAccount(username, password, domainId, requestParameters);
         } else {
             user = getUserAccountForSSO(username, domainId, requestParameters);
         }
 
         if (user != null) {
-            // don't allow to authenticate system user
-            if (user.getId() == User.UID_SYSTEM) {
-                logger.error("Failed to authenticate user: " + username + " in domain " + domainId);
-                return null;
-            }
-            // don't allow baremetal system user
-            if (BaremetalUtils.BAREMETAL_SYSTEM_ACCOUNT_NAME.equals(user.getUsername())) {
-                logger.error("Won't authenticate user: " + username + " in domain " + domainId);
-                return null;
-            }
-
-            // We authenticated successfully by now, let's check if we are allowed to login from the ip address the reqest comes from
-            final Account account = getAccount(user.getAccountId());
-            final DomainVO domain = (DomainVO) _domainMgr.getDomain(account.getDomainId());
-
-            // Get the CIDRs from where this account is allowed to make calls
-            final String accessAllowedCidrs = ApiServiceConfiguration.ApiAllowedSourceCidrList.valueIn(account.getId()).replaceAll("\\s", "");
-            final Boolean ApiSourceCidrChecksEnabled = ApiServiceConfiguration.ApiSourceCidrChecksEnabled.value();
-
-            if (ApiSourceCidrChecksEnabled) {
-                logger.debug("CIDRs from which account '{}' is allowed to perform API calls: {}", account.toString(), accessAllowedCidrs);
-
-                // Block when is not in the list of allowed IPs
-                if (!NetUtils.isIpInCidrList(loginIpAddress, accessAllowedCidrs.split(","))) {
-                    logger.warn("Request by account '{}' was denied since {} does not match {}", account.toString(), loginIpAddress.toString().replace("/", ""), accessAllowedCidrs);
-                    throw new CloudAuthenticationException("Failed to authenticate user '" + username + "' in domain '" + domain.getPath() + "' from ip "
-                            + loginIpAddress.toString().replace("/", "") + "; please provide valid credentials");
+            UserAccount authenticated = completeAuthentication(user, username, domainId, loginIpAddress);
+            if (authenticated != null) {
+                // the time a password match takes, which failed attempts are made to take as well
+                validUserLastAuthTimeDurationInMs = System.currentTimeMillis() - authStartTimeInMs;
+                if (logger.isDebugEnabled()) {
+                    logger.debug(String.format("User: %s in domain %d has successfully logged in, auth time duration - %d ms", username, domainId, validUserLastAuthTimeDurationInMs));
                 }
             }
-
-            ActionEventUtils.onActionEvent(user.getId(), user.getAccountId(), user.getDomainId(), EventTypes.EVENT_USER_LOGIN, "user has logged in from IP Address " + loginIpAddress, user.getId(), ApiCommandResourceType.User.toString());
-
-            validUserLastAuthTimeDurationInMs = System.currentTimeMillis() - authStartTimeInMs;
-            // Here all is fine!
-            if (logger.isDebugEnabled()) {
-                logger.debug(String.format("User: %s in domain %d has successfully logged in, auth time duration - %d ms", username, domainId, validUserLastAuthTimeDurationInMs));
-            }
-
-            user.setDetails(_userDetailsDao.listDetailsKeyPairs(user.getId()));
-
-            return user;
+            return authenticated;
         } else {
             if (logger.isDebugEnabled()) {
                 logger.debug("User: " + username + " in domain " + domainId + " has failed to log in");
@@ -3120,6 +3141,50 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
         }
     }
 
+    /**
+     * The part of a sign-in that follows the match of the user's credentials: system users never sign in, the
+     * account's allowed source CIDRs apply, and the login is recorded.
+     *
+     * @return the user with its details, or null if it may never sign in
+     */
+    private UserAccount completeAuthentication(UserAccount user, String username, Long domainId, InetAddress loginIpAddress) {
+        // don't allow to authenticate system user
+        if (user.getId() == User.UID_SYSTEM) {
+            logger.error("Failed to authenticate user: " + username + " in domain " + domainId);
+            return null;
+        }
+        // don't allow baremetal system user
+        if (BaremetalUtils.BAREMETAL_SYSTEM_ACCOUNT_NAME.equals(user.getUsername())) {
+            logger.error("Won't authenticate user: " + username + " in domain " + domainId);
+            return null;
+        }
+
+        // We authenticated successfully by now, let's check if we are allowed to login from the ip address the reqest comes from
+        final Account account = getAccount(user.getAccountId());
+        final DomainVO domain = (DomainVO) _domainMgr.getDomain(account.getDomainId());
+
+        // Get the CIDRs from where this account is allowed to make calls
+        final String accessAllowedCidrs = ApiServiceConfiguration.ApiAllowedSourceCidrList.valueIn(account.getId()).replaceAll("\\s", "");
+        final Boolean ApiSourceCidrChecksEnabled = ApiServiceConfiguration.ApiSourceCidrChecksEnabled.value();
+
+        if (ApiSourceCidrChecksEnabled) {
+            logger.debug("CIDRs from which account '{}' is allowed to perform API calls: {}", account.toString(), accessAllowedCidrs);
+
+            // Block when is not in the list of allowed IPs
+            if (!NetUtils.isIpInCidrList(loginIpAddress, accessAllowedCidrs.split(","))) {
+                logger.warn("Request by account '{}' was denied since {} does not match {}", account.toString(), loginIpAddress.toString().replace("/", ""), accessAllowedCidrs);
+                throw new CloudAuthenticationException("Failed to authenticate user '" + username + "' in domain '" + domain.getPath() + "' from ip "
+                        + loginIpAddress.toString().replace("/", "") + "; please provide valid credentials");
+            }
+        }
+
+        ActionEventUtils.onActionEvent(user.getId(), user.getAccountId(), user.getDomainId(), EventTypes.EVENT_USER_LOGIN, "user has logged in from IP Address " + loginIpAddress, user.getId(), ApiCommandResourceType.User.toString());
+
+        user.setDetails(_userDetailsDao.listDetailsKeyPairs(user.getId()));
+
+        return user;
+    }
+
     private UserAccount getUserAccount(String username, String password, Long domainId, Map<String, Object[]> requestParameters) {
         if (logger.isDebugEnabled()) {
             logger.debug("Attempting to log in user: " + username + " in domain " + domainId);
@@ -3129,17 +3194,16 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
         boolean authenticated = false;
         HashSet<ActionOnFailedAuthentication> actionsOnFailedAuthenticaion = new HashSet<>();
         User.Source userSource = userAccount != null ? userAccount.getSource() : User.Source.UNKNOWN;
+        // a user who signs in through an OpenID provider has no password to match, and so no failed attempts to count
+        if (userSource == User.Source.OAUTH2) {
+            logger.info("User {} signs in through an identity provider, not with a password", username);
+            return null;
+        }
         for (UserAuthenticator authenticator : _userAuthenticators) {
-            final String[] secretCodeArray = (String[])requestParameters.get(ApiConstants.SECRET_CODE);
-            String secretCode = ((secretCodeArray == null) ? null : secretCodeArray[0]);
-            if (userSource != User.Source.UNKNOWN && secretCode == null) {
+            if (userSource != User.Source.UNKNOWN) {
                 if (!authenticator.getName().equalsIgnoreCase(userSource.name())) {
                     continue;
                 }
-            }
-            if ((secretCode != null && !authenticator.getName().equals(OAUTH2_PROVIDER_NAME))
-                    || (secretCode == null && authenticator.getName().equals(OAUTH2_PROVIDER_NAME))) {
-                continue;
             }
             Pair<Boolean, ActionOnFailedAuthentication> result = authenticator.authenticate(username, password, domainId, requestParameters);
             if (result.first()) {

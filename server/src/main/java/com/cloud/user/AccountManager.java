@@ -81,6 +81,17 @@ public interface AccountManager extends AccountService, Configurable {
     UserAccount authenticateUser(String username, String password, Long domainId, InetAddress loginIpAddress, Map<String, Object[]> requestParameters);
 
     /**
+     * Completes the sign-in of a user whose identity was verified outside CloudStack, by a party that has already
+     * matched it to this user. The checks that follow a password match still apply: the user and its account must be
+     * enabled, the API source CIDR check, and the login event.
+     *
+     * @return the user, or null if no such user may sign in
+     * @throws com.cloud.exception.CloudAuthenticationException if the user or its account is disabled or locked, or
+     *         the address is outside the account's allowed CIDRs
+     */
+    UserAccount authenticateVerifiedUser(long userId, InetAddress loginIpAddress);
+
+    /**
      * Locate a user by their apiKey
      *
      * @param apiKey
@@ -90,6 +101,21 @@ public interface AccountManager extends AccountService, Configurable {
     Ternary<User, Account, ApiKeyPair> findUserByApiKey(String apiKey);
 
     boolean enableAccount(long accountId);
+
+    /**
+     * Names an account detail that records who disabled an account. Enabling the account removes it in the transaction
+     * that enables the account, so that a later disable never carries it.
+     */
+    void addDisableReasonDetail(String detailName);
+
+    /**
+     * Stops the resources of an account that is disabled and still marked for cleanup, as the account cleanup task
+     * does, and clears the cleanup mark once all stopped. The state is read with the account row locked and never
+     * written, so an enable or a lock committed meanwhile is never undone.
+     *
+     * @return whether the account was disabled with resources to stop and all of them stopped
+     */
+    boolean stopResourcesOfDisabledAccount(long accountId);
 
     void buildACLSearchBuilder(SearchBuilder<? extends ControlledEntity> sb, Long domainId, boolean isRecursive, List<Long> permittedAccounts,
             ListProjectResourcesCriteria listProjectResourcesCriteria);

@@ -283,6 +283,11 @@ public class MockAccountManager extends ManagerBase implements AccountManager {
     }
 
     @Override
+    public UserAccount authenticateVerifiedUser(long userId, InetAddress loginIpAddress) {
+        return null;
+    }
+
+    @Override
     public void buildACLSearchBuilder(
             SearchBuilder<? extends ControlledEntity> arg0, Long arg1,
             boolean arg2, List<Long> arg3, ListProjectResourcesCriteria arg4) {
@@ -394,6 +399,15 @@ public class MockAccountManager extends ManagerBase implements AccountManager {
     @Override
     public boolean enableAccount(long arg0) {
         // TODO Auto-generated method stub
+        return false;
+    }
+
+    @Override
+    public void addDisableReasonDetail(String detailName) {
+    }
+
+    @Override
+    public boolean stopResourcesOfDisabledAccount(long accountId) {
         return false;
     }
 

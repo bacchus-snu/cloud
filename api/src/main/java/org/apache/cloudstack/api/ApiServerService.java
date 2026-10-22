@@ -36,6 +36,12 @@ public interface ApiServerService {
     public ResponseObject loginUser(HttpSession session, String username, String password, Long domainId, String domainPath, InetAddress loginIpAddress,
             Map<String, Object[]> requestParameters) throws CloudAuthenticationException;
 
+    /**
+     * Starts a session for a user whose identity a sign-in module has verified and matched to this user. CloudStack's
+     * own second factor does not apply: the verifying party is responsible for how the person authenticated.
+     */
+    ResponseObject loginVerifiedUser(HttpSession session, long userId, InetAddress loginIpAddress) throws CloudAuthenticationException;
+
     public void logoutUser(long userId);
 
     public boolean verifyUser(Long userId);

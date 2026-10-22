@@ -276,4 +276,44 @@ public class ApiServerTest {
         Mockito.when(accountManager.authenticateUser(anyString(), anyString(), anyLong(), any(), any())).thenReturn(null);
         apiServer.loginUser(session, "user", "pass", 1L, "/", null, null);
     }
+
+    @Test
+    public void loginVerifiedUserStartsASessionWithoutASecondFactor() throws Exception {
+        InetAddress loginIp = InetAddress.getByName("127.0.0.1");
+        DomainVO domain = mock(DomainVO.class);
+        Mockito.when(domain.getUuid()).thenReturn("domain-uuid");
+        Mockito.when(domainManager.getDomain(1L)).thenReturn(domain);
+        UserAccount userAccount = mock(UserAccount.class);
+        Mockito.when(userAccount.getId()).thenReturn(100L);
+        Mockito.when(userAccount.getAccountId()).thenReturn(200L);
+        Mockito.when(userAccount.getUsername()).thenReturn("alice");
+        Mockito.when(userAccount.getDomainId()).thenReturn(1L);
+        Mockito.lenient().when(userAccount.isUser2faEnabled()).thenReturn(true);
+        Mockito.when(accountManager.authenticateVerifiedUser(100L, loginIp)).thenReturn(userAccount);
+        Mockito.when(accountManager.clearUserTwoFactorAuthenticationInSetupStateOnLogin(userAccount)).thenReturn(userAccount);
+        Account account = mock(Account.class);
+        Mockito.when(account.getAccountName()).thenReturn("alice");
+        Mockito.when(account.getDomainId()).thenReturn(1L);
+        Mockito.when(account.getType()).thenReturn(Account.Type.NORMAL);
+        Mockito.when(accountManager.getAccount(200L)).thenReturn(account);
+        UserVO userVO = mock(UserVO.class);
+        Mockito.when(userVO.getUuid()).thenReturn("user-uuid");
+        Mockito.when(accountManager.getActiveUser(100L)).thenReturn(userVO);
+        Mockito.when(session.getAttributeNames()).thenReturn(Collections.emptyEnumeration());
+
+        ResponseObject response = apiServer.loginVerifiedUser(session, 100L, loginIp);
+
+        Assert.assertTrue(response instanceof LoginCmdResponse);
+        Mockito.verify(session).setAttribute(eq("userid"), eq(100L));
+        Mockito.verify(session).setAttribute(eq(ApiConstants.SESSIONKEY), anyString());
+        Mockito.verify(session).setAttribute(ApiConstants.IS_2FA_ENABLED, "false");
+        Mockito.verify(session).setAttribute(ApiConstants.IS_2FA_VERIFIED, true);
+        Mockito.verify(accountManager, Mockito.never()).authenticateUser(any(), any(), any(), any(), any());
+    }
+
+    @Test(expected = CloudAuthenticationException.class)
+    public void loginVerifiedUserRefusedWhenTheUserMayNotSignIn() throws Exception {
+        Mockito.when(accountManager.authenticateVerifiedUser(anyLong(), any())).thenReturn(null);
+        apiServer.loginVerifiedUser(session, 100L, InetAddress.getByName("127.0.0.1"));
+    }
 }

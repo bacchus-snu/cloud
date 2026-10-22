@@ -1092,7 +1092,7 @@ public class ConfigurationManagerImplTest {
             Assert.assertTrue(name, declared.contains(name));
         }
         for (String name : List.of("user.2fa.issuer", "ca.framework.cert.expiry.alert.period", "ca.framework.background.task.delay", "saml2.enabled",
-                "ldap.provider", "oauth2.enabled", "ca.plugin.root.auth.strictness", ConsoleProxyManager.NoVncConsoleWebSocketPort.key(),
+                "ldap.provider", "oidc.client.url", "ca.plugin.root.auth.strictness", ConsoleProxyManager.NoVncConsoleWebSocketPort.key(),
                 ConsoleProxyManager.ConsoleProxyServiceManagementState.key())) {
             Assert.assertFalse(name, declared.contains(name));
         }

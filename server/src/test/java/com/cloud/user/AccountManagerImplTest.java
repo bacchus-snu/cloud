@@ -79,6 +79,8 @@ import com.cloud.api.auth.SetupUserTwoFactorAuthenticationCmd;
 import com.cloud.domain.Domain;
 import com.cloud.domain.DomainVO;
 import com.cloud.event.ActionEventUtils;
+import com.cloud.event.EventTypes;
+import com.cloud.exception.CloudAuthenticationException;
 import com.cloud.exception.ConcurrentOperationException;
 import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.PermissionDeniedException;
@@ -226,6 +228,56 @@ public class AccountManagerImplTest extends AccountManagentImplTestBase {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    public void enablingAnAccountRemovesTheDetailsOfWhoDisabledIt() {
+        accountManagerImpl.addDisableReasonDetail("plugin.disabledby");
+        AccountVO forUpdate = new AccountVO();
+        Mockito.when(_accountDao.createForUpdate()).thenReturn(forUpdate);
+        Mockito.when(_accountDao.update(42L, forUpdate)).thenReturn(true);
+        List<Object> transactions = new ArrayList<>();
+        try (MockedStatic<com.cloud.utils.db.Transaction> mocked = Mockito.mockStatic(com.cloud.utils.db.Transaction.class)) {
+            mocked.when(() -> com.cloud.utils.db.Transaction.execute(Mockito.any(com.cloud.utils.db.TransactionCallback.class))).thenAnswer(i -> {
+                transactions.add(i.getArgument(0));
+                return ((com.cloud.utils.db.TransactionCallback<Object>) i.getArgument(0)).doInTransaction(null);
+            });
+
+            Assert.assertTrue(accountManagerImpl.enableAccount(42L));
+        }
+
+        Assert.assertEquals("the state and the details change in one transaction", 1, transactions.size());
+        Assert.assertEquals(State.ENABLED, forUpdate.getState());
+        Assert.assertFalse(forUpdate.getNeedsCleanup());
+        Mockito.verify(_accountDetailsDao).removeDetail(42L, "plugin.disabledby");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void stoppingTheResourcesOfADisabledAccountChangesNoState() throws Exception {
+        AccountVO enabled = new AccountVO();
+        enabled.setState(State.ENABLED);
+        AccountVO disabled = new AccountVO();
+        disabled.setState(State.DISABLED);
+        disabled.setNeedsCleanup(true);
+        Mockito.when(_accountDao.lockRow(41L, true)).thenReturn(enabled);
+        Mockito.when(_accountDao.lockRow(42L, true)).thenReturn(disabled);
+        AccountVO forUpdate = new AccountVO();
+        Mockito.when(_accountDao.createForUpdate()).thenReturn(forUpdate);
+        Mockito.when(_vmDao.listByAccountId(42L)).thenReturn(new ArrayList<>());
+        try (MockedStatic<com.cloud.utils.db.Transaction> mocked = Mockito.mockStatic(com.cloud.utils.db.Transaction.class)) {
+            mocked.when(() -> com.cloud.utils.db.Transaction.execute(Mockito.any(com.cloud.utils.db.TransactionCallback.class)))
+                    .thenAnswer(i -> ((com.cloud.utils.db.TransactionCallback<Object>) i.getArgument(0)).doInTransaction(null));
+
+            Assert.assertFalse("an account that is not disabled with resources to stop is left alone", accountManagerImpl.stopResourcesOfDisabledAccount(41L));
+            Mockito.verify(_vmDao, Mockito.never()).listByAccountId(41L);
+            Assert.assertTrue(accountManagerImpl.stopResourcesOfDisabledAccount(42L));
+        }
+        Mockito.verify(_vmDao).listByAccountId(42L);
+        Mockito.verify(_accountDao).update(42L, forUpdate);
+        Assert.assertNull("only the cleanup mark is written, never the state", forUpdate.getState());
+        Assert.assertFalse(forUpdate.getNeedsCleanup());
+    }
+
+    @Test
     public void deleteUserAccount() {
         AccountVO account = new AccountVO();
         account.setId(42L);
@@ -362,7 +414,7 @@ public class AccountManagerImplTest extends AccountManagentImplTestBase {
         Mockito.when(userAuthenticator.authenticate("test", "fail", 1L, new HashMap<>())).thenReturn(failureAuthenticationPair);
         Mockito.lenient().when(userAuthenticator.authenticate("test", null, 1L, new HashMap<>())).thenReturn(successAuthenticationPair);
         Mockito.lenient().when(userAuthenticator.authenticate("test", "", 1L, new HashMap<>())).thenReturn(successAuthenticationPair);
-        Mockito.when(userAuthenticator.getName()).thenReturn("test");
+        Mockito.lenient().when(userAuthenticator.getName()).thenReturn("test");
 
         //Test for incorrect password. authentication should fail
         UserAccount userAccount = accountManagerImpl.authenticateUser("test", "fail", 1L, InetAddress.getByName("127.0.0.1"), new HashMap<>());
@@ -399,7 +451,7 @@ public class AccountManagerImplTest extends AccountManagentImplTestBase {
         Mockito.lenient().when(_accountDao.findById(userId)).thenReturn(null);
         Mockito.lenient().when(_accountDao.findByIdIncludingRemoved(adminAccountId)).thenReturn(adminAccount);
         Mockito.doReturn(false).when(accountManagerImpl).isRootAdmin(Mockito.anyLong());
-        Mockito.when(userAuthenticator.getName()).thenReturn("test");
+        Mockito.lenient().when(userAuthenticator.getName()).thenReturn("test");
         Mockito.when(userAuthenticator.authenticate("operator", "wrong", 1L, new HashMap<>())).thenReturn(new Pair<>(false,
                 UserAuthenticator.ActionOnFailedAuthentication.INCREMENT_INCORRECT_LOGIN_ATTEMPT_COUNT));
         Mockito.when(userAuthenticator.authenticate("operator", "right", 1L, new HashMap<>())).thenReturn(new Pair<>(true, null));
@@ -2333,5 +2385,78 @@ public class AccountManagerImplTest extends AccountManagentImplTestBase {
         setPrivateField(accountManagerImpl, "apiNameList", new ArrayList<>(allApis));
 
         accountManagerImpl.checkRoleEscalation(caller, requested);
+    }
+
+    @Test(expected = InvalidParameterValueException.class)
+    public void validateUserPasswordAndUpdateIfNeededTestOauth2UserShouldNotBeAllowedToUpdateTheirPassword() {
+        Mockito.when(userVoMock.getSource()).thenReturn(User.Source.OAUTH2);
+
+        accountManagerImpl.validateUserPasswordAndUpdateIfNeeded("newPassword", userVoMock, "theCurrentPassword", false);
+    }
+
+    private UserAccountVO oauth2User(Account.State accountState) {
+        UserAccountVO user = new UserAccountVO();
+        user.setId(7L);
+        user.setAccountId(70L);
+        user.setDomainId(1L);
+        user.setUsername("alice");
+        user.setSource(User.Source.OAUTH2);
+        user.setState(Account.State.ENABLED.toString());
+        user.setAccountState(accountState.toString());
+        return user;
+    }
+
+    @Test
+    public void passwordLoginRejectedForOauth2User() throws UnknownHostException {
+        Mockito.when(userAccountDao.getUserAccount("alice", 1L)).thenReturn(oauth2User(Account.State.ENABLED));
+        Mockito.lenient().when(userAuthenticator.getName()).thenReturn("OAUTH2");
+        Mockito.lenient().when(userAuthenticator.authenticate(Mockito.anyString(), Mockito.anyString(), Mockito.anyLong(), Mockito.any()))
+                .thenReturn(new Pair<>(true, null));
+
+        for (int attempt = 0; attempt < 5; attempt++) {
+            Assert.assertNull(accountManagerImpl.authenticateUser("alice", "guess", 1L, InetAddress.getByName("127.0.0.1"), new HashMap<>()));
+        }
+
+        Mockito.verify(userAuthenticator, Mockito.never()).authenticate(Mockito.anyString(), Mockito.anyString(), Mockito.anyLong(), Mockito.any());
+        Mockito.verify(accountManagerImpl, Mockito.never()).updateLoginAttempts(Mockito.anyLong(), Mockito.anyInt(), Mockito.anyBoolean());
+        Mockito.verify(accountManagerImpl, Mockito.never()).updateLoginAttemptsWhenIncorrectLoginAttemptsEnabled(Mockito.any(), Mockito.anyBoolean(), Mockito.anyInt());
+    }
+
+    @Test
+    public void verifiedSignInKeepsThePostAuthenticationChecks() throws UnknownHostException, IllegalAccessException {
+        UserAccountVO alice = oauth2User(Account.State.ENABLED);
+        Mockito.when(userAccountDao.findById(7L)).thenReturn(alice);
+        AccountVO account = new AccountVO("alice", 1L, null, Account.Type.NORMAL, "uuid");
+        account.setId(70L);
+        Mockito.when(_accountDao.findByIdIncludingRemoved(70L)).thenReturn(account);
+        Mockito.lenient().when(_domainMgr.getDomain(1L)).thenReturn(Mockito.mock(DomainVO.class));
+        Mockito.when(userDetailsDaoMock.listDetailsKeyPairs(7L)).thenReturn(new HashMap<>());
+        try (MockedStatic<ActionEventUtils> events = Mockito.mockStatic(ActionEventUtils.class)) {
+            Assert.assertSame(alice, accountManagerImpl.authenticateVerifiedUser(7L, InetAddress.getByName("127.0.0.1")));
+            events.verify(() -> ActionEventUtils.onActionEvent(Mockito.eq(7L), Mockito.eq(70L), Mockito.eq(1L), Mockito.eq(EventTypes.EVENT_USER_LOGIN),
+                    Mockito.anyString(), Mockito.eq(7L), Mockito.anyString()));
+        }
+
+        Mockito.when(userAccountDao.findById(7L)).thenReturn(oauth2User(Account.State.DISABLED));
+        Assert.assertThrows(CloudAuthenticationException.class, () -> accountManagerImpl.authenticateVerifiedUser(7L, InetAddress.getByName("127.0.0.1")));
+        UserAccountVO lockedUser = oauth2User(Account.State.ENABLED);
+        lockedUser.setState(Account.State.LOCKED.toString());
+        Mockito.when(userAccountDao.findById(7L)).thenReturn(lockedUser);
+        Assert.assertThrows(CloudAuthenticationException.class, () -> accountManagerImpl.authenticateVerifiedUser(7L, InetAddress.getByName("127.0.0.1")));
+        Mockito.when(userAccountDao.findById(7L)).thenReturn(null);
+        Assert.assertNull(accountManagerImpl.authenticateVerifiedUser(7L, InetAddress.getByName("127.0.0.1")));
+        Assert.assertNull("the system user never signs in", accountManagerImpl.authenticateVerifiedUser(User.UID_SYSTEM, InetAddress.getByName("127.0.0.1")));
+        Mockito.verify(accountManagerImpl, Mockito.never()).updateLoginAttempts(Mockito.anyLong(), Mockito.anyInt(), Mockito.anyBoolean());
+        Assert.assertEquals("a verified sign-in leaves the time that failed password logins are made to take", 0L,
+                (long) (Long) org.apache.commons.lang3.reflect.FieldUtils.readField(accountManagerImpl, "validUserLastAuthTimeDurationInMs", true));
+    }
+
+    @Test(expected = InvalidParameterValueException.class)
+    public void passwordChangeCannotBeRequiredOfAnOauth2User() {
+        Mockito.when(UpdateUserCmdMock.isPasswordChangeRequired()).thenReturn(true);
+        Mockito.lenient().when(userVoMock.getState()).thenReturn(Account.State.ENABLED);
+        Mockito.lenient().when(accountMock.getState()).thenReturn(Account.State.ENABLED);
+        Mockito.when(userVoMock.getSource()).thenReturn(User.Source.OAUTH2);
+        accountManagerImpl.validateAndUpdatePasswordChangeRequired(callingUser, UpdateUserCmdMock, userVoMock, accountMock);
     }
 }

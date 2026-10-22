@@ -87,7 +87,9 @@ public class ApiServlet extends HttpServlet {
     public static final Pattern GET_REQUEST_COMMANDS = Pattern.compile("^(get|list|query|find)(\\w+)+$");
     private static final HashSet<String> POST_REQUESTS_TO_DISABLE_LOGGING = new HashSet<>(Set.of(
             "login",
-            "oauthlogin",
+            "oidccallback",
+            "createoidcprovider",
+            "updateoidcprovider",
             "createaccount",
             "createuser",
             "updateuser",
@@ -298,12 +300,14 @@ public class ApiServlet extends HttpServlet {
                     try {
                         if (LOGGER.isTraceEnabled()) {
                             LOGGER.trace(String.format("apiAuthenticator.authenticate(%s, params[%d], %s, %s, %s, %s, %s,%s)",
-                                    saveLogString(command), params.size(), session.getId(), remoteAddress.getHostAddress(), saveLogString(responseType), "auditTrailSb", "req", "resp"));
+                                    saveLogString(command), params.size(), session == null ? null : session.getId(), remoteAddress.getHostAddress(),
+                                    saveLogString(responseType), "auditTrailSb", "req", "resp"));
                         }
                         responseString = apiAuthenticator.authenticate(command, params, session, remoteAddress, responseType, auditTrailSb, req, resp);
-                        if (session != null && session.getAttribute(ApiConstants.SESSIONKEY) != null) {
+                        Object sessionKey = sessionKeyOf(session);
+                        if (sessionKey != null) {
                             String sameSite = getApiSessionKeySameSite();
-                            resp.addHeader("SET-COOKIE", String.format("%s=%s;HttpOnly;%s", ApiConstants.SESSIONKEY, session.getAttribute(ApiConstants.SESSIONKEY), sameSite));
+                            resp.addHeader("SET-COOKIE", String.format("%s=%s;HttpOnly;%s", ApiConstants.SESSIONKEY, sessionKey, sameSite));
                         }
                     } catch (ServerApiException e) {
                         httpResponseCode = e.getErrorCode().getHttpCode();
@@ -648,6 +652,18 @@ public class ApiServlet extends HttpServlet {
         return false;
     }
 
+    /** @return the session key of the session, or null when there is no session or an authenticator invalidated it */
+    private static Object sessionKeyOf(HttpSession session) {
+        if (session == null) {
+            return null;
+        }
+        try {
+            return session.getAttribute(ApiConstants.SESSIONKEY);
+        } catch (IllegalStateException e) {
+            return null;
+        }
+    }
+
     public static void invalidateHttpSession(HttpSession session, String msg) {
         try {
             if (LOGGER.isTraceEnabled()) {
@@ -764,7 +780,7 @@ public class ApiServlet extends HttpServlet {
             if (reqParam.getKey().toLowerCase().contains("password")
                     || reqParam.getKey().toLowerCase().contains("privatekey")
                     || reqParam.getKey().toLowerCase().contains("accesskey")
-                    || reqParam.getKey().toLowerCase().contains("secretkey")) {
+                    || reqParam.getKey().toLowerCase().contains("secret")) {
                 cleanParamsString.append("\n");
                 continue;
             }

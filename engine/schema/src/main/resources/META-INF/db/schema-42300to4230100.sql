@@ -102,6 +102,70 @@ CREATE TABLE IF NOT EXISTS `cloud`.`resource_limit_request` (
   CONSTRAINT `fk_resource_limit_request__approver_id` FOREIGN KEY (`approver_id`) REFERENCES `user`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- OpenID providers people sign in with; each admits the people its rule accepts into accounts of one domain and role
+CREATE TABLE IF NOT EXISTS `cloud`.`oidc_provider` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `uuid` varchar(40) NOT NULL,
+  `name` varchar(64) NOT NULL COMMENT 'name of the provider in the sign-in addresses',
+  `label` varchar(255) NOT NULL COMMENT 'name of the provider on the sign-in page',
+  `issuer` varchar(1024) NOT NULL COMMENT 'issuer identifier of the provider',
+  `ca_certificate` text COMMENT 'PEM certificates of the authorities the TLS of the provider is checked against instead of the CA certificates of the JDK',
+  `client_id` varchar(255) NOT NULL COMMENT 'client ID registered at the provider',
+  `client_secret` text NOT NULL COMMENT 'client secret, encrypted',
+  `scopes` varchar(1024) NOT NULL COMMENT 'scopes asked for',
+  `authorize_params` text COMMENT 'extra parameters of the authorization request, a JSON object',
+  `username_claim` varchar(255) NOT NULL COMMENT 'claim the username comes from',
+  `lowercase_username` tinyint(1) unsigned NOT NULL DEFAULT 0 COMMENT 'whether the username is lowercased',
+  `username_pattern` varchar(1024) NOT NULL COMMENT 'regular expression every username matches in full',
+  `require_verified_email` tinyint(1) unsigned NOT NULL DEFAULT 0 COMMENT 'whether the provider must have verified the e-mail address',
+  `admission` text NOT NULL COMMENT 'admission rule, a JSON object',
+  `refusal` text COMMENT 'message for people the admission rule does not admit',
+  `jit` tinyint(1) unsigned NOT NULL DEFAULT 1 COMMENT 'whether an admitted person without an account gets one at the first sign-in',
+  `end_session_url` varchar(1024) COMMENT 'end-session address of the provider, linked from the sign-in page',
+  `end_session_label` varchar(255) COMMENT 'text of the end-session link',
+  `domain_id` bigint unsigned NOT NULL COMMENT 'domain of the accounts',
+  `role_id` bigint unsigned NOT NULL COMMENT 'role of the accounts',
+  `membership_source` text COMMENT 'membership source of the periodic check, a JSON object',
+  `membership_secret` text COMMENT 'secret of the membership source, encrypted',
+  `enabled` tinyint(1) unsigned NOT NULL DEFAULT 1 COMMENT 'whether people can sign in with the provider',
+  `created` datetime NOT NULL COMMENT 'date the provider was created',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_oidc_provider__uuid` (`uuid`),
+  UNIQUE KEY `uk_oidc_provider__name` (`name`),
+  CONSTRAINT `fk_oidc_provider__domain_id` FOREIGN KEY (`domain_id`) REFERENCES `domain`(`id`),
+  CONSTRAINT `fk_oidc_provider__role_id` FOREIGN KEY (`role_id`) REFERENCES `roles`(`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Sign-ins sent to their provider and not back yet; a request is consumed by deleting it, so it is used at most once
+CREATE TABLE IF NOT EXISTS `cloud`.`oidc_login_request` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `provider_id` bigint unsigned NOT NULL COMMENT 'provider the sign-in was sent to',
+  `state_hash` char(64) NOT NULL COMMENT 'SHA-256 of the state, in hex',
+  `nonce` varchar(255) NOT NULL COMMENT 'nonce the ID token must carry',
+  `pkce_verifier` varchar(255) NOT NULL COMMENT 'PKCE code verifier',
+  `binding_hash` char(64) NOT NULL COMMENT 'SHA-256 of the value bound to the browser that started the sign-in, in hex',
+  `redirect_uri` varchar(2048) NOT NULL COMMENT 'redirect URI of the authorization request',
+  `created` datetime NOT NULL COMMENT 'date the sign-in was started',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_oidc_login_request__state_hash` (`state_hash`),
+  INDEX `i_oidc_login_request__created` (`created`),
+  CONSTRAINT `fk_oidc_login_request__provider_id` FOREIGN KEY (`provider_id`) REFERENCES `oidc_provider`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- The user each subject of a provider signs in as; subjects compare case-sensitively, as OpenID Connect defines them
+CREATE TABLE IF NOT EXISTS `cloud`.`oidc_user_link` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `provider_id` bigint unsigned NOT NULL COMMENT 'provider of the subject',
+  `subject` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL COMMENT 'subject identifier at the provider',
+  `user_id` bigint unsigned NOT NULL COMMENT 'user the subject signs in as',
+  `created` datetime NOT NULL COMMENT 'date the subject was linked',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_oidc_user_link__provider_id__subject` (`provider_id`, `subject`),
+  UNIQUE KEY `uk_oidc_user_link__user_id` (`user_id`),
+  CONSTRAINT `fk_oidc_user_link__provider_id` FOREIGN KEY (`provider_id`) REFERENCES `oidc_provider`(`id`),
+  CONSTRAINT `fk_oidc_user_link__user_id` FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Tag values up to 8192 characters (ResourceTag.VALUE_MAX_LENGTH)
 CALL `cloud`.`IDEMPOTENT_CHANGE_COLUMN`('cloud.resource_tags', 'value', 'value', 'varchar(8192)');
 

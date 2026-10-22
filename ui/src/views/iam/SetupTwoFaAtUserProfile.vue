@@ -132,7 +132,7 @@
 
 import { getAPI, postAPI } from '@/api'
 import { ref, reactive, toRaw } from 'vue'
-import store from '@/store'
+import { totpUri } from '@/utils/brand'
 import VueQrious from 'vue-qrious'
 import eventBus from '@/config/eventBus'
 export default {
@@ -216,11 +216,7 @@ export default {
           if (this.selectedProvider === 'totp' || this.selectedProvider === 'othertotp') {
             this.username = response.setupusertwofactorauthenticationresponse.setup2fa.username
 
-            var issuer = 'CloudStack'
-            if (store.getters.twoFaIssuer !== '' && store.getters.twoFaIssuer !== undefined) {
-              issuer = store.getters.twoFaIssuer
-            }
-            this.totpUrl = 'otpauth://totp/' + issuer + ':' + this.username + '?secret=' + this.pin + '&issuer=' + issuer
+            this.totpUrl = totpUri(this.username, this.pin)
 
             this.showPin = false
           }

@@ -1,0 +1,9 @@
+{
+  "name": "SNUCSE Cloud",
+  "title": "SNUCSE Cloud",
+  "twoFaIssuer": "SNUCSE Cloud",
+  "credit": {
+    "en": "Based on Apache CloudStack 4.23.0.0",
+    "ko": "Apache CloudStack 기반 (customized)"
+  }
+}

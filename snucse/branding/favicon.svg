@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="SNUCSE Cloud">
+  <title>SNUCSE Cloud</title>
+  <rect width="64" height="64" rx="14" fill="#0B3D91"/>
+  <g transform="translate(8.4 21) scale(0.85)">
+    <path transform="translate(14 -7) scale(0.82)" fill="#38A9F5" d="M12 32A10 10 0 0 1 11.15 12.04A13 13 0 0 1 36.38 10A11 11 0 1 1 37 32Z"/>
+    <path fill="#FFFFFF" stroke="#0B3D91" stroke-width="2.6" paint-order="stroke" d="M12 32A10 10 0 0 1 11.15 12.04A13 13 0 0 1 36.38 10A11 11 0 1 1 37 32Z"/>
+  </g>
+</svg>

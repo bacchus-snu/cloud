@@ -143,6 +143,9 @@ Make sure Docker is installed, then run:
 
     bash docker.sh
 
+The script builds from the root of the source tree, because the UI reads its brand files from
+`snucse/branding/`.
+
 Change the example configuration in `nginx/default.conf` according to your needs.
 
 Run UI:

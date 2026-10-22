@@ -20,12 +20,20 @@
 # UI customization
 Use a `public/config.json` (or `dist/config.json` after build) file for customizing theme, logos,...
 
+## Brand
+The product name, the page title, the two-factor issuer, the origin credit shown in the footer and the images
+(`logo.svg`, `mini-logo.svg`, `favicon.svg` and its renderings `favicon.png` and `favicon.ico`) are files in
+`snucse/branding/`, not settings of `config.json`. After `favicon.svg` is replaced, `snucse/packaging/make-favicons.sh`
+renders the two rasters again.
+The build validates `brand.json` (the credit is required in `en` and `ko`), makes the page title from it and copies the
+images to `assets/brand/`; the browser bundle reads the same file. A `config.json` that still carries `appTitle`,
+`logo`, `minilogo`, `banner` or `favicon` is overridden by the brand files. Locale strings write the product name as
+`{product}`.
+
 ## Images
-Change the image of the logo, login banner, error page, etc.
+Change the image of the error pages.
 ```json
 {
-  "logo": "assets/logo.svg",
-  "banner": "assets/banner.svg",
   "error": {
     "404": "assets/404.png",
     "403": "assets/403.png",
@@ -34,8 +42,6 @@ Change the image of the logo, login banner, error page, etc.
 }
 ```
 
-- `logo` changes the logo top-left side image.
-- `banner` changes the login banner image.
 - `error.404` change the image of error Page not found.
 - `error.403` change the image of error Forbidden.
 - `error.500` change the image of error Internal Server Error.

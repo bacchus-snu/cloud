@@ -18,10 +18,11 @@
 import { vueProps } from '@/vue-app'
 import { getAPI } from '@/api'
 import { loadLanguageAsync } from '../locales'
+import { applyBrand } from '@/utils/brand'
 
 export async function applyCustomGuiTheme (accountid, domainid) {
   await fetch('config.json?ts=' + Date.now()).then(response => response.json()).then(config => {
-    vueProps.$config = config
+    vueProps.$config = applyBrand(config)
   })
 
   let guiTheme

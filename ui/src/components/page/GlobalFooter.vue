@@ -20,44 +20,26 @@
     <div class="line">
       <span v-html="$config.footer" />
     </div>
+    <div class="line credit">
+      {{ credit }}
+    </div>
     <div class="line" v-if="$store.getters.userInfo.roletype === 'Admin'">
-      CloudStack {{ $store.getters.features.cloudstackversion }}
-      <span v-if="showVersionUpdate()">
-        <a-divider type="vertical" />
-        <a
-          :href="'https://github.com/apache/cloudstack/releases/tag/' + $store.getters.latestVersion.version"
-          target="_blank">
-            <info-circle-outlined />
-            {{ $t('label.new.version.available') + ': ' + $store.getters.latestVersion.version }}
-        </a>
-      </span>
-      <a-divider type="vertical" />
-      <a href="https://github.com/apache/cloudstack/discussions" target="_blank">
-        <github-outlined />
-        {{ $t('label.report.bug') }}
-      </a>
+      {{ name }} {{ $store.getters.features.cloudstackversion }}
     </div>
   </div>
 </template>
 
 <script>
-import semver from 'semver'
-import { getParsedVersion } from '@/utils/util'
+import { brand, brandCredit } from '@/utils/brand'
 
 export default {
   name: 'LayoutFooter',
-  data () {
-    return {
-    }
-  },
-  methods: {
-    showVersionUpdate () {
-      if (this.$store.getters?.features?.cloudstackversion && this.$store.getters?.latestVersion?.version) {
-        const currentVersion = getParsedVersion(this.$store.getters?.features?.cloudstackversion)
-        const latestVersion = getParsedVersion(this.$store.getters?.latestVersion?.version)
-        return semver.valid(currentVersion) && semver.valid(latestVersion) && semver.gt(latestVersion, currentVersion)
-      }
-      return false
+  computed: {
+    name () {
+      return brand.name
+    },
+    credit () {
+      return brandCredit(this.$i18n.locale)
     }
   }
 }
@@ -72,8 +54,9 @@ export default {
     .line {
       margin-bottom: 8px;
     }
-    .copyright {
-      font-size: 14px;
+    .credit {
+      font-size: 12px;
+      opacity: 0.65;
     }
   }
 </style>

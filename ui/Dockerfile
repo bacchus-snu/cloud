@@ -15,34 +15,30 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Build example: docker build -t <name> .
+# The UI reads its brand files from snucse/branding/ beside it, so the build context is the root of the
+# source tree; ui/Dockerfile.dockerignore keeps the context to those two directories.
+# Build example, from the root of the source tree: docker build -f ui/Dockerfile -t <name> .
 
-FROM node:14-bullseye AS build
+FROM node:16-bullseye AS build
 
-LABEL Description="Apache CloudStack UI; Modern role-base progressive UI for Apache CloudStack"
-LABEL Vendor="Apache.org"
+LABEL Description="Role-based progressive web UI of the management server"
 LABEL License=ApacheV2
-LABEL Version=0.5.0
-LABEL Author="Apache CloudStack <dev@cloudstack.apache.org>"
 
-WORKDIR /build
+WORKDIR /build/ui
 
-RUN apt-get -y update && apt-get -y upgrade
+# the webpack build and the dependency install need more than the default heap
+ENV NODE_OPTIONS=--max-old-space-size=3072
 
-COPY . /build/
+COPY ui/ /build/ui/
+COPY snucse/branding/ /build/snucse/branding/
 RUN npm install
 RUN npm run build
 
 FROM nginx:alpine AS runtime
 
-LABEL org.opencontainers.image.title="Apache CloudStack UI" \
-	org.opencontainers.image.description="A modern role-based progressive CloudStack UI" \
-	org.opencontainers.image.authors="Apache CloudStack Contributors" \
-	org.opencontainers.image.url="https://github.com/apache/cloudstack" \
-	org.opencontainers.image.documentation="https://github.com/apache/cloudstack/blob/main/ui/README.md" \
-	org.opencontainers.image.source="https://github.com/apache/cloudstack" \
-	org.opencontainers.image.vendor="The Apache Software Foundation" \
+LABEL org.opencontainers.image.title="Management server UI" \
+	org.opencontainers.image.description="A modern role-based progressive web UI" \
 	org.opencontainers.image.licenses="Apache-2.0" \
 	org.opencontainers.image.ref.name="latest"
 
-COPY --from=build /build/dist/. /usr/share/nginx/html/
+COPY --from=build /build/ui/dist/. /usr/share/nginx/html/

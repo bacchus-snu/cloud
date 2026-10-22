@@ -48,6 +48,7 @@ import directives from './utils/directives'
 import Cookies from 'js-cookie'
 import { getAPI } from '@/api'
 import { applyCustomGuiTheme } from './utils/guiTheme'
+import { applyBrand } from './utils/brand'
 
 vueApp.use(VueAxios, router)
 vueApp.use(pollJobPlugin)
@@ -97,7 +98,7 @@ fetch('config.json?ts=' + Date.now())
     return response.json()
   })
   .then(async config => {
-    vueProps.$config = config
+    vueProps.$config = applyBrand(config)
     let baseUrl = config.apiBase
     if (config.multipleServer) {
       baseUrl = (config.servers[0].apiHost || '') + config.servers[0].apiBase

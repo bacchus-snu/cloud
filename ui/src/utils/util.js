@@ -16,7 +16,6 @@
 // under the License.
 
 import dayjs from 'dayjs'
-import semver from 'semver'
 
 export function timeFix () {
   const time = new Date()
@@ -79,14 +78,6 @@ export function sanitizeReverse (value) {
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
-}
-
-export function getParsedVersion (version) {
-  version = version.split('-')[0]
-  if (semver.valid(version) === null) {
-    version = version.split('.').slice(1).join('.')
-  }
-  return version
 }
 
 export function toCsv ({ keys = null, data = null, columnDelimiter = ',', lineDelimiter = '\n', headers = null, dateFormat = undefined }) {

@@ -21,6 +21,7 @@ const fs = require('fs')
 const packageJson = fs.readFileSync('./package.json')
 const version = JSON.parse(packageJson).version || 'main'
 const createThemeColorReplacerPlugin = require('./theme.config')
+const { chainBrand } = require('./brand.build')
 const UglifyJsPlugin = require('uglifyjs-webpack-plugin')
 
 function resolve (dir) {
@@ -90,6 +91,8 @@ const vueConfig = {
       .set('@views', resolve('src/views'))
       .set('@layout', resolve('src/layout'))
       .set('@static', resolve('src/static'))
+
+    chainBrand(config)
 
     // do not emit errors as a warning
     config.module.rule('eslint').use('eslint-loader').tap(

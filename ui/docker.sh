@@ -19,7 +19,7 @@
 set -e
 set -x
 
-cd $(dirname $0)
+cd $(dirname $0)/..
 
 GIT_TAG="$(git tag --points-at | head -n 1)"
 if [ -n "${GIT_REV}" ]; then
@@ -42,7 +42,7 @@ do
         esac
 done
 if [[ $USE_PODMAN -eq 1 ]]; then
-        podman build -t cloudstack-ui ${LABEL_DATE} ${LABEL_GIT_REV} ${LABEL_GIT_TAG} .
+        podman build -f ui/Dockerfile -t cloudstack-ui ${LABEL_DATE} ${LABEL_GIT_REV} ${LABEL_GIT_TAG} .
 		exit
 fi
-docker build -t cloudstack-ui ${LABEL_DATE} ${LABEL_GIT_REV} ${LABEL_GIT_TAG} .
+docker build -f ui/Dockerfile -t cloudstack-ui ${LABEL_DATE} ${LABEL_GIT_REV} ${LABEL_GIT_TAG} .

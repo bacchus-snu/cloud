@@ -17,6 +17,7 @@
 
 import { createI18n } from 'vue-i18n'
 import { vueProps } from '@/vue-app'
+import { brand } from '@/utils/brand'
 
 const FALLBACK_LANG = 'en'
 const loadedLanguage = []
@@ -31,10 +32,22 @@ export const i18n = createI18n({
   warnHtmlInMessage: 'off'
 })
 
+// Messages name the product with {product}. The name is bound here, once, as a literal
+// interpolation so that no character of it is read as message syntax.
+function bindProduct (message) {
+  const name = '{\'' + brand.name + '\'}'
+  const bound = {}
+  for (const [key, value] of Object.entries(message)) {
+    bound[key] = typeof value === 'string' ? value.split('{product}').join(name) : value
+  }
+  return bound
+}
+
 function applyMessages (lang, message) {
   if (message && Object.keys(message).length > 0) {
-    i18n.global.setLocaleMessage(lang, message)
-    messages[lang] = message
+    const bound = bindProduct(message)
+    i18n.global.setLocaleMessage(lang, bound)
+    messages[lang] = bound
   }
   if (!loadedLanguage.includes(lang)) {
     loadedLanguage.push(lang)

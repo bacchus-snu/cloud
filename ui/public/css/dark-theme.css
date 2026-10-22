@@ -31,9 +31,9 @@
   --main-secondary-escuro: #7eb0d5;
   --main-grey-claro: #ccc;
   --main-grey-escuro: #444;
-  --main-image-menu: url("../assets/logo.svg");
-  --main-image-login: url("../assets/banner.svg");
-  --main-image-icon: url("../assets/mini-logo.svg");
+  --main-image-menu: url("../assets/brand/logo.svg");
+  --main-image-login: url("../assets/brand/logo.svg");
+  --main-image-icon: url("../assets/brand/mini-logo.svg");
   --main-linear-cora: #333;
   --main-linear-corb: #333;
 }

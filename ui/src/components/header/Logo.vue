@@ -22,6 +22,7 @@
         width: $config.theme['@mini-logo-width'],
         height: $config.theme['@mini-logo-height']
       }"
+      :alt="title"
       :src="$config.minilogo" />
   </div>
   <div v-else-if="$config.logo">
@@ -30,11 +31,13 @@
         width: $config.theme['@logo-width'],
         height: $config.theme['@logo-height']
       }"
+      :alt="title"
       :src="$config.logo" />
   </div>
 </template>
 
 <script>
+import { brand } from '@/utils/brand'
 
 export default {
   name: 'Logo',
@@ -43,7 +46,7 @@ export default {
   props: {
     title: {
       type: String,
-      default: 'CloudStack',
+      default: () => brand.name,
       required: false
     },
     showTitle: {

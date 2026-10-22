@@ -18,15 +18,12 @@
 import Cookies from 'js-cookie'
 import message from 'ant-design-vue/es/message'
 import notification from 'ant-design-vue/es/notification'
-import semver from 'semver'
 
 import { vueProps } from '@/vue-app'
 import router from '@/router'
 import store from '@/store'
 import { login, logout, getAPI, forgetServerOpenedSession } from '@/api'
 import { i18n } from '@/locales'
-import { axios } from '../../utils/request'
-import { getParsedVersion } from '@/utils/util'
 
 import {
   ACCESS_TOKEN,
@@ -42,7 +39,6 @@ import {
   DARK_MODE,
   CUSTOM_COLUMNS,
   MS_ID,
-  LATEST_CS_VERSION,
   PASSWORD_CHANGE_REQUIRED
 } from '@/store/mutation-types'
 
@@ -77,7 +73,6 @@ const user = {
     shutdownTriggered: false,
     twoFaEnabled: false,
     twoFaProvider: '',
-    twoFaIssuer: '',
     customHypervisorName: 'Custom',
     readyForShutdownPollingJob: '',
     passwordChangeRequired: false
@@ -173,9 +168,6 @@ const user = {
     SET_2FA_PROVIDER: (state, flag) => {
       state.twoFaProvider = flag
     },
-    SET_2FA_ISSUER: (state, flag) => {
-      state.twoFaIssuer = flag
-    },
     SET_LOGIN_FLAG: (state, flag) => {
       state.loginFlag = flag
     },
@@ -184,12 +176,6 @@ const user = {
     },
     SET_READY_FOR_SHUTDOWN_POLLING_JOB: (state, job) => {
       state.readyForShutdownPollingJob = job
-    },
-    SET_LATEST_VERSION: (state, version) => {
-      if (version?.fetchedTs > 0) {
-        vueProps.$localStorage.set(LATEST_CS_VERSION, version)
-        state.latestVersion = version
-      }
     },
     SET_PASSWORD_CHANGE_REQUIRED: (state, required) => {
       state.passwordChangeRequired = required
@@ -241,7 +227,6 @@ const user = {
           commit('SET_LOGOUT_FLAG', false)
           commit('SET_2FA_ENABLED', (result.is2faenabled === 'true'))
           commit('SET_2FA_PROVIDER', result.providerfor2fa)
-          commit('SET_2FA_ISSUER', result.issuerfor2fa)
           commit('SET_LOGIN_FLAG', false)
           if (result && result.managementserverid) {
             commit('SET_MS_ID', result.managementserverid)
@@ -253,8 +238,6 @@ const user = {
           } else {
             commit('SET_PASSWORD_CHANGE_REQUIRED', false)
           }
-          const latestVersion = vueProps.$localStorage.get(LATEST_CS_VERSION, { version: '', fetchedTs: 0 })
-          commit('SET_LATEST_VERSION', latestVersion)
           notification.destroy()
           resolve()
         }).catch(error => {
@@ -274,12 +257,10 @@ const user = {
         const cachedShowSecurityGroups = vueProps.$localStorage.get(SHOW_SECURTIY_GROUPS, false)
         const darkMode = vueProps.$localStorage.get(DARK_MODE, false)
         const msId = vueProps.$localStorage.get(MS_ID, false)
-        const latestVersion = vueProps.$localStorage.get(LATEST_CS_VERSION, { version: '', fetchedTs: 0 })
         const hasAuth = Object.keys(cachedApis).length > 0
 
         commit('SET_DOMAIN_STORE', domainStore)
         commit('SET_DARK_MODE', darkMode)
-        commit('SET_LATEST_VERSION', latestVersion)
 
         const loadFeatures = (apis) => {
           return new Promise(resolve => {
@@ -416,7 +397,6 @@ const user = {
           commit('SET_INFO', result)
           commit('SET_NAME', result.firstname + ' ' + result.lastname)
           commit('SET_AVATAR', result.icon?.base64image || '')
-          store.dispatch('SetCsLatestVersion', result.rolename)
         }).catch(error => {
           reject(error)
         })
@@ -466,7 +446,6 @@ const user = {
         commit('SET_LOGOUT_FLAG', true)
         commit('SET_2FA_ENABLED', false)
         commit('SET_2FA_PROVIDER', '')
-        commit('SET_2FA_ISSUER', '')
         commit('SET_LOGIN_FLAG', false)
         commit('SET_MS_ID', '')
         forgetServerOpenedSession()
@@ -578,32 +557,6 @@ const user = {
     },
     SetDomainStore ({ commit }, domainStore) {
       commit('SET_DOMAIN_STORE', domainStore)
-    },
-    SetCsLatestVersion ({ commit }, rolename) {
-      if (!vueProps.$config.notifyLatestCSVersion) {
-        return
-      }
-      const lastFetchTs = store.getters.latestVersion?.fetchedTs ? store.getters.latestVersion.fetchedTs : 0
-      if (rolename === 'Root Admin' && (+new Date() - lastFetchTs) > 24 * 60 * 60 * 1000) {
-        axios.get(
-          'https://api.github.com/repos/apache/cloudstack/releases'
-        ).then(response => {
-          let latestReleaseVersion = getParsedVersion(response[0].tag_name)
-          let latestTag = response[0].tag_name
-
-          for (const release of response) {
-            if (release.tag_name.toLowerCase().includes('rc')) {
-              continue
-            }
-            const parsedVersion = getParsedVersion(release.tag_name)
-            if (semver.gte(parsedVersion, latestReleaseVersion)) {
-              latestReleaseVersion = parsedVersion
-              latestTag = release.tag_name
-              commit('SET_LATEST_VERSION', { version: latestTag, fetchedTs: (+new Date()) })
-            }
-          }
-        }).catch(ignored => {})
-      }
     },
     SetDarkMode ({ commit }, darkMode) {
       commit('SET_DARK_MODE', darkMode)

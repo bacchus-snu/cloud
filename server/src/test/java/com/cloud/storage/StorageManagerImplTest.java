@@ -43,6 +43,7 @@ import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStoreDriver
 import org.apache.cloudstack.framework.config.ConfigDepot;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
+import org.apache.cloudstack.framework.config.impl.ConfigDepotImpl;
 import org.apache.cloudstack.resourcedetail.dao.DiskOfferingDetailsDao;
 import org.apache.cloudstack.storage.command.CheckDataStoreStoragePolicyComplianceCommand;
 import org.apache.cloudstack.storage.datastore.db.ObjectStoreDao;
@@ -496,6 +497,75 @@ public class StorageManagerImplTest {
 
         Mockito.when(pool.getUsedBytes()).thenReturn(850L);
         assertTrue("closed at the used threshold", storageManagerImpl.storagePoolCrossedDisableThreshold(pool));
+    }
+
+    private StoragePoolVO poolForAllocatableBytes(long capacity, long used) {
+        StoragePoolVO pool = Mockito.mock(StoragePoolVO.class);
+        Mockito.lenient().when(pool.getId()).thenReturn(1L);
+        Mockito.lenient().when(pool.getStorageProviderName()).thenReturn("DefaultPrimary");
+        Mockito.lenient().when(pool.getPoolType()).thenReturn(Storage.StoragePoolType.Filesystem);
+        Mockito.lenient().when(pool.getCapacityBytes()).thenReturn(capacity);
+        Mockito.lenient().when(pool.getUsedBytes()).thenReturn(used);
+        Mockito.lenient().when(storagePoolDao.findById(1L)).thenReturn(pool);
+        return pool;
+    }
+
+    @Test
+    public void allocatableBytesIsWhatTheSpaceCheckAdmits() {
+        ConfigDepotImpl depot = Mockito.mock(ConfigDepotImpl.class);
+        ConfigKey.init(depot);
+        try {
+            long[] capacities = {1000L, 1_000_000_007L, 8L * 1024 * 1024 * 1024 * 1024 + 123L};
+            String[] factors = {"1.0", "2.0", "1.5"};
+            String[] thresholds = {"0.85", "0.7", "0.9", "0.33", "1.0"};
+            double[] allocatedShares = {0, 0.2, 0.5, 0.84, 0.99};
+            for (long capacity : capacities) {
+                StoragePoolVO pool = poolForAllocatableBytes(capacity, 0L);
+                for (String factor : factors) {
+                    Mockito.doReturn(new BigDecimal(factor)).when(storageManagerImpl).getStorageOverProvisioningFactor(1L);
+                    long total = new BigDecimal(factor).multiply(new BigDecimal(capacity)).longValue();
+                    for (String threshold : thresholds) {
+                        Mockito.lenient().when(depot.getConfigStringValue(CapacityManager.StorageAllocatedCapacityDisableThreshold.key(),
+                                ConfigKey.Scope.StoragePool, 1L)).thenReturn(threshold);
+                        for (double share : allocatedShares) {
+                            long allocated = (long)(total * share);
+                            Mockito.when(capacityManager.getAllocatedPoolCapacity(pool, null)).thenReturn(allocated);
+                            String situation = String.format("capacity %d, factor %s, threshold %s, allocated %d", capacity, factor, threshold, allocated);
+
+                            long admitted = storageManagerImpl.getAllocatableBytes(pool);
+
+                            assertTrue(situation, admitted >= 0);
+                            Assert.assertFalse(situation + ": one byte more is refused", storageManagerImpl.checkPoolforSpace(pool, allocated, admitted + 1));
+                            if (admitted > 0) {
+                                assertTrue(situation + ": the admitted bytes are taken", storageManagerImpl.checkPoolforSpace(pool, allocated, admitted));
+                            }
+                        }
+                    }
+                }
+            }
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
+
+    @Test
+    public void allocatableBytesAppliesFactorAndThresholdAndIsZeroPastEither() {
+        StoragePoolVO pool = poolForAllocatableBytes(1000L, 0L);
+        Mockito.doReturn(new BigDecimal("2.0")).when(storageManagerImpl).getStorageOverProvisioningFactor(1L);
+        Mockito.when(capacityManager.getAllocatedPoolCapacity(pool, null)).thenReturn(600L);
+
+        assertEquals("0.85 of 2000, less 600 allocated", 1100L, storageManagerImpl.getAllocatableBytes(pool));
+
+        Mockito.when(capacityManager.getAllocatedPoolCapacity(pool, null)).thenReturn(1700L);
+        assertEquals("exactly at the allocated threshold", 0L, storageManagerImpl.getAllocatableBytes(pool));
+        Mockito.when(capacityManager.getAllocatedPoolCapacity(pool, null)).thenReturn(1900L);
+        assertEquals("past the allocated threshold", 0L, storageManagerImpl.getAllocatableBytes(pool));
+
+        Mockito.when(capacityManager.getAllocatedPoolCapacity(pool, null)).thenReturn(10L);
+        Mockito.when(pool.getUsedBytes()).thenReturn(849L);
+        assertEquals("0.85 of 2000, less 10", 1690L, storageManagerImpl.getAllocatableBytes(pool));
+        Mockito.when(pool.getUsedBytes()).thenReturn(850L);
+        assertEquals("the used share has reached its threshold", 0L, storageManagerImpl.getAllocatableBytes(pool));
     }
 
     @Test

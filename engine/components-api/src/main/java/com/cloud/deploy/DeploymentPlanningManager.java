@@ -21,7 +21,9 @@ import com.cloud.deploy.DeploymentPlanner.ExcludeList;
 import com.cloud.exception.AffinityConflictException;
 import com.cloud.exception.InsufficientServerCapacityException;
 import com.cloud.host.Host;
+import com.cloud.offering.ServiceOffering;
 import com.cloud.storage.StoragePool;
+import com.cloud.user.Account;
 import com.cloud.vm.DiskProfile;
 import com.cloud.utils.component.Manager;
 import com.cloud.vm.VirtualMachineProfile;
@@ -75,6 +77,15 @@ public interface DeploymentPlanningManager extends Manager {
      * architectures, affinity groups). It reads only: nothing is reserved and the VM's volumes are not considered.
      */
     List<Host> listHostsAdmittingVm(VirtualMachineProfile vmProfile, DataCenterDeployment plan) throws AffinityConflictException;
+
+    /**
+     * The hosts of the zone that can take some Instance without a vGPU profile owned by the account, whatever its size
+     * or Template: the hosts the host allocators start from for an Instance with the offering's host tag (up, enabled,
+     * and not set aside for HA unless the offering is tagged), after the exclusions planning applies to it (dedication,
+     * disabled resources), that report compute capacity and have not reached their guest limit. Without an offering the
+     * result ignores offering host tags and is the untagged selection. It reads only.
+     */
+    List<Host> listHostsUsableByAccount(Account owner, long zoneId, ServiceOffering offering);
 
     /**
      * The storage pools the storage allocators accept for a disk under the plan, in their order, as planning would

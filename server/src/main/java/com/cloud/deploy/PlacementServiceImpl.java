@@ -39,12 +39,16 @@ import javax.inject.Inject;
 import org.apache.cloudstack.acl.SecurityChecker.AccessType;
 import org.apache.cloudstack.api.command.admin.host.UpdateHostMoveRateCmd;
 import org.apache.cloudstack.api.command.user.vm.CheckPlacementCmd;
+import org.apache.cloudstack.api.command.user.vm.ListPlacementCapacityCmd;
+import org.apache.cloudstack.api.response.PlacementCapacityResponse;
 import org.apache.cloudstack.api.response.PlacementResponse;
+import org.apache.cloudstack.api.response.PlacementThisHostResponse;
 import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.engine.orchestration.service.VolumeOrchestrationService;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.Configurable;
 import org.apache.cloudstack.framework.security.keys.KeysManager;
+import org.apache.cloudstack.gpu.GpuService;
 import org.apache.cloudstack.snapshot.SnapshotHelper;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
@@ -53,6 +57,7 @@ import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 
 import com.cloud.capacity.CapacityManager;
+import com.cloud.capacity.HostPoolCoreManager;
 import com.cloud.configuration.Resource;
 import com.cloud.configuration.Resource.ResourceType;
 import com.cloud.dc.DataCenter;
@@ -129,6 +134,7 @@ public class PlacementServiceImpl extends ManagerBase implements PlacementServic
     static final String REASON_SUITABLE_HOST = "suitable host";
     static final String REASON_VOLUMES_UNAVAILABLE = "volumes unavailable";
 
+    private static final long MIB = 1024L * 1024L;
     private static final long GIB = 1024L * 1024L * 1024L;
     private static final String TOKEN_KEY_PURPOSE = "cloudstack placement token";
     private static final String TOKEN_SEPARATOR = "-";
@@ -179,6 +185,8 @@ public class PlacementServiceImpl extends ManagerBase implements PlacementServic
     VgpuProfileDao vgpuProfileDao;
     @Inject
     GpuCardDao gpuCardDao;
+    @Inject
+    GpuService gpuService;
 
     /** What a request places: its Instance, the volumes it has, and the disks it would create. */
     final class Context {
@@ -246,6 +254,7 @@ public class PlacementServiceImpl extends ManagerBase implements PlacementServic
     public List<Class<?>> getCommands() {
         List<Class<?>> cmdList = new ArrayList<>();
         cmdList.add(CheckPlacementCmd.class);
+        cmdList.add(ListPlacementCapacityCmd.class);
         cmdList.add(UpdateHostMoveRateCmd.class);
         return cmdList;
     }
@@ -263,6 +272,102 @@ public class PlacementServiceImpl extends ManagerBase implements PlacementServic
     @Override
     public PlacementResponse checkPlacement(CheckPlacementCmd cmd) {
         return new PlacementResponse(check(requestOf(cmd, CallContext.current().getCallingAccount())));
+    }
+
+    @Override
+    public PlacementCapacityResponse listPlacementCapacity(ListPlacementCapacityCmd cmd) {
+        return capacityOf(cmd.getZoneId(), cmd.getVirtualMachineId(), cmd.getServiceOfferingId(), CallContext.current().getCallingAccount());
+    }
+
+    /**
+     * Each maximum is that of one host, never a sum, and the three need not fit one host together. A host counts only
+     * when planning offers it to an Instance of the owner (for the offering's host tags, if one is given) and it takes
+     * the smallest such Instance now: the cores of one vCPU step and some memory. A host that does not offers nothing,
+     * because no Instance could use its other resources. The vCPUs are a multiple of the step, as an Instance's are.
+     */
+    PlacementCapacityResponse capacityOf(long zoneId, Long vmId, Long offeringId, Account caller) {
+        DataCenterVO zone = dataCenterDao.findById(zoneId);
+        if (zone == null) {
+            throw new InvalidParameterValueException("No such zone");
+        }
+        VMInstanceVO vm = null;
+        Account owner = caller;
+        if (vmId != null) {
+            vm = vmInstanceDao.findById(vmId);
+            if (vm == null || vm.getRemoved() != null || vm.getType() != VirtualMachine.Type.User) {
+                throw new InvalidParameterValueException("No such Instance");
+            }
+            accountManager.checkAccess(caller, null, true, vm);
+            checkZone(zoneId, vm.getDataCenterId());
+            owner = accountManager.getAccount(vm.getAccountId());
+        }
+        ServiceOfferingVO offering = null;
+        if (offeringId != null) {
+            offering = serviceOfferingDao.findById(offeringId);
+            if (offering == null || offering.getRemoved() != null) {
+                throw new InvalidParameterValueException("No such service offering");
+            }
+            if (CapacityManager.isHostCapacityExempt(offering)) {
+                throw new InvalidParameterValueException("The service offering has a vGPU profile; the maxima are those of Instances without one");
+            }
+            accountManager.checkAccess(owner, offering, zone);
+        }
+        int vcpuStep = UserVmManager.poolVcpuStep(owner.getDomainId());
+        int smallestInstanceCores = HostPoolCoreManager.coresForVcpus(vcpuStep);
+        long maxCores = 0;
+        long maxMemory = 0;
+        long maxDisk = 0;
+        for (Host host : deploymentPlanningManager.listHostsUsableByAccount(owner, zoneId, offering)) {
+            CapacityManager.HostFreeCapacity free = HostPoolCoreManager.usesPoolCores(host) ? capacityManager.getFreeCapacity(host) : null;
+            if (free == null || free.getFreeCores() < smallestInstanceCores || free.getFreeMemoryBytes() <= 0) {
+                continue;
+            }
+            maxCores = Math.max(maxCores, free.getFreeCores());
+            maxMemory = Math.max(maxMemory, free.getFreeMemoryBytes());
+            maxDisk = Math.max(maxDisk, allocatableLocalBytes(host));
+        }
+        return new PlacementCapacityResponse(requestableVcpus(maxCores, vcpuStep), maxMemory / MIB, maxDisk / GIB, vm == null ? null : thisHostOf(vm, vcpuStep));
+    }
+
+    /** What is free on the host an Instance runs on, or on the host of its root volume's local storage when it is stopped; null when there is none. */
+    private PlacementThisHostResponse thisHostOf(VMInstanceVO vm, int vcpuStep) {
+        HostVO host = hostOf(vm);
+        if (host == null) {
+            return null;
+        }
+        CapacityManager.HostFreeCapacity free = capacityManager.getFreeCapacity(host);
+        long cores = free == null ? 0 : free.getFreeCores();
+        long memory = free == null ? 0 : Math.max(0, free.getFreeMemoryBytes());
+        ServiceOffering offering = serviceOfferingDao.findById(vm.getId(), vm.getServiceOfferingId());
+        Integer slots = CapacityManager.isHostCapacityExempt(offering) ? gpuService.slotCount(offering, host.getId()).getAvailable() : null;
+        return new PlacementThisHostResponse(requestableVcpus(cores, vcpuStep), memory / MIB, allocatableLocalBytes(host) / GIB, slots);
+    }
+
+    /** @return the most vCPUs the cores give, as a multiple of the vCPU step, the sizes an Instance can have */
+    private static long requestableVcpus(long cores, int vcpuStep) {
+        return 2 * cores / vcpuStep * vcpuStep;
+    }
+
+    private HostVO hostOf(VMInstanceVO vm) {
+        if (vm.getHostId() != null) {
+            return hostDao.findById(vm.getHostId());
+        }
+        for (VolumeVO volume : volumeDao.findUsableVolumesForInstance(vm.getId())) {
+            if (volume.getVolumeType() == Volume.Type.ROOT && volume.getPoolId() != null) {
+                Set<Long> hostIds = localPoolHostIds(storagePoolDao.findById(volume.getPoolId()));
+                return hostIds.size() == 1 ? hostDao.findById(hostIds.iterator().next()) : null;
+            }
+        }
+        return null;
+    }
+
+    /** @return the most bytes of new disks the host's local storage takes in one pool, as the pool space check admits them */
+    private long allocatableLocalBytes(Host host) {
+        long most = 0;
+        for (StoragePoolVO pool : storagePoolDao.findLocalStoragePoolsByHostAndTags(host.getId(), null)) {
+            most = Math.max(most, storageManager.getAllocatableBytes(pool));
+        }
+        return most;
     }
 
     /**

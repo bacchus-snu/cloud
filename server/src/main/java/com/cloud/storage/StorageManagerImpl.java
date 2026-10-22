@@ -3644,6 +3644,28 @@ public class StorageManagerImpl extends ManagerBase implements StorageManager, C
     }
 
     @Override
+    public long getAllocatableBytes(StoragePool pool) {
+        if (!checkUsagedSpace(pool)) {
+            return 0;
+        }
+        long capacity = totalOverProvisionedCapacity(pool);
+        double threshold = CapacityManager.StorageAllocatedCapacityDisableThreshold.valueIn(pool.getId());
+        if (capacity <= 0 || threshold <= 0) {
+            return 0;
+        }
+        // the largest allocated total that checkPoolforSpace admits, by the arithmetic it uses
+        long admitted = (long)Math.floor(threshold * capacity);
+        while (admitted > 0 && admitted / (double)capacity > threshold) {
+            admitted--;
+        }
+        while (admitted < capacity && (admitted + 1) / (double)capacity <= threshold) {
+            admitted++;
+        }
+        long allocated = _capacityMgr.getAllocatedPoolCapacity(_storagePoolDao.findById(pool.getId()), null);
+        return Math.max(0, Math.min(admitted, capacity) - allocated);
+    }
+
+    @Override
     public boolean storagePoolHasEnoughSpaceForResize(StoragePool pool, long currentSize, long newSize) {
         if (!checkUsagedSpace(pool)) {
             return false;
@@ -3724,24 +3746,22 @@ public class StorageManagerImpl extends ManagerBase implements StorageManager, C
         return checkPoolforSpace(pool, allocatedSizeWithTemplate, totalAskingSize, false);
     }
 
+    private long totalOverProvisionedCapacity(StoragePool pool) {
+        if (!pool.getPoolType().supportsOverProvisioning()) {
+            logger.debug("Found storage pool {} of type {}", pool, pool.getPoolType());
+            return pool.getCapacityBytes();
+        }
+        BigDecimal overProvFactor = getStorageOverProvisioningFactor(pool.getId());
+        logger.debug("Found storage pool {} of type {} with overprovisioning factor {}", pool, pool.getPoolType(), overProvFactor);
+        logger.debug("Total over provisioned capacity calculated is {} * {}", overProvFactor, toHumanReadableSize(pool.getCapacityBytes()));
+        return overProvFactor.multiply(new BigDecimal(pool.getCapacityBytes())).longValue();
+    }
+
     protected boolean checkPoolforSpace(StoragePool pool, long allocatedSizeWithTemplate, long totalAskingSize, boolean forVolumeResize) {
         // allocated space includes templates
         StoragePoolVO poolVO = _storagePoolDao.findById(pool.getId());
 
-        long totalOverProvCapacity;
-
-        if (pool.getPoolType().supportsOverProvisioning()) {
-            BigDecimal overProvFactor = getStorageOverProvisioningFactor(pool.getId());
-
-            totalOverProvCapacity = overProvFactor.multiply(new BigDecimal(pool.getCapacityBytes())).longValue();
-
-            logger.debug("Found storage pool {} of type {} with overprovisioning factor {}", pool, pool.getPoolType(), overProvFactor);
-            logger.debug("Total over provisioned capacity calculated is {} * {}", overProvFactor, toHumanReadableSize(pool.getCapacityBytes()));
-        } else {
-            totalOverProvCapacity = pool.getCapacityBytes();
-
-            logger.debug("Found storage pool {} of type {}", poolVO, pool.getPoolType());
-        }
+        long totalOverProvCapacity = totalOverProvisionedCapacity(pool);
 
         logger.debug("Total capacity of the pool {} is {}", poolVO, toHumanReadableSize(totalOverProvCapacity));
 

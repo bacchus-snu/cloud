@@ -37,28 +37,38 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
+import org.apache.cloudstack.acl.RoleType;
+import org.apache.cloudstack.api.APICommand;
 import org.apache.cloudstack.api.command.admin.host.UpdateHostMoveRateCmd;
 import org.apache.cloudstack.api.command.user.vm.CheckPlacementCmd;
+import org.apache.cloudstack.api.command.user.vm.ListPlacementCapacityCmd;
+import org.apache.cloudstack.api.response.PlacementCapacityResponse;
 import org.apache.cloudstack.api.response.PlacementResponse;
+import org.apache.cloudstack.api.response.PlacementThisHostResponse;
 import org.apache.cloudstack.api.response.PlacementVolumeResponse;
 import org.apache.cloudstack.engine.orchestration.service.VolumeOrchestrationService;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.impl.ConfigDepotImpl;
 import org.apache.cloudstack.framework.security.keys.KeysManager;
+import org.apache.cloudstack.gpu.GpuService;
 import org.apache.cloudstack.snapshot.SnapshotHelper;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
@@ -73,7 +83,18 @@ import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnitRunner;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import com.cloud.capacity.Capacity;
 import com.cloud.capacity.CapacityManager;
+import com.cloud.capacity.CapacityManagerImpl;
+import com.cloud.capacity.CapacityVO;
+import com.cloud.capacity.HostCoreAssignmentVO;
+import com.cloud.capacity.HostPoolCoreManagerImpl;
+import com.cloud.capacity.HostPoolCoreVO;
+import com.cloud.capacity.dao.CapacityDao;
+import com.cloud.capacity.dao.HostCoreAssignmentDao;
+import com.cloud.capacity.dao.HostPoolCoreDao;
+import com.cloud.dc.ClusterDetailsDao;
+import com.cloud.dc.DataCenter;
 import com.cloud.dc.DataCenterVO;
 import com.cloud.dc.dao.DataCenterDao;
 import com.cloud.event.ActionEvent;
@@ -104,6 +125,7 @@ import com.cloud.storage.DiskOfferingVO;
 import com.cloud.storage.ScopeType;
 import com.cloud.storage.Storage;
 import com.cloud.storage.StorageManager;
+import com.cloud.storage.StorageManagerImpl;
 import com.cloud.storage.StoragePool;
 import com.cloud.storage.StoragePoolHostVO;
 import com.cloud.storage.VMTemplateVO;
@@ -122,11 +144,15 @@ import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.vm.DiskProfile;
 import com.cloud.vm.UserVmManager;
 import com.cloud.vm.UserVmVO;
+import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.VirtualMachineProfile;
+import com.cloud.vm.VmDetailConstants;
 import com.cloud.vm.dao.VMInstanceDao;
 import com.cloud.vm.snapshot.VMSnapshotVO;
 import com.cloud.vm.snapshot.dao.VMSnapshotDao;
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 
 @RunWith(MockitoJUnitRunner.Silent.class)
 public class PlacementServiceImplTest {
@@ -196,6 +222,8 @@ public class PlacementServiceImplTest {
     private VgpuProfileDao vgpuProfileDao;
     @Mock
     private GpuCardDao gpuCardDao;
+    @Mock
+    private GpuService gpuService;
 
     private final ConfigDepotImpl configDepot = mock(ConfigDepotImpl.class);
 
@@ -207,6 +235,8 @@ public class PlacementServiceImplTest {
     private final Map<Long, Long> freePoolBytes = new HashMap<>();
     private final Map<Long, StoragePoolVO> pools = new HashMap<>();
     private final Map<Long, VolumeVO> volumes = new LinkedHashMap<>();
+    private final Set<Long> unusableHosts = new HashSet<>();
+    private final Set<Long> hostsWithoutCapacityRows = new HashSet<>();
     private final Map<String, Long> physical = new HashMap<>();
     private long remainingStorageQuota = -1;
     private boolean volumeCountShort;
@@ -273,8 +303,19 @@ public class PlacementServiceImplTest {
         when(capacityManager.checkIfHostHasPoolCores(any(Host.class), anyInt())).thenAnswer(i -> coresFit(((Host)i.getArgument(0)).getId(), i.getArgument(1)));
         when(capacityManager.getFreeCapacity(any(Host.class))).thenAnswer(i -> {
             long id = ((Host)i.getArgument(0)).getId();
-            return new CapacityManager.HostFreeCapacity(1_000_000L, freeMemory.get(id), 64, 2000, freeCores.get(id));
+            return hostsWithoutCapacityRows.contains(id) ? null : new CapacityManager.HostFreeCapacity(1_000_000L, freeMemory.get(id), 64, 2000, freeCores.get(id));
         });
+        // the hosts planning starts from for an Instance without a vGPU profile
+        when(deploymentPlanningManager.listHostsUsableByAccount(any(Account.class), anyLong(), any())).thenAnswer(i -> hosts.values().stream()
+                .filter(host -> !unusableHosts.contains(host.getId())).collect(Collectors.toList()));
+        when(storagePoolDao.findLocalStoragePoolsByHostAndTags(anyLong(), any())).thenAnswer(i -> {
+            StoragePoolVO pool = pools.get((Long)i.getArgument(0));
+            return pool == null ? Collections.emptyList() : Collections.singletonList(pool);
+        });
+        when(storageManager.getAllocatableBytes(any(StoragePool.class))).thenAnswer(i -> freePoolBytes.get(((StoragePool)i.getArgument(0)).getId()));
+        DataCenterVO zone = mock(DataCenterVO.class);
+        when(zone.getId()).thenReturn(ZONE);
+        when(dataCenterDao.findById(ZONE)).thenReturn(zone);
         when(resourceManager.isGPUDeviceAvailable(any(), any(Host.class), anyLong())).thenAnswer(i -> freeGroups.getOrDefault(((Host)i.getArgument(1)).getId(), 0) > 0);
         when(resourceManager.listAllUpAndEnabledHosts(Host.Type.Routing, null, null, ZONE)).thenAnswer(i -> new ArrayList<>(hosts.values()));
         when(deploymentPlanningManager.listHostsAdmittingVm(any(VirtualMachineProfile.class), any(DataCenterDeployment.class))).thenAnswer(i -> {
@@ -1024,5 +1065,525 @@ public class PlacementServiceImplTest {
                 () -> service.approvedMove(PlacementRequest.start(VM, null, ACCOUNT), true, null));
 
         assertTrue(e.getMessage(), e.getMessage().endsWith("not possible now: " + PlacementServiceImpl.REASON_CPU_POOL));
+    }
+
+    private PlacementCapacityResponse capacity() {
+        return service.capacityOf(ZONE, null, null, owner);
+    }
+
+    private PlacementCapacityResponse capacityOfVm() {
+        return service.capacityOf(ZONE, VM, null, owner);
+    }
+
+    @Test
+    public void maximaAreSingleHostMaxNotSums() {
+        freeCores.put(HOST_A, 4);
+        freeCores.put(HOST_B, 3);
+        freeMemory.put(HOST_A, 100 * GIB);
+        freeMemory.put(HOST_B, 60 * GIB);
+        freePoolBytes.put(HOST_A + 10, 300 * GIB);
+        freePoolBytes.put(HOST_B + 10, 200 * GIB);
+        unusableHosts.add(HOST_C);
+
+        PlacementCapacityResponse capacity = capacity();
+
+        assertEquals("the larger host's 4 cores, not the 7 of both", 8, (long)capacity.getMaxVcpu());
+        assertEquals(100 * 1024, (long)capacity.getMaxMemory());
+        assertEquals(300, (long)capacity.getMaxDisk());
+        assertNull("without an Instance there is no host of its own", capacity.getThisHost());
+    }
+
+    @Test
+    public void maxvcpuIsTwiceLargestFreeCores() {
+        freeCores.put(HOST_A, 5);
+        freeCores.put(HOST_B, 9);
+        freeCores.put(HOST_C, 20);
+        unusableHosts.add(HOST_C);
+
+        assertEquals("a host planning does not offer does not count", 18, (long)capacity().getMaxVcpu());
+
+        unusableHosts.add(HOST_B);
+        assertEquals(10, (long)capacity().getMaxVcpu());
+        freeCores.put(HOST_A, 1);
+        assertEquals("one core is two vCPUs", 2, (long)capacity().getMaxVcpu());
+    }
+
+    @Test
+    public void maxvcpuIsASizeTheVcpuStepAllows() {
+        unusableHosts.addAll(Arrays.asList(HOST_B, HOST_C));
+        freeCores.put(HOST_A, 3);
+
+        setting(UserVmManager.VmPoolVcpuStep, ConfigKey.Scope.Domain, DOMAIN, "4");
+        assertEquals("3 cores are 6 vCPUs, and the largest multiple of 4 is 4", 4, (long)capacity().getMaxVcpu());
+
+        setting(UserVmManager.VmPoolVcpuStep, ConfigKey.Scope.Domain, DOMAIN, "3");
+        freeCores.put(HOST_A, 5);
+        assertEquals("5 cores are 10 vCPUs, and the largest multiple of 3 is 9", 9, (long)capacity().getMaxVcpu());
+
+        setting(UserVmManager.VmPoolVcpuStep, ConfigKey.Scope.Domain, DOMAIN, "1");
+        assertEquals(10, (long)capacity().getMaxVcpu());
+
+        setting(UserVmManager.VmPoolVcpuStep, ConfigKey.Scope.Domain, DOMAIN, "2");
+        freeCores.put(HOST_A, 0);
+        assertEquals(0, (long)capacity().getMaxVcpu());
+    }
+
+    @Test
+    public void thisHostVcpuIsASizeTheVcpuStepAllows() {
+        volume(201, Volume.Type.ROOT, HOST_A, 10);
+        freeCores.put(HOST_A, 3);
+
+        setting(UserVmManager.VmPoolVcpuStep, ConfigKey.Scope.Domain, DOMAIN, "4");
+        assertEquals("3 cores are 6 vCPUs, and the largest multiple of 4 is 4", 4, (long)capacityOfVm().getThisHost().getFreeVcpu());
+
+        setting(UserVmManager.VmPoolVcpuStep, ConfigKey.Scope.Domain, DOMAIN, "2");
+        assertEquals(6, (long)capacityOfVm().getThisHost().getFreeVcpu());
+        freeCores.put(HOST_A, 1);
+        setting(UserVmManager.VmPoolVcpuStep, ConfigKey.Scope.Domain, DOMAIN, "4");
+        assertEquals("less than a step is 0", 0, (long)capacityOfVm().getThisHost().getFreeVcpu());
+    }
+
+    @Test
+    public void theVcpuStepIsTheInstanceOwnersNotTheCallers() {
+        Account admin = mock(Account.class);
+        when(admin.getId()).thenReturn(6L);
+        when(admin.getDomainId()).thenReturn(DOMAIN + 2);
+        volume(201, Volume.Type.ROOT, HOST_A, 10);
+        unusableHosts.addAll(Arrays.asList(HOST_B, HOST_C));
+        freeCores.put(HOST_A, 3);
+        setting(UserVmManager.VmPoolVcpuStep, ConfigKey.Scope.Domain, DOMAIN, "4");
+
+        PlacementCapacityResponse forTheInstance = service.capacityOf(ZONE, VM, null, admin);
+        PlacementCapacityResponse forTheAdmin = service.capacityOf(ZONE, null, null, admin);
+
+        assertEquals("the owner's domain has a step of 4", 4, (long)forTheInstance.getMaxVcpu());
+        assertEquals(4, (long)forTheInstance.getThisHost().getFreeVcpu());
+        assertEquals("the admin's own domain has the default step of 2", 6, (long)forTheAdmin.getMaxVcpu());
+    }
+
+    @Test
+    public void maxMemoryIsLargestFreeMemoryOnOneUsableHost() {
+        freeMemory.put(HOST_A, 48 * GIB);
+        freeMemory.put(HOST_B, 64 * GIB);
+        freeMemory.put(HOST_C, 512 * GIB);
+        unusableHosts.add(HOST_C);
+
+        assertEquals("MiB of the larger host, not the 112 GiB of both", 64 * 1024, (long)capacity().getMaxMemory());
+
+        freeMemory.put(HOST_B, 64 * GIB + 1023);
+        assertEquals("a part of a MiB is not offered", 64 * 1024, (long)capacity().getMaxMemory());
+    }
+
+    @Test
+    public void hostsThatCannotTakeAnInstanceOfferNothing() {
+        hostsWithoutCapacityRows.add(HOST_A);
+        freeCores.put(HOST_B, 0);
+        freeMemory.put(HOST_B, 400 * GIB);
+        freePoolBytes.put(HOST_B + 10, 900 * GIB);
+        freeCores.put(HOST_C, 30);
+        freeMemory.put(HOST_C, -5 * GIB);
+        freePoolBytes.put(HOST_C + 10, 800 * GIB);
+        host(4L);
+        freeCores.put(4L, 30);
+        freeMemory.put(4L, 0L);
+        freePoolBytes.put(14L, 700 * GIB);
+        host(5L);
+        freeCores.put(5L, 2);
+        freeMemory.put(5L, 3 * GIB);
+        freePoolBytes.put(15L, 10 * GIB);
+
+        PlacementCapacityResponse capacity = capacity();
+
+        assertEquals("only host 5 takes an Instance: A reports no capacity, B has no free core, C is over-allocated, host 4 has no free memory",
+                4, (long)capacity.getMaxVcpu());
+        assertEquals(3 * 1024, (long)capacity.getMaxMemory());
+        assertEquals(10, (long)capacity.getMaxDisk());
+    }
+
+    @Test
+    public void maximaMayComeFromDifferentHosts() {
+        freeCores.put(HOST_A, 16);
+        freeMemory.put(HOST_A, 64 * GIB);
+        freePoolBytes.put(HOST_A + 10, 100 * GIB);
+        freeCores.put(HOST_B, 4);
+        freeMemory.put(HOST_B, 256 * GIB);
+        freePoolBytes.put(HOST_B + 10, 200 * GIB);
+        freeCores.put(HOST_C, 8);
+        freeMemory.put(HOST_C, 128 * GIB);
+        freePoolBytes.put(HOST_C + 10, 900 * GIB);
+
+        PlacementCapacityResponse capacity = capacity();
+
+        assertEquals("host A has the most cores", 32, (long)capacity.getMaxVcpu());
+        assertEquals("host B has the most memory", 256 * 1024, (long)capacity.getMaxMemory());
+        assertEquals("host C has the most local disk", 900, (long)capacity.getMaxDisk());
+    }
+
+    @Test
+    public void aHostMustTakeTheSmallestInstanceThatTheVcpuStepAllows() {
+        setting(UserVmManager.VmPoolVcpuStep, ConfigKey.Scope.Domain, DOMAIN, "4");
+        freeCores.put(HOST_A, 1);
+        freeMemory.put(HOST_A, 400 * GIB);
+        freePoolBytes.put(HOST_A + 10, 900 * GIB);
+        freeCores.put(HOST_B, 2);
+        freeMemory.put(HOST_B, 8 * GIB);
+        freePoolBytes.put(HOST_B + 10, 50 * GIB);
+        unusableHosts.add(HOST_C);
+
+        PlacementCapacityResponse capacity = capacity();
+
+        assertEquals("a step of 4 vCPUs needs 2 cores, which only host B has", 4, (long)capacity.getMaxVcpu());
+        assertEquals(8 * 1024, (long)capacity.getMaxMemory());
+        assertEquals(50, (long)capacity.getMaxDisk());
+
+        setting(UserVmManager.VmPoolVcpuStep, ConfigKey.Scope.Domain, DOMAIN, "2");
+        capacity = capacity();
+
+        assertEquals("a step of 2 needs one core, which host A has", 4, (long)capacity.getMaxVcpu());
+        assertEquals(400 * 1024, (long)capacity.getMaxMemory());
+        assertEquals(900, (long)capacity.getMaxDisk());
+    }
+
+    @Test
+    public void onlyHostsRunningInstancesOnPoolCoresCount() {
+        when(hosts.get(HOST_A).getHypervisorType()).thenReturn(HypervisorType.VMware);
+        when(hosts.get(HOST_B).getHypervisorType()).thenReturn(HypervisorType.VMware);
+        freeCores.put(HOST_C, 3);
+
+        assertEquals(6, (long)capacity().getMaxVcpu());
+    }
+
+    @Test
+    public void nothingIsOfferedWhenNoHostIsUsable() {
+        unusableHosts.addAll(Arrays.asList(HOST_A, HOST_B, HOST_C));
+
+        PlacementCapacityResponse capacity = capacity();
+
+        assertEquals(0, (long)capacity.getMaxVcpu());
+        assertEquals(0, (long)capacity.getMaxMemory());
+        assertEquals(0, (long)capacity.getMaxDisk());
+    }
+
+    @Test
+    public void poolExcludesUnits() {
+        // host A registers 16 pool cores and an Instance without a vGPU profile holds 4 of them; a vGPU Instance
+        // runs on the host's units and is outside the pool's accounting
+        long cpuOnlyVm = 900L;
+        CapacityDao capacityDao = mock(CapacityDao.class);
+        ClusterDetailsDao clusterDetailsDao = mock(ClusterDetailsDao.class);
+        Map<String, String> ratios = new HashMap<>();
+        ratios.put(VmDetailConstants.CPU_OVER_COMMIT_RATIO, "1.0");
+        ratios.put(VmDetailConstants.MEMORY_OVER_COMMIT_RATIO, "1.0");
+        when(clusterDetailsDao.findDetails(eq(CLUSTER), anyList())).thenReturn(ratios);
+        HostPoolCoreDao hostPoolCoreDao = mock(HostPoolCoreDao.class);
+        HostCoreAssignmentDao assignmentDao = mock(HostCoreAssignmentDao.class);
+        // host, registered cores, memory GiB in use, memory GiB in total
+        long[][] registered = {{HOST_A, 16, 16, 256}, {HOST_B, 8, 0, 128}};
+        for (long[] host : registered) {
+            long id = host[0];
+            CapacityVO cpu = new CapacityVO(id, ZONE, POD, CLUSTER, 0L, 64_000L, Capacity.CAPACITY_TYPE_CPU);
+            CapacityVO memory = new CapacityVO(id, ZONE, POD, CLUSTER, host[2] * GIB, host[3] * GIB, Capacity.CAPACITY_TYPE_MEMORY);
+            when(capacityDao.findByHostIdType(id, Capacity.CAPACITY_TYPE_CPU)).thenReturn(cpu);
+            when(capacityDao.findByHostIdType(id, Capacity.CAPACITY_TYPE_MEMORY)).thenReturn(memory);
+            List<HostPoolCoreVO> cores = new ArrayList<>();
+            for (int core = 0; core < host[1]; core++) {
+                cores.add(new HostPoolCoreVO(id, core, core + 64, 0));
+            }
+            when(hostPoolCoreDao.listByHostId(id)).thenReturn(cores);
+        }
+        List<HostCoreAssignmentVO> held = new ArrayList<>();
+        for (int core = 0; core < 4; core++) {
+            held.add(new HostCoreAssignmentVO(HOST_A, core, cpuOnlyVm));
+        }
+        when(assignmentDao.listByHostId(HOST_A)).thenReturn(held);
+        when(assignmentDao.listByHostId(HOST_B)).thenReturn(new ArrayList<>());
+        HostPoolCoreManagerImpl poolCores = new HostPoolCoreManagerImpl();
+        ReflectionTestUtils.setField(poolCores, "hostPoolCoreDao", hostPoolCoreDao);
+        ReflectionTestUtils.setField(poolCores, "hostCoreAssignmentDao", assignmentDao);
+        CapacityManagerImpl real = new CapacityManagerImpl();
+        ReflectionTestUtils.setField(real, "_capacityDao", capacityDao);
+        ReflectionTestUtils.setField(real, "_clusterDetailsDao", clusterDetailsDao);
+        ReflectionTestUtils.setField(real, "_hostDao", hostDao);
+        ReflectionTestUtils.setField(real, "_offeringsDao", serviceOfferingDao);
+        ReflectionTestUtils.setField(real, "hostPoolCoreManager", poolCores);
+        service.capacityManager = real;
+        unusableHosts.add(HOST_C);
+
+        PlacementCapacityResponse before = capacity();
+
+        assertEquals("16 registered cores less the 4 held are 12 cores", 24, (long)before.getMaxVcpu());
+        assertEquals("host A's 256 GiB less the 16 GiB in use", 240 * 1024, (long)before.getMaxMemory());
+
+        ServiceOfferingVO gpuOffering = mock(ServiceOfferingVO.class);
+        when(gpuOffering.getId()).thenReturn(21L);
+        when(gpuOffering.getVgpuProfileId()).thenReturn(9L);
+        when(gpuOffering.getCpu()).thenReturn(12);
+        when(gpuOffering.getRamSize()).thenReturn(98304);
+        when(serviceOfferingDao.findById(901L, 21L)).thenReturn(gpuOffering);
+        VMInstanceVO gpuVm = mock(VMInstanceVO.class);
+        when(gpuVm.getId()).thenReturn(901L);
+        when(gpuVm.getHostId()).thenReturn(HOST_A);
+        when(gpuVm.getServiceOfferingId()).thenReturn(21L);
+        real.allocateVmCapacity(gpuVm, false);
+
+        PlacementCapacityResponse after = capacity();
+
+        verify(capacityDao, never()).lockRow(anyLong(), anyBoolean());
+        assertEquals("a vGPU Instance running on host A does not lower the pool", 24, (long)after.getMaxVcpu());
+        assertEquals(240 * 1024, (long)after.getMaxMemory());
+    }
+
+    private StorageManagerImpl realStorageManager(CapacityManager allocated) {
+        StorageManagerImpl real = spy(new StorageManagerImpl());
+        ReflectionTestUtils.setField(real, "_storagePoolDao", storagePoolDao);
+        ReflectionTestUtils.setField(real, "_capacityMgr", allocated);
+        service.storageManager = real;
+        return real;
+    }
+
+    private void poolSpace(StorageManagerImpl real, CapacityManager allocated, long hostId, long capacityGiB, long usedGiB, long allocatedGiB, String factor) {
+        StoragePoolVO pool = pools.get(hostId);
+        long poolId = pool.getId();
+        when(pool.getStorageProviderName()).thenReturn("DefaultPrimary");
+        when(pool.getCapacityBytes()).thenReturn(capacityGiB * GIB);
+        when(pool.getUsedBytes()).thenReturn(usedGiB * GIB);
+        when(allocated.getAllocatedPoolCapacity(pool, null)).thenReturn(allocatedGiB * GIB);
+        doReturn(new BigDecimal(factor)).when(real).getStorageOverProvisioningFactor(poolId);
+    }
+
+    @Test
+    public void maxDiskAppliesFactorAndAllocatedThreshold() {
+        CapacityManager allocated = mock(CapacityManager.class);
+        StorageManagerImpl real = realStorageManager(allocated);
+        poolSpace(real, allocated, HOST_A, 1000, 100, 600, "2.0");
+        poolSpace(real, allocated, HOST_B, 500, 50, 100, "1.0");
+        poolSpace(real, allocated, HOST_C, 3000, 100, 2000, "1.0");
+        unusableHosts.add(HOST_C);
+
+        assertEquals("host A: 0.85 of 1000 GiB twice over is 1700 GiB, less 600 allocated; host B has 325", 1100, (long)capacity().getMaxDisk());
+
+        unusableHosts.clear();
+        unusableHosts.add(HOST_A);
+        assertEquals("host C: 0.85 of 3000 GiB, less 2000 allocated; host B has 325", 550, (long)capacity().getMaxDisk());
+
+        unusableHosts.clear();
+        assertEquals("all three: host A's 1100 is the largest", 1100, (long)capacity().getMaxDisk());
+        setting(CapacityManager.StorageAllocatedCapacityDisableThreshold, ConfigKey.Scope.StoragePool, pools.get(HOST_A).getId(), "0.5");
+        assertEquals("host A now has half of 2000 GiB less 600 = 400, so host C's 550 is the largest", 550, (long)capacity().getMaxDisk());
+    }
+
+    @Test
+    public void maxDiskZeroWhenUsedGateCrossed() {
+        CapacityManager allocated = mock(CapacityManager.class);
+        StorageManagerImpl real = realStorageManager(allocated);
+        poolSpace(real, allocated, HOST_A, 1000, 850, 10, "1.0");
+        unusableHosts.addAll(Arrays.asList(HOST_B, HOST_C));
+
+        assertEquals("the used share has reached 0.85, whatever is unallocated", 0, (long)capacity().getMaxDisk());
+
+        poolSpace(real, allocated, HOST_A, 1000, 849, 10, "1.0");
+        assertEquals("0.85 of 1000 GiB less 10", 840, (long)capacity().getMaxDisk());
+    }
+
+    @Test
+    public void thisHostForRunningVmIsItsHost() {
+        volume(201, Volume.Type.ROOT, HOST_B, 10);
+        ReflectionTestUtils.setField(vm, "state", VirtualMachine.State.Running);
+        vm.setHostId(HOST_A);
+        freeCores.put(HOST_A, 6);
+        freeMemory.put(HOST_A, 50 * GIB);
+        freePoolBytes.put(HOST_A + 10, 300 * GIB);
+        freeCores.put(HOST_B, 16);
+
+        PlacementThisHostResponse thisHost = capacityOfVm().getThisHost();
+
+        assertNotNull(thisHost);
+        assertEquals(12, (long)thisHost.getFreeVcpu());
+        assertEquals(50 * 1024, (long)thisHost.getFreeMemory());
+        assertEquals(300, (long)thisHost.getFreeDisk());
+        assertNull("an Instance without a vGPU profile has no slots", thisHost.getGpuSlotsAvailable());
+    }
+
+    @Test
+    public void thisHostForStoppedVmUsesRootPoolHost() {
+        volume(201, Volume.Type.ROOT, HOST_B, 10);
+        volume(202, Volume.Type.DATADISK, HOST_B, 20);
+        freeCores.put(HOST_A, 16);
+        freeCores.put(HOST_B, 6);
+        freeMemory.put(HOST_B, 50 * GIB);
+        freePoolBytes.put(HOST_B + 10, 300 * GIB);
+
+        PlacementCapacityResponse capacity = capacityOfVm();
+
+        assertNull("a stopped Instance has no host", vm.getHostId());
+        assertNotNull(capacity.getThisHost());
+        assertEquals("the host that holds the root volume's local pool", 12, (long)capacity.getThisHost().getFreeVcpu());
+        assertEquals(50 * 1024, (long)capacity.getThisHost().getFreeMemory());
+        assertEquals(300, (long)capacity.getThisHost().getFreeDisk());
+        assertEquals("the maxima are the zone's, not the host's", 32, (long)capacity.getMaxVcpu());
+    }
+
+    @Test
+    public void thisHostIsAbsentWhenNoSingleHostIsTheInstancesOwn() {
+        VolumeVO root = volume(201, Volume.Type.ROOT, HOST_A, 10);
+        StoragePoolVO shared = mock(StoragePoolVO.class);
+        when(shared.getId()).thenReturn(50L);
+        when(shared.getScope()).thenReturn(ScopeType.ZONE);
+        root.setPoolId(50L);
+        when(storagePoolDao.findById(50L)).thenReturn(shared);
+
+        assertNull("a root on shared storage starts on any host", capacityOfVm().getThisHost());
+
+        root.setPoolId(HOST_A + 10);
+        when(storagePoolHostDao.listByPoolId(HOST_A + 10)).thenReturn(Arrays.asList(new StoragePoolHostVO(HOST_A + 10, HOST_A, "/a"),
+                new StoragePoolHostVO(HOST_A + 10, HOST_B, "/a")));
+        assertNull("a pool of two hosts does not say which one", capacityOfVm().getThisHost());
+
+        when(storagePoolHostDao.listByPoolId(HOST_A + 10)).thenReturn(Collections.singletonList(new StoragePoolHostVO(HOST_A + 10, HOST_A, "/a")));
+        assertNotNull(capacityOfVm().getThisHost());
+    }
+
+    @Test
+    public void thisHostWithoutCapacityRowsIsFullNotUnknown() {
+        volume(201, Volume.Type.ROOT, HOST_A, 10);
+        hostsWithoutCapacityRows.add(HOST_A);
+
+        PlacementThisHostResponse thisHost = capacityOfVm().getThisHost();
+
+        assertEquals("a host that reports no capacity admits nothing", 0, (long)thisHost.getFreeVcpu());
+        assertEquals(0, (long)thisHost.getFreeMemory());
+    }
+
+    @Test
+    public void thisHostGpuSlotsCountOnlyThatHost() {
+        when(offering.getVgpuProfileId()).thenReturn(9L);
+        when(offering.getGpuCount()).thenReturn(2);
+        when(gpuService.slotCount(offering, HOST_A)).thenReturn(new GpuService.SlotCount(2, 8));
+        when(gpuService.slotCount(offering, HOST_B)).thenReturn(new GpuService.SlotCount(5, 8));
+        when(gpuService.slotCount(offering, null)).thenReturn(new GpuService.SlotCount(7, 16));
+        volume(201, Volume.Type.ROOT, HOST_A, 10);
+
+        assertEquals("the slots of host A alone, not the 7 of every host", Integer.valueOf(2), capacityOfVm().getThisHost().getGpuSlotsAvailable());
+
+        ReflectionTestUtils.setField(vm, "state", VirtualMachine.State.Running);
+        vm.setHostId(HOST_B);
+        assertEquals(Integer.valueOf(5), capacityOfVm().getThisHost().getGpuSlotsAvailable());
+        verify(gpuService, never()).slotCount(any(), isNull());
+    }
+
+    @Test
+    public void responseHasNoHostIdentifiers() {
+        volume(201, Volume.Type.ROOT, HOST_B, 10);
+        when(offering.getVgpuProfileId()).thenReturn(9L);
+        when(gpuService.slotCount(offering, HOST_B)).thenReturn(new GpuService.SlotCount(1, 4));
+        for (HostVO host : hosts.values()) {
+            String uuid = "uuid-of-" + host.getName();
+            when(host.getUuid()).thenReturn(uuid);
+        }
+
+        PlacementCapacityResponse response = capacityOfVm();
+        Gson gson = new Gson();
+
+        JsonObject json = gson.toJsonTree(response).getAsJsonObject();
+        assertEquals(new HashSet<>(Arrays.asList("maxvcpu", "maxmemory", "maxdisk", "thishost")), json.keySet());
+        assertEquals(new HashSet<>(Arrays.asList("freevcpu", "freememory", "freedisk", "gpuslotsavailable")), json.getAsJsonObject("thishost").keySet());
+        String text = gson.toJson(response);
+        for (HostVO host : hosts.values()) {
+            assertFalse(text, text.contains(host.getName()));
+            assertFalse(text, text.contains(host.getUuid()));
+        }
+        for (StoragePoolVO pool : pools.values()) {
+            assertFalse(text, text.contains(pool.getName()));
+        }
+        for (java.lang.reflect.Field field : PlacementCapacityResponse.class.getDeclaredFields()) {
+            assertTrue(field.getName(), field.isSynthetic() || Number.class.isAssignableFrom(field.getType()) || field.getType() == PlacementThisHostResponse.class);
+        }
+        for (java.lang.reflect.Field field : PlacementThisHostResponse.class.getDeclaredFields()) {
+            assertTrue(field.getName(), field.isSynthetic() || Number.class.isAssignableFrom(field.getType()));
+        }
+    }
+
+    @Test
+    public void capacityIsComputedForTheOwnerOfTheInstance() {
+        Account caller = mock(Account.class);
+        when(caller.getId()).thenReturn(6L);
+        volume(201, Volume.Type.ROOT, HOST_A, 10);
+
+        service.capacityOf(ZONE, VM, null, caller);
+        verify(deploymentPlanningManager).listHostsUsableByAccount(owner, ZONE, null);
+
+        clearInvocations(deploymentPlanningManager);
+        service.capacityOf(ZONE, null, null, caller);
+        verify(deploymentPlanningManager).listHostsUsableByAccount(caller, ZONE, null);
+
+        clearInvocations(deploymentPlanningManager);
+        service.capacityOf(ZONE, VM, OFFERING, caller);
+        verify(accountManager).checkAccess(eq(owner), eq(offering), any(DataCenter.class));
+        verify(deploymentPlanningManager).listHostsUsableByAccount(owner, ZONE, offering);
+    }
+
+    @Test
+    public void capacityNeedsAZoneAndAnInstanceTheCallerMayUse() {
+        Account caller = mock(Account.class);
+        assertThrows(InvalidParameterValueException.class, () -> service.capacityOf(99L, null, null, caller));
+
+        DataCenterVO other = mock(DataCenterVO.class);
+        when(other.getId()).thenReturn(2L);
+        when(dataCenterDao.findById(2L)).thenReturn(other);
+        assertThrows("the Instance is in another zone", InvalidParameterValueException.class, () -> service.capacityOf(2L, VM, null, caller));
+        assertThrows(InvalidParameterValueException.class, () -> service.capacityOf(ZONE, 999L, null, caller));
+
+        doThrow(new PermissionDeniedException("not the caller's Instance")).when(accountManager).checkAccess(caller, null, true, vm);
+        assertThrows(PermissionDeniedException.class, () -> service.capacityOf(ZONE, VM, null, caller));
+        verify(capacityManager, never()).getFreeCapacity(any(Host.class));
+    }
+
+    @Test
+    public void placementCapacityIsAUserApiTheRolesAllow() {
+        APICommand command = ListPlacementCapacityCmd.class.getAnnotation(APICommand.class);
+
+        assertEquals("listPlacementCapacity", command.name());
+        assertTrue(Arrays.asList(command.authorized()).contains(RoleType.User));
+        assertTrue(command.description(), command.description().contains("never bounds an input"));
+        assertTrue(command.description(), command.description().contains("quota"));
+        assertTrue(command.description(), command.description().contains("need not fit one host together"));
+        assertTrue(command.description(), command.description().contains("ignores offering host tags"));
+        assertTrue(service.getCommands().contains(ListPlacementCapacityCmd.class));
+        assertEquals(PlacementCapacityResponse.class, command.responseObject());
+    }
+
+    @Test
+    public void theOfferingsHostTagsSelectTheHosts() {
+        when(offering.getHostTag()).thenReturn("cpu");
+        Set<Long> tagged = new HashSet<>(Arrays.asList(HOST_A, HOST_C));
+        when(deploymentPlanningManager.listHostsUsableByAccount(any(Account.class), eq(ZONE), eq(offering))).thenAnswer(i -> hosts.values().stream()
+                .filter(host -> tagged.contains(host.getId())).collect(Collectors.toList()));
+        freeCores.put(HOST_A, 4);
+        freeCores.put(HOST_B, 16);
+        freeCores.put(HOST_C, 3);
+
+        assertEquals("without an offering every usable host counts", 32, (long)capacity().getMaxVcpu());
+        PlacementCapacityResponse capacity = service.capacityOf(ZONE, null, OFFERING, owner);
+
+        assertEquals("host B has not the offering's host tag", 8, (long)capacity.getMaxVcpu());
+        verify(accountManager).checkAccess(eq(owner), eq(offering), any(DataCenter.class));
+    }
+
+    @Test
+    public void theOfferingMustBeUsableAndHaveNoGpuProfile() {
+        assertThrows("no such offering", InvalidParameterValueException.class, () -> service.capacityOf(ZONE, null, 99L, owner));
+
+        ServiceOfferingVO gone = mock(ServiceOfferingVO.class);
+        when(gone.getRemoved()).thenReturn(new java.util.Date());
+        when(serviceOfferingDao.findById(98L)).thenReturn(gone);
+        assertThrows("a removed offering", InvalidParameterValueException.class, () -> service.capacityOf(ZONE, null, 98L, owner));
+
+        doThrow(new PermissionDeniedException("not offered to the owner")).when(accountManager).checkAccess(eq(owner), eq(offering), any(DataCenter.class));
+        assertThrows(PermissionDeniedException.class, () -> service.capacityOf(ZONE, null, OFFERING, owner));
+        verify(capacityManager, never()).getFreeCapacity(any(Host.class));
+
+        when(offering.getVgpuProfileId()).thenReturn(9L);
+        assertThrows("the maxima are those of Instances without a vGPU profile", InvalidParameterValueException.class,
+                () -> service.capacityOf(ZONE, null, OFFERING, owner));
     }
 }

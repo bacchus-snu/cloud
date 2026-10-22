@@ -181,6 +181,11 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
     }
 
     @Override
+    public boolean canTakeCapacityCountedVm(Host host) {
+        return !hasNoComputeCapacity(host) && !checkIfHostReachMaxGuestLimit(host);
+    }
+
+    @Override
     public HostFreeCapacity getFreeCapacity(Host host) {
         CapacityVO capacityCpu = _capacityDao.findByHostIdType(host.getId(), Capacity.CAPACITY_TYPE_CPU);
         CapacityVO capacityMem = _capacityDao.findByHostIdType(host.getId(), Capacity.CAPACITY_TYPE_MEMORY);

@@ -48,6 +48,7 @@ import org.apache.cloudstack.api.ApiConstants;
 import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
 import org.apache.cloudstack.gpu.GpuService;
 import org.junit.Assert;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.InjectMocks;
@@ -133,6 +134,11 @@ public class FirstFitAllocatorTest {
   private final ServiceOffering offering = mock(ServiceOffering.class);
 
   private final boolean considerReservedCapacity = true;
+
+  @Before
+  public void hostsTakeInstancesCountedAgainstCapacityUnlessAnInstanceSaysOtherwise() {
+    Mockito.lenient().when(capacityMgr.canTakeCapacityCountedVm(Mockito.any(Host.class))).thenReturn(true);
+  }
 
   @Test
   public void testConfigure() throws Exception {
@@ -602,8 +608,8 @@ public class FirstFitAllocatorTest {
     HostVO zeroPoolHost = mock(HostVO.class);
     when(zeroPoolHost.getId()).thenReturn(7L);
     List<Host> inputHosts = Arrays.asList(zeroPoolHost, host1);
-    when(capacityMgr.hasNoComputeCapacity(zeroPoolHost)).thenReturn(true);
-    when(capacityMgr.hasNoComputeCapacity(host1)).thenReturn(false);
+    when(capacityMgr.canTakeCapacityCountedVm(zeroPoolHost)).thenReturn(false);
+    when(capacityMgr.canTakeCapacityCountedVm(host1)).thenReturn(true);
     Mockito.lenient().when(avoid.shouldAvoid(zeroPoolHost)).thenReturn(false);
     Mockito.lenient().when(capacityMgr.checkIfHostHasCpuCapabilityAndCapacity(zeroPoolHost, offering, true)).thenReturn(new Pair<>(true, true));
     Mockito.lenient().when(resourceManagerMock.isGPUDeviceAvailable(offering, zeroPoolHost, virtualMachineProfile.getId())).thenReturn(true);
@@ -850,7 +856,7 @@ public class FirstFitAllocatorTest {
     HostVO zeroPool = host(3L);
     mostConsumedFixture(Map.of(consumed, 1, roomy, 5, zeroPool, 0),
         capacity(3L, 0L, 0L, Capacity.CAPACITY_TYPE_CPU), capacity(3L, 0L, 0L, Capacity.CAPACITY_TYPE_MEMORY));
-    when(capacityMgr.hasNoComputeCapacity(zeroPool)).thenReturn(true);
+    when(capacityMgr.canTakeCapacityCountedVm(zeroPool)).thenReturn(false);
 
     Assert.assertEquals(List.of(consumed, roomy), allocate(cpuOffering(2), HostAllocator.RETURN_UPTO_ALL, zeroPool, roomy, consumed));
     Mockito.verify(avoid).addHost(3L);
@@ -872,5 +878,48 @@ public class FirstFitAllocatorTest {
         Arrays.asList(gpuHost, plainHost), HostAllocator.RETURN_UPTO_ALL, true, account);
 
     Assert.assertEquals("the GPU host is more consumed, yet its pool is used last", List.of(plainHost, gpuHost), result);
+  }
+
+  private void hostsOfTheZone(List<HostVO> all, List<HostVO> notSetAsideForHa) {
+    when(resourceManagerMock.listAllUpAndEnabledHosts(type, null, null, dcId)).thenAnswer(i -> new ArrayList<>(all));
+    Mockito.lenient().when(resourceManagerMock.listAllUpAndEnabledNonHAHosts(type, null, null, dcId)).thenAnswer(i -> new ArrayList<>(notSetAsideForHa));
+  }
+
+  @Test
+  public void untaggedStartingHostsAreTheOnesNotSetAsideForHa() {
+    hostsOfTheZone(Arrays.asList(host1, host2, host3), Arrays.asList(host1, host2));
+
+    Assert.assertEquals(List.of(host1, host2), firstFitAllocatorSpy.listHostsForHostTag(type, dcId, null));
+  }
+
+  @Test
+  public void taggedStartingHostsAreTheOnesWithTheOfferingsTag() {
+    hostsOfTheZone(Arrays.asList(host1, host2, host3), Arrays.asList(host1));
+    when(hostDaoMock.listByHostTag(type, null, null, dcId, "cpu")).thenAnswer(i -> new ArrayList<>(Arrays.asList(host2, host3)));
+
+    Assert.assertEquals("a host without the tag is left out; a tagged host is not subject to the HA rule", List.of(host2, host3),
+        firstFitAllocatorSpy.listHostsForHostTag(type, dcId, "cpu"));
+  }
+
+  @Test
+  public void startingHostsIncludeThoseWhoseTagRulesMatchTheOffering() {
+    hostsOfTheZone(Arrays.asList(host1, host2, host3), Arrays.asList(host1));
+    when(hostDaoMock.listByHostTag(type, null, null, dcId, "cpu")).thenAnswer(i -> new ArrayList<>(Arrays.asList(host2)));
+    when(hostDaoMock.findHostsWithTagRuleThatMatchComputeOfferingTags("cpu")).thenReturn(Arrays.asList(host1));
+
+    Assert.assertEquals(List.of(host2, host1), firstFitAllocatorSpy.listHostsForHostTag(type, dcId, "cpu"));
+  }
+
+  @Test
+  public void allocationStartsFromTheHostsListHostsForHostTagReturns() {
+    hostsOfTheZone(Arrays.asList(host1, host2, host3), Arrays.asList(host1, host2));
+    when(hostDaoMock.listByHostTag(type, null, null, dcId, "cpu")).thenAnswer(i -> new ArrayList<>(Arrays.asList(host2, host3)));
+    when(hostDaoMock.findHostsWithTagRuleThatMatchComputeOfferingTags("cpu")).thenReturn(Arrays.asList(host1));
+    Mockito.doNothing().when(firstFitAllocatorSpy).filterHostsBasedOnGuestOsRules(Mockito.any(), Mockito.anyList());
+
+    for (String tag : new String[] {null, "cpu"}) {
+      Assert.assertEquals(String.valueOf(tag), firstFitAllocatorSpy.retrieveHosts(virtualMachineProfile, type, null, vmTemplateVO, null, null, dcId, tag, null),
+          firstFitAllocatorSpy.listHostsForHostTag(type, dcId, tag));
+    }
   }
 }

@@ -95,6 +95,7 @@ import com.cloud.deploy.dao.PlannerHostReservationDao;
 import com.cloud.exception.AffinityConflictException;
 import com.cloud.exception.ConnectionException;
 import com.cloud.exception.InsufficientServerCapacityException;
+import com.cloud.exception.PermissionDeniedException;
 import com.cloud.exception.StorageUnavailableException;
 import com.cloud.host.DetailVO;
 import com.cloud.host.Host;
@@ -124,8 +125,9 @@ import com.cloud.storage.dao.StoragePoolHostDao;
 import com.cloud.storage.dao.VMTemplateDao;
 import com.cloud.storage.dao.VolumeDao;
 import com.cloud.template.VirtualMachineTemplate;
+import com.cloud.user.Account;
 import com.cloud.user.AccountManager;
-import com.cloud.user.AccountVO;
+import com.cloud.user.User;
 import com.cloud.user.dao.AccountDao;
 import com.cloud.utils.DateUtil;
 import com.cloud.utils.LogUtils;
@@ -144,11 +146,13 @@ import com.cloud.utils.fsm.StateListener;
 import com.cloud.utils.fsm.StateMachine2;
 import com.cloud.vm.DiskProfile;
 import com.cloud.vm.UserVmManager;
+import com.cloud.vm.UserVmVO;
 import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.VirtualMachine.Event;
 import com.cloud.vm.VirtualMachine.State;
 import com.cloud.vm.VirtualMachineProfile;
+import com.cloud.vm.VirtualMachineProfileImpl;
 import com.cloud.vm.dao.UserVmDao;
 import com.cloud.vm.dao.VMInstanceDao;
 
@@ -736,7 +740,8 @@ StateListener<State, VirtualMachine.Event, VirtualMachine>, Configurable {
         }
 
         VMInstanceVO vm = _vmInstanceDao.findById(vmProfile.getId());
-        AccountVO owner = accountDao.findById(vm.getAccountId());
+        // an Instance that is not created yet has no row; its profile names the owner
+        Account owner = vm == null ? vmProfile.getOwner() : accountDao.findById(vm.getAccountId());
         boolean isOwnerRoleIdAdmin = owner != null && owner.getRoleId() != null && owner.getRoleId() == ADMIN_ACCOUNT_ROLE_ID;
 
         if (isOwnerRoleIdAdmin && isAdminVmDeployableInDisabledResources()) {
@@ -899,14 +904,14 @@ StateListener<State, VirtualMachine.Event, VirtualMachine>, Configurable {
                 if (dedicatedZone.getAccountId().equals(accountId)) {
                     return;
                 } else {
-                    throw new CloudRuntimeException("Failed to deploy VM, Zone " + dc + " not available for the user account " + vmProfile.getOwner());
+                    throw new PermissionDeniedException("Failed to deploy VM, Zone " + dc + " not available for the user account " + vmProfile.getOwner());
                 }
             }
 
             // if zone is dedicated to a domain. Check owner's access to the
             // domain level dedication group
             if (!_affinityGroupService.isAffinityGroupAvailableInDomain(dedicatedZone.getAffinityGroupId(), accountDomainId)) {
-                throw new CloudRuntimeException("Failed to deploy VM, Zone " + dc + " not available for the user domain " + vmProfile.getOwner());
+                throw new PermissionDeniedException("Failed to deploy VM, Zone " + dc + " not available for the user domain " + vmProfile.getOwner());
             }
         }
 
@@ -1753,11 +1758,7 @@ StateListener<State, VirtualMachine.Event, VirtualMachine>, Configurable {
     public List<Host> listHostsAdmittingVm(VirtualMachineProfile vmProfile, DataCenterDeployment plan) throws AffinityConflictException {
         VirtualMachine vm = vmProfile.getVirtualMachine();
         DataCenter dc = _dcDao.findById(plan.getDataCenterId());
-        ExcludeList avoids = new ExcludeList();
-        if (vm.getType() == VirtualMachine.Type.User || vm.getType() == VirtualMachine.Type.DomainRouter) {
-            checkForNonDedicatedResources(vmProfile, dc, avoids);
-        }
-        avoidDisabledResources(vmProfile, dc, avoids);
+        ExcludeList avoids = dedicationAndDisabledExclusions(vmProfile, dc);
         avoidDifferentArchResources(vmProfile, dc, avoids);
         if (_affinityGroupVMMapDao.countAffinityGroupsForVm(vm.getId()) > 0) {
             for (AffinityGroupProcessor processor : _affinityProcessors) {
@@ -1775,6 +1776,46 @@ StateListener<State, VirtualMachine.Event, VirtualMachine>, Configurable {
         if (lastHost != null) {
             hosts.removeIf(host -> host.getId() == lastHost.getId());
             hosts.add(0, lastHost);
+        }
+        return hosts;
+    }
+
+    private ExcludeList dedicationAndDisabledExclusions(VirtualMachineProfile vmProfile, DataCenter dc) {
+        ExcludeList avoids = new ExcludeList();
+        VirtualMachine.Type type = vmProfile.getVirtualMachine().getType();
+        if (type == VirtualMachine.Type.User || type == VirtualMachine.Type.DomainRouter) {
+            checkForNonDedicatedResources(vmProfile, dc, avoids);
+        }
+        avoidDisabledResources(vmProfile, dc, avoids);
+        return avoids;
+    }
+
+    @Override
+    public List<Host> listHostsUsableByAccount(Account owner, long zoneId, ServiceOffering offering) {
+        DataCenter dc = _dcDao.findById(zoneId);
+        List<Host> hosts = new ArrayList<>();
+        if (dc == null) {
+            return hosts;
+        }
+        UserVmVO notCreated = new UserVmVO(0, "usable", "usable", 0, HypervisorType.None, 0, false, false, owner.getDomainId(), owner.getId(), User.UID_SYSTEM, 0,
+                null, null, null, "usable");
+        ExcludeList avoids = dedicationAndDisabledExclusions(new VirtualMachineProfileImpl(notCreated, null, null, owner, null), dc);
+        if (avoids.shouldAvoid(dc)) {
+            return hosts;
+        }
+        String hostTag = offering == null ? null : offering.getHostTag();
+        List<? extends Host> startingHosts = null;
+        for (HostAllocator allocator : _hostAllocators) {
+            startingHosts = allocator.listHostsForHostTag(Host.Type.Routing, zoneId, hostTag);
+            if (startingHosts != null) {
+                break;
+            }
+        }
+        Set<Long> listed = new HashSet<>();
+        for (Host host : startingHosts == null ? new ArrayList<Host>() : startingHosts) {
+            if (host.getDataCenterId() == zoneId && !avoids.shouldAvoid(host) && _capacityMgr.canTakeCapacityCountedVm(host) && listed.add(host.getId())) {
+                hosts.add(host);
+            }
         }
         return hosts;
     }

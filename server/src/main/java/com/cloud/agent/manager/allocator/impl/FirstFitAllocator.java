@@ -145,6 +145,19 @@ public class FirstFitAllocator extends BaseAllocator {
     protected List<HostVO> retrieveHosts(VirtualMachineProfile vmProfile, Type type, List<HostVO> hostsToFilter, VMTemplateVO template,
                                          Long clusterId, Long podId, long dcId, String hostTagOnOffering, String hostTagOnTemplate) {
         String haVmTag = (String) vmProfile.getParameter(VirtualMachineProfile.Param.HaTag);
+        List<HostVO> clusterHosts = hostsMatchingTags(type, hostsToFilter, clusterId, podId, dcId, haVmTag, hostTagOnOffering, hostTagOnTemplate);
+
+        filterHostsWithUefiEnabled(type, vmProfile, clusterId, podId, dcId, clusterHosts);
+
+        addHostsBasedOnTagRules(hostTagOnOffering, clusterHosts);
+        filterHostsBasedOnGuestOsRules(template, clusterHosts);
+
+        return clusterHosts;
+
+    }
+
+    private List<HostVO> hostsMatchingTags(Type type, List<HostVO> hostsToFilter, Long clusterId, Long podId, long dcId, String haVmTag,
+                                           String hostTagOnOffering, String hostTagOnTemplate) {
         List<HostVO> clusterHosts;
 
         if (CollectionUtils.isNotEmpty(hostsToFilter)) {
@@ -160,14 +173,14 @@ public class FirstFitAllocator extends BaseAllocator {
         } else {
             retainHostsMatchingServiceOfferingAndTemplateTags(clusterHosts, type, dcId, podId, clusterId, hostTagOnOffering, hostTagOnTemplate);
         }
-
-        filterHostsWithUefiEnabled(type, vmProfile, clusterId, podId, dcId, clusterHosts);
-
-        addHostsBasedOnTagRules(hostTagOnOffering, clusterHosts);
-        filterHostsBasedOnGuestOsRules(template, clusterHosts);
-
         return clusterHosts;
+    }
 
+    @Override
+    public List<HostVO> listHostsForHostTag(Type type, long dcId, String offeringHostTag) {
+        List<HostVO> hosts = hostsMatchingTags(type, null, null, null, dcId, null, offeringHostTag, null);
+        addHostsBasedOnTagRules(offeringHostTag, hosts);
+        return hosts;
     }
 
     /**
@@ -210,7 +223,7 @@ public class FirstFitAllocator extends BaseAllocator {
         if (CapacityManager.isHostCapacityExempt(offering)) {
             hosts = reorderHostsForGpuGroups(offering, hosts);
         } else {
-            hosts = removeHostsWithNoComputeCapacity(hosts, avoid);
+            hosts = removeHostsThatTakeNoCapacityCountedVm(hosts, avoid);
             String vmAllocationAlgorithm = getVmAllocationAlgorithm();
             if (random.toString().equals(vmAllocationAlgorithm)) {
                 Collections.shuffle(hosts);
@@ -280,11 +293,11 @@ public class FirstFitAllocator extends BaseAllocator {
         return ordered;
     }
 
-    protected List<Host> removeHostsWithNoComputeCapacity(List<? extends Host> hosts, ExcludeList avoid) {
+    protected List<Host> removeHostsThatTakeNoCapacityCountedVm(List<? extends Host> hosts, ExcludeList avoid) {
         List<Host> hostsWithCapacity = new ArrayList<>();
         for (Host host : hosts) {
-            if (capacityManager.hasNoComputeCapacity(host)) {
-                logger.debug("Adding host [{}] to the avoid set because it reports no CPU or memory capacity.", host);
+            if (!capacityManager.canTakeCapacityCountedVm(host)) {
+                logger.debug("Adding host [{}] to the avoid set because it reports no CPU or memory capacity, or has reached its guest limit.", host);
                 avoid.addHost(host.getId());
             } else {
                 hostsWithCapacity.add(host);

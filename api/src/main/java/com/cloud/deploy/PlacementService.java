@@ -18,6 +18,8 @@ package com.cloud.deploy;
 
 import org.apache.cloudstack.api.command.admin.host.UpdateHostMoveRateCmd;
 import org.apache.cloudstack.api.command.user.vm.CheckPlacementCmd;
+import org.apache.cloudstack.api.command.user.vm.ListPlacementCapacityCmd;
+import org.apache.cloudstack.api.response.PlacementCapacityResponse;
 import org.apache.cloudstack.api.response.PlacementResponse;
 import org.apache.cloudstack.framework.config.ConfigKey;
 
@@ -41,6 +43,14 @@ public interface PlacementService {
                     "after the change.", true, ConfigKey.Scope.Global);
 
     PlacementResponse checkPlacement(CheckPlacementCmd cmd);
+
+    /**
+     * The largest Instance without a vGPU profile that one usable host could take, per resource, and for a given
+     * Instance what is free on its host. The hosts are those the host allocators start from for the given offering's
+     * host tags; without an offering the result ignores offering host tags. Display only: it names no host and bounds
+     * no input.
+     */
+    PlacementCapacityResponse listPlacementCapacity(ListPlacementCapacityCmd cmd);
 
     /** Sets, or with 0 removes, the move rate of a host; the estimate of a move uses the slower of its two hosts. */
     void updateHostMoveRate(UpdateHostMoveRateCmd cmd);

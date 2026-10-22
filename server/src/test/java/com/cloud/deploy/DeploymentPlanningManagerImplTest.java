@@ -28,6 +28,7 @@ import com.cloud.dc.ClusterDetailsVO;
 import com.cloud.dc.ClusterVO;
 import com.cloud.dc.DataCenter;
 import com.cloud.dc.DataCenterVO;
+import com.cloud.dc.DedicatedResourceVO;
 import com.cloud.dc.HostPodVO;
 import com.cloud.dc.dao.ClusterDao;
 import com.cloud.dc.dao.DataCenterDao;
@@ -38,6 +39,7 @@ import com.cloud.deploy.DeploymentPlanner.PlannerResourceUsage;
 import com.cloud.deploy.dao.PlannerHostReservationDao;
 import com.cloud.exception.AffinityConflictException;
 import com.cloud.exception.InsufficientServerCapacityException;
+import com.cloud.exception.PermissionDeniedException;
 import com.cloud.gpu.GPU;
 import com.cloud.gpu.dao.HostGpuGroupsDao;
 import com.cloud.gpu.dao.VgpuProfileDao;
@@ -48,6 +50,7 @@ import com.cloud.host.dao.HostDao;
 import com.cloud.host.dao.HostDetailsDao;
 import com.cloud.host.dao.HostTagsDao;
 import com.cloud.hypervisor.Hypervisor.HypervisorType;
+import com.cloud.offering.ServiceOffering;
 import com.cloud.org.Grouping.AllocationState;
 import com.cloud.resource.ResourceManager;
 import com.cloud.service.ServiceOfferingVO;
@@ -75,6 +78,7 @@ import com.cloud.user.dao.AccountDao;
 import com.cloud.utils.Pair;
 import com.cloud.utils.component.ComponentContext;
 import com.cloud.vm.DiskProfile;
+import com.cloud.vm.UserVmVO;
 import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.VirtualMachine.Type;
@@ -107,6 +111,7 @@ import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -1466,6 +1471,196 @@ public class DeploymentPlanningManagerImplTest {
         } finally {
             Mockito.doNothing().when(hostDao).loadDetails(ArgumentMatchers.isNull());
             Mockito.when(resourceManager.isGPUDeviceAvailable(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.anyLong())).thenReturn(false);
+        }
+    }
+
+    private HostVO usableHostCandidate(long id) {
+        HostVO host = Mockito.mock(HostVO.class);
+        Mockito.when(host.getId()).thenReturn(id);
+        Mockito.when(host.getDataCenterId()).thenReturn(dataCenterId);
+        return host;
+    }
+
+    private HostAllocator allocatorThatDoesNotSelectHosts() {
+        HostAllocator allocator = Mockito.mock(HostAllocator.class);
+        Mockito.doReturn(null).when(allocator).listHostsForHostTag(ArgumentMatchers.any(), ArgumentMatchers.anyLong(), ArgumentMatchers.any());
+        return allocator;
+    }
+
+    private HostAllocator allocatorStartingFrom(String hostTag, Host... hosts) {
+        HostAllocator allocator = Mockito.mock(HostAllocator.class);
+        Mockito.doReturn(new ArrayList<>(Arrays.asList(hosts))).when(allocator).listHostsForHostTag(Host.Type.Routing, dataCenterId, hostTag);
+        return allocator;
+    }
+
+    @Test
+    public void listHostsUsableByAccountIsWhereTheAllocatorsStartForAnInstanceWithoutGpu() {
+        Account owner = Mockito.mock(Account.class);
+        Mockito.when(owner.getId()).thenReturn(5L);
+        Mockito.when(owner.getDomainId()).thenReturn(7L);
+        HostVO dedicated = usableHostCandidate(1L);
+        HostVO disabled = usableHostCandidate(2L);
+        HostVO takesNoSuchInstance = usableHostCandidate(3L);
+        HostVO usable = usableHostCandidate(4L);
+        HostVO alsoUsable = usableHostCandidate(5L);
+        HostVO otherZone = usableHostCandidate(6L);
+        Mockito.when(otherZone.getDataCenterId()).thenReturn(dataCenterId + 1);
+        ServiceOffering offering = Mockito.mock(ServiceOffering.class);
+        Mockito.when(offering.getHostTag()).thenReturn("cpu");
+        HostAllocator doesNotSelectThisWay = allocatorThatDoesNotSelectHosts();
+        // the tag rules of the allocator may list a host twice, or one of another zone
+        HostAllocator allocator = allocatorStartingFrom("cpu", dedicated, disabled, takesNoSuchInstance, usable, alsoUsable, usable, otherZone);
+        Mockito.doAnswer(i -> {
+            ((ExcludeList)i.getArgument(2)).addHost(1L);
+            return null;
+        }).when(_dpm).checkForNonDedicatedResources(ArgumentMatchers.any(VirtualMachineProfile.class), Mockito.eq(dc), ArgumentMatchers.any(ExcludeList.class));
+        Mockito.doAnswer(i -> {
+            ((ExcludeList)i.getArgument(2)).addHost(2L);
+            return null;
+        }).when(_dpm).avoidDisabledResources(ArgumentMatchers.any(VirtualMachineProfile.class), Mockito.eq(dc), ArgumentMatchers.any(ExcludeList.class));
+        Mockito.when(capacityMgr.canTakeCapacityCountedVm(ArgumentMatchers.any(Host.class))).thenReturn(true);
+        Mockito.when(capacityMgr.canTakeCapacityCountedVm(takesNoSuchInstance)).thenReturn(false);
+        List<HostAllocator> previous = _dpm.getHostAllocators();
+        _dpm.setHostAllocators(Arrays.asList(doesNotSelectThisWay, allocator));
+        try {
+            List<Host> hosts = _dpm.listHostsUsableByAccount(owner, dataCenterId, offering);
+
+            Assert.assertEquals("the allocator's hosts for the offering's tag, once each, in the zone, not dedicated away or disabled, and able to take an Instance",
+                    Arrays.asList(usable, alsoUsable), hosts);
+            ArgumentCaptor<VirtualMachineProfile> profile = ArgumentCaptor.forClass(VirtualMachineProfile.class);
+            Mockito.verify(_dpm).checkForNonDedicatedResources(profile.capture(), Mockito.eq(dc), ArgumentMatchers.any(ExcludeList.class));
+            Assert.assertSame(owner, profile.getValue().getOwner());
+            Assert.assertEquals(VirtualMachine.Type.User, profile.getValue().getVirtualMachine().getType());
+            Assert.assertEquals(5L, profile.getValue().getVirtualMachine().getAccountId());
+            Assert.assertEquals(7L, profile.getValue().getVirtualMachine().getDomainId());
+            Mockito.verify(_dpm).avoidDisabledResources(Mockito.same(profile.getValue()), Mockito.eq(dc), ArgumentMatchers.any(ExcludeList.class));
+            Mockito.verify(_plannerHostReserveDao, Mockito.never()).persist(ArgumentMatchers.any(PlannerHostReservationVO.class));
+        } finally {
+            _dpm.setHostAllocators(previous);
+        }
+    }
+
+    @Test
+    public void withoutAnOfferingTheUntaggedSelectionIsUsed() {
+        Account owner = Mockito.mock(Account.class);
+        HostVO usable = usableHostCandidate(4L);
+        HostAllocator allocator = allocatorStartingFrom(null, usable);
+        Mockito.doNothing().when(_dpm).checkForNonDedicatedResources(ArgumentMatchers.any(VirtualMachineProfile.class), Mockito.eq(dc), ArgumentMatchers.any(ExcludeList.class));
+        Mockito.doNothing().when(_dpm).avoidDisabledResources(ArgumentMatchers.any(VirtualMachineProfile.class), Mockito.eq(dc), ArgumentMatchers.any(ExcludeList.class));
+        Mockito.when(capacityMgr.canTakeCapacityCountedVm(ArgumentMatchers.any(Host.class))).thenReturn(true);
+        List<HostAllocator> previous = _dpm.getHostAllocators();
+        _dpm.setHostAllocators(Arrays.asList(allocator));
+        try {
+            Assert.assertEquals(Arrays.asList(usable), _dpm.listHostsUsableByAccount(owner, dataCenterId, null));
+
+            _dpm.setHostAllocators(Arrays.asList(allocatorThatDoesNotSelectHosts()));
+            Assert.assertTrue("no allocator tells its starting hosts", _dpm.listHostsUsableByAccount(owner, dataCenterId, null).isEmpty());
+        } finally {
+            _dpm.setHostAllocators(previous);
+        }
+    }
+
+    @Test
+    public void aZoneThatPlanningAvoidsHasNoUsableHosts() {
+        Account owner = Mockito.mock(Account.class);
+        HostVO host = usableHostCandidate(1L);
+        HostAllocator allocator = allocatorStartingFrom(null, host);
+        Mockito.doNothing().when(_dpm).checkForNonDedicatedResources(ArgumentMatchers.any(VirtualMachineProfile.class), Mockito.eq(dc), ArgumentMatchers.any(ExcludeList.class));
+        Mockito.doAnswer(i -> {
+            ((ExcludeList)i.getArgument(2)).addDataCenter(dataCenterId);
+            return null;
+        }).doNothing().when(_dpm).avoidDisabledResources(ArgumentMatchers.any(VirtualMachineProfile.class), Mockito.eq(dc), ArgumentMatchers.any(ExcludeList.class));
+        Mockito.when(capacityMgr.canTakeCapacityCountedVm(ArgumentMatchers.any(Host.class))).thenReturn(true);
+        List<HostAllocator> previous = _dpm.getHostAllocators();
+        _dpm.setHostAllocators(Arrays.asList(allocator));
+        try {
+            Assert.assertTrue("a disabled zone", _dpm.listHostsUsableByAccount(owner, dataCenterId, null).isEmpty());
+            Assert.assertEquals("an enabled zone", Arrays.asList(host), _dpm.listHostsUsableByAccount(owner, dataCenterId, null));
+        } finally {
+            _dpm.setHostAllocators(previous);
+        }
+    }
+
+    @Test
+    public void aZoneDedicatedToAnotherAccountIsRefusedAsAPermissionError() {
+        Account owner = Mockito.mock(Account.class);
+        Mockito.when(owner.getId()).thenReturn(5L);
+        Mockito.when(owner.getAccountId()).thenReturn(5L);
+        Mockito.when(owner.getDomainId()).thenReturn(7L);
+        DedicatedResourceVO dedicatedZone = Mockito.mock(DedicatedResourceVO.class);
+        Mockito.when(dedicatedZone.getAccountId()).thenReturn(99L);
+        Mockito.when(_dedicatedDao.findByZoneId(dataCenterId)).thenReturn(dedicatedZone);
+        UserVmVO notCreated = new UserVmVO(0, "placement", "placement", 30L, HypervisorType.KVM, 1L, false, false, 7L, 5L, 1L, 20L, null, null, null, "placement");
+        VirtualMachineProfile profile = new VirtualMachineProfileImpl(notCreated, Mockito.mock(VMTemplateVO.class),
+                new ServiceOfferingVO("test", 1, 256, 1, 1, 1, false, "vm", false, Type.User, false), owner, null);
+        try {
+            Assert.assertThrows("the capacity of the zone", PermissionDeniedException.class, () -> _dpm.listHostsUsableByAccount(owner, dataCenterId, null));
+            Assert.assertThrows("the verdict of an Instance in the zone", PermissionDeniedException.class,
+                    () -> _dpm.listHostsAdmittingVm(profile, new DataCenterDeployment(dataCenterId)));
+        } finally {
+            Mockito.when(_dedicatedDao.findByZoneId(dataCenterId)).thenReturn(null);
+        }
+    }
+
+    private void avoidDisabledResourcesOfAnInstanceNotCreatedYet(long roleId, int timesAvoided) {
+        Mockito.doReturn(true).when(_dpm).isAdminVmDeployableInDisabledResources();
+        Mockito.doNothing().when(_dpm).avoidDisabledDataCenters(ArgumentMatchers.any(), ArgumentMatchers.any());
+        Mockito.doNothing().when(_dpm).avoidDisabledPods(ArgumentMatchers.any(), ArgumentMatchers.any());
+        Mockito.doNothing().when(_dpm).avoidDisabledClusters(ArgumentMatchers.any(), ArgumentMatchers.any());
+        Mockito.doNothing().when(_dpm).avoidDisabledHosts(ArgumentMatchers.any(), ArgumentMatchers.any());
+        VirtualMachineProfile profile = Mockito.mock(VirtualMachineProfile.class);
+        Mockito.when(profile.getType()).thenReturn(Type.User);
+        Mockito.when(profile.getId()).thenReturn(0L);
+        Account owner = Mockito.mock(Account.class);
+        Mockito.when(owner.getRoleId()).thenReturn(roleId);
+        Mockito.when(profile.getOwner()).thenReturn(owner);
+        Mockito.when(vmInstanceDao.findById(0L)).thenReturn(null);
+        DataCenter zone = Mockito.mock(DataCenter.class);
+        ExcludeList toAvoid = Mockito.mock(ExcludeList.class);
+
+        _dpm.avoidDisabledResources(profile, zone, toAvoid);
+
+        Mockito.verify(_dpm, Mockito.times(timesAvoided)).avoidDisabledDataCenters(zone, toAvoid);
+        Mockito.verify(_dpm, Mockito.times(timesAvoided)).avoidDisabledHosts(zone, toAvoid);
+    }
+
+    @Test
+    public void avoidDisabledResourcesTakesTheOwnerOfAnInstanceNotCreatedYet() {
+        avoidDisabledResourcesOfAnInstanceNotCreatedYet(ADMIN_ACCOUNT_ROLE_ID + 1, 1);
+    }
+
+    @Test
+    public void anAdminsInstanceNotCreatedYetMayUseDisabledResources() {
+        avoidDisabledResourcesOfAnInstanceNotCreatedYet(ADMIN_ACCOUNT_ROLE_ID, 0);
+    }
+
+    @Test
+    public void listHostsAdmittingVmServesAnInstanceNotCreatedYet() throws Exception {
+        Account owner = Mockito.mock(Account.class);
+        Mockito.when(owner.getRoleId()).thenReturn(ADMIN_ACCOUNT_ROLE_ID + 1);
+        UserVmVO notCreated = new UserVmVO(0, "placement", "placement", 30L, HypervisorType.KVM, 1L, false, false, 7L, 5L, 1L, 20L, null, null, null, "placement");
+        VMTemplateVO template = Mockito.mock(VMTemplateVO.class);
+        Mockito.when(template.getArch()).thenReturn(CPU.CPUArch.amd64);
+        ServiceOfferingVO offering = new ServiceOfferingVO("test", 1, 256, 1, 1, 1, false, "vm", false, Type.User, false);
+        VirtualMachineProfile profile = new VirtualMachineProfileImpl(notCreated, template, offering, owner, null);
+        Mockito.when(vmInstanceDao.findById(0L)).thenReturn(null);
+        Mockito.doReturn(false).when(_dpm).isAdminVmDeployableInDisabledResources();
+        Mockito.doNothing().when(_dpm).checkForNonDedicatedResources(Mockito.eq(profile), Mockito.eq(dc), ArgumentMatchers.any(ExcludeList.class));
+        Mockito.doNothing().when(_dpm).avoidDisabledDataCenters(ArgumentMatchers.any(), ArgumentMatchers.any());
+        Mockito.doNothing().when(_dpm).avoidDisabledPods(ArgumentMatchers.any(), ArgumentMatchers.any());
+        Mockito.doNothing().when(_dpm).avoidDisabledClusters(ArgumentMatchers.any(), ArgumentMatchers.any());
+        Mockito.doNothing().when(_dpm).avoidDisabledHosts(ArgumentMatchers.any(), ArgumentMatchers.any());
+        Host first = Mockito.mock(Host.class);
+        DataCenterDeployment plan = new DataCenterDeployment(dataCenterId);
+        HostAllocator allocator = Mockito.mock(HostAllocator.class);
+        Mockito.when(allocator.allocateTo(Mockito.eq(profile), Mockito.eq(plan), Mockito.eq(Host.Type.Routing), ArgumentMatchers.any(ExcludeList.class),
+                Mockito.eq(HostAllocator.RETURN_UPTO_ALL))).thenReturn(new ArrayList<>(Arrays.asList(first)));
+        List<HostAllocator> previous = _dpm.getHostAllocators();
+        _dpm.setHostAllocators(Arrays.asList(allocator));
+        try {
+            Assert.assertEquals(Arrays.asList(first), _dpm.listHostsAdmittingVm(profile, plan));
+        } finally {
+            _dpm.setHostAllocators(previous);
         }
     }
 

@@ -209,6 +209,12 @@ public interface CapacityManager {
     boolean hasNoComputeCapacity(Host host);
 
     /**
+     * @return true when the host can take a VM that is counted against host CPU and memory at all, whatever its size:
+     *         it reports compute capacity (see {@link #hasNoComputeCapacity}) and has not reached its guest limit
+     */
+    boolean canTakeCapacityCountedVm(Host host);
+
+    /**
      * @return true when the host does not run VMs on pool cores, or has at least ceil(vcpus/2) free pool cores
      */
     default boolean checkIfHostHasPoolCores(Host host, int vcpus) {

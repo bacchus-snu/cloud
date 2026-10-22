@@ -69,6 +69,18 @@ public interface HostAllocator extends Adapter {
     public List<Host> allocateTo(VirtualMachineProfile vmProfile, DeploymentPlan plan, Type type, ExcludeList avoid, List<? extends Host> hosts, int returnUpTo,
         boolean considerReservedCapacity);
 
+    /**
+     * The hosts in the zone that the allocator starts from, before the capacity of any host is checked, for an Instance
+     * whose service offering has the given host tag (null for none) and that HA does not restart with a tag of its own:
+     * the hosts with that tag for a tagged offering, otherwise the hosts not set aside for HA. It takes no Template into
+     * account, so the Template's host tag and the guest OS rules are not applied.
+     *
+     * @return null when the allocator does not select hosts this way
+     */
+    default List<? extends Host> listHostsForHostTag(Type type, long dcId, String offeringHostTag) {
+        return null;
+    }
+
     public static int RETURN_UPTO_ALL = -1;
 
 }

@@ -393,6 +393,13 @@ public interface StorageManager extends StorageService {
      */
     boolean storagePoolCrossedDisableThreshold(StoragePool pool);
 
+    /**
+     * @return the most bytes of new disks that storagePoolHasEnoughSpace admits on the pool now, without a template base:
+     *         the pool's capacity with its overprovisioning factor, up to pool.storage.allocated.capacity.disablethreshold,
+     *         less what is allocated; 0 when the used share has reached pool.storage.capacity.disablethreshold
+     */
+    long getAllocatableBytes(StoragePool pool);
+
     boolean storagePoolCompatibleWithVolumePool(StoragePool pool, Volume volume);
 
     boolean isStoragePoolCompliantWithStoragePolicy(List<Pair<Volume, DiskProfile>> volumes, StoragePool pool) throws StorageUnavailableException;

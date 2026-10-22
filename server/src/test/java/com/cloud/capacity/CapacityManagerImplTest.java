@@ -639,6 +639,25 @@ public class CapacityManagerImplTest {
         assertFalse(capacityManager.hasNoComputeCapacity(mockHost(8, 2000L, 16 * GIB)));
     }
 
+    @Test
+    public void hostTakesCapacityCountedVmsOnlyWithComputeCapacityBelowItsGuestLimit() {
+        HostVO host = mockKvmHost(8, 2000L, 64 * GIB);
+        useRealPoolCoreManager(4, 0);
+        doReturn(false).when(capacityManager).checkIfHostReachMaxGuestLimit(host);
+        assertTrue(capacityManager.canTakeCapacityCountedVm(host));
+
+        doReturn(true).when(capacityManager).checkIfHostReachMaxGuestLimit(host);
+        assertFalse("a host at its guest limit takes no VM", capacityManager.canTakeCapacityCountedVm(host));
+
+        lenient().doReturn(false).when(capacityManager).checkIfHostReachMaxGuestLimit(host);
+        useRealPoolCoreManager(0, 0);
+        assertFalse("a KVM host without registered pool cores", capacityManager.canTakeCapacityCountedVm(host));
+
+        lenient().doReturn(false).when(capacityManager).checkIfHostReachMaxGuestLimit(any(Host.class));
+        assertFalse("a host without CPUs", capacityManager.canTakeCapacityCountedVm(mockHost(0, 2000L, GIB)));
+        assertTrue(capacityManager.canTakeCapacityCountedVm(mockHost(8, 2000L, 16 * GIB)));
+    }
+
     private HostVO mockKvmHost(int cpus, long speed, long memory) {
         HostVO h = mockHost(cpus, speed, memory);
         lenient().when(h.getHypervisorType()).thenReturn(HypervisorType.KVM);

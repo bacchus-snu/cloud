@@ -1394,6 +1394,12 @@ public class ApiConstants {
     public static final String REASON = "reason";
     public static final String DATA_DISK_SIZES = "datadisksizes";
     public static final String MBPS = "mbps";
+    public static final String MAX_VCPU = "maxvcpu";
+    public static final String MAX_DISK = "maxdisk";
+    public static final String THIS_HOST = "thishost";
+    public static final String FREE_VCPU = "freevcpu";
+    public static final String FREE_MEMORY = "freememory";
+    public static final String FREE_DISK = "freedisk";
 
     // Object Storage related
     public static final String BUCKET_AVAILABLE = "bucketavailable";

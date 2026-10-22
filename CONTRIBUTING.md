@@ -55,4 +55,13 @@ us, not to the Apache CloudStack mailing lists or issue tracker.
 ## Commits and releases
 
 Maintainers review pull requests and make the commits on `main`; commits on
-`main` are GPG-signed. Releases are tags `snucse-<pom>-<N>`.
+`main` are GPG-signed. Releases are tags `snucse-<pom>-<N>`:
+
+1. Add a top entry `<pom>+snucse.<N>` to `debian/changelog` (`N` restarts at 1
+   with each code version) and commit it.
+2. Tag that commit `snucse-<pom>-<N>` and push the tag. The release workflow
+   refuses a tag that disagrees with `pom.xml` or `debian/changelog`.
+3. Publish the agent packages ([snucse/packaging/publish.md](snucse/packaging/publish.md)).
+
+A tag `snucse-test-<k>` runs the same workflow as a prerelease, with the image
+tag `test-<k>`; delete its tag, release and image version afterwards.

@@ -107,3 +107,6 @@ waf-*
 
 # mdBook output of the user manual
 snucse/docs/*/book/
+
+# packages placed in an image build context
+snucse/images/*/debs/

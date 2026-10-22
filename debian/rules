@@ -4,6 +4,8 @@ VERSION := $(shell grep '<version>' pom.xml | head -2 | tail -1 | cut -d'>' -f2 
 PACKAGE = $(shell dh_listpackages|head -n 1|cut -d '-' -f 1)
 SYSCONFDIR = "/etc"
 DESTDIR = "debian/tmp"
+CMK_VERSION = 6.6.0
+CMK_SHA256 = 9f4f92ebc3b1e6139d81a2b3f9e7f7c663d1806234ae0ab27cf77753c553d76b
 
 %:
 	dh $@ --with systemd
@@ -89,7 +91,8 @@ override_dh_auto_install:
 	rm -rf $(DESTDIR)/usr/share/$(PACKAGE)-management/templates/systemvm/sha512sum.txt
 
 	# Bundle cmk in cloudstack-management
-	wget https://github.com/apache/cloudstack-cloudmonkey/releases/latest/download/cmk.linux.x86-64 -O $(DESTDIR)/usr/bin/cmk
+	wget https://github.com/apache/cloudstack-cloudmonkey/releases/download/$(CMK_VERSION)/cmk.linux.x86-64 -O $(DESTDIR)/usr/bin/cmk
+	cd $(DESTDIR)/usr/bin && echo "$(CMK_SHA256)  cmk" | sha256sum -c
 	chmod +x $(DESTDIR)/usr/bin/cmk
 
 	# nast hack for a couple of configuration files

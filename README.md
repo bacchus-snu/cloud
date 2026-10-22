@@ -37,6 +37,7 @@ api/ server/ engine/ plugins/ ui/ debian/ ...
                       to CloudStack are made in place
 snucse/docs/<lang>/   user manual (mdBook), published at docs.cloud.snucse.org
 snucse/images/<name>/ container images, ghcr.io/bacchus-snu/cloud/<name>
+snucse/packaging/     Debian package build and the publishing procedure
 .github/workflows/    CI for this repository
 ```
 
@@ -72,6 +73,32 @@ touches, for example:
 ```console
 $ mvn -pl engine/schema -am test -Dtest=DatabaseUpgradeCheckerTest -Dsurefire.failIfNoSpecifiedTests=false
 ```
+
+The Debian packages are built in a container (Ubuntu 24.04, OpenJDK 17), with
+only the KVM system VM template bundled; it needs Docker and network access.
+The build writes into the tree, so run it on a fresh checkout:
+
+```console
+$ snucse/packaging/build-debs.sh ../debs
+```
+
+The management image installs the `cloudstack-common` and
+`cloudstack-management` packages placed in its build context:
+
+```console
+$ mkdir snucse/images/management/debs
+$ cp ../debs/cloudstack-{common,management}_4.23.0.100+snucse.1_all.deb snucse/images/management/debs/
+$ docker build --build-arg DEB_VERSION=4.23.0.100+snucse.1 -t management snucse/images/management
+```
+
+## Releases
+
+Pushing a tag `snucse-<pom>-<N>` runs `.github/workflows/release.yaml`: the
+tests, then the Debian packages as assets of a GitHub release and the image
+`ghcr.io/bacchus-snu/cloud/management:<pom>-snucse.<N>`. The tag must agree
+with `pom.xml` and the top entry of `debian/changelog`. The agent packages are
+then published to repo.snucse.org by hand, as
+[snucse/packaging/publish.md](snucse/packaging/publish.md) describes.
 
 ## Documentation
 

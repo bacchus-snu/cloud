@@ -1,0 +1,40 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - snucse/docs/**
+  pull_request:
+    paths-ignore:
+      - snucse/docs/**
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: test-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      # the CloudStack modules this repository changes
+      MODULES: utils,engine/schema,engine/orchestration,server,plugins/hypervisors/kvm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-env
+
+      - name: License headers
+        run: mvn -B -P developer,systemvm -Dsimulator -Dnoredist -pl . org.apache.rat:apache-rat-plugin:0.12:check
+
+      - name: Build the modules and their dependencies
+        run: mvn -B -pl "$MODULES" -am install -DskipTests
+
+      - name: Test
+        run: mvn -B -pl "$MODULES" test

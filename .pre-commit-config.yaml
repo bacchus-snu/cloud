@@ -121,7 +121,7 @@ repos:
           - --license-filepath
           - .github/workflows/license-templates/LICENSE.txt
           - --fuzzy-match-generates-todo
-        exclude: ^\.github/workflows/.*\.lock\.yml$|^\.github/workflows/(build|docs)\.yaml$|^snucse/
+        exclude: ^\.github/workflows/.*\.lock\.yml$|^\.github/workflows/[^/]*\.yaml$|^snucse/
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:

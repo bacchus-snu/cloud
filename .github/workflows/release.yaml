@@ -1,0 +1,119 @@
+name: Release
+
+# A tag snucse-<pom>-<N> releases the tagged tree: its Debian packages become
+# the assets of a GitHub release, and the management image built from them is
+# pushed as <pom>-snucse.<N>. The tag must match pom.xml and the top entry of
+# debian/changelog (<pom>+snucse.<N>). A tag snucse-test-<k> runs the same
+# build as a prerelease with the image tag test-<k>.
+
+on:
+  push:
+    tags:
+      - snucse-*
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yaml
+
+  release:
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    env:
+      TAG: ${{ github.ref_name }}
+      IMAGE: ghcr.io/${{ github.repository }}/management
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Versions
+        run: |
+          pom=$(grep '<version>' pom.xml | head -2 | tail -1 | cut -d'>' -f2 | cut -d'<' -f1)
+          deb=$(sed -n '1s/^cloudstack (\([^)]*\)).*/\1/p' debian/changelog)
+          if [[ $TAG =~ ^snucse-test-([0-9A-Za-z._-]+)$ ]]; then
+            image_tag=test-${BASH_REMATCH[1]}
+            prerelease=true
+            want="${pom}+snucse."
+            [[ $deb == "$want"* ]] || { echo "::error::debian/changelog has $deb, not ${want}<N>"; exit 1; }
+          elif [[ $TAG =~ ^snucse-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)-([1-9][0-9]*)$ ]]; then
+            [[ ${BASH_REMATCH[1]} == "$pom" ]] || { echo "::error::tag version ${BASH_REMATCH[1]} != pom.xml $pom"; exit 1; }
+            image_tag=${pom}-snucse.${BASH_REMATCH[2]}
+            prerelease=false
+            want="${pom}+snucse.${BASH_REMATCH[2]}"
+            [[ $deb == "$want" ]] || { echo "::error::debian/changelog has $deb, not $want"; exit 1; }
+          else
+            echo "::error::$TAG is neither snucse-<pom>-<N> nor snucse-test-<k>"
+            exit 1
+          fi
+          {
+            echo "DEBS=$RUNNER_TEMP/debs"
+            echo "DEB_VERSION=$deb"
+            echo "IMAGE_TAG=$image_tag"
+            echo "PRERELEASE=$prerelease"
+          } >> "$GITHUB_ENV"
+
+      # a release that exists is complete; building again would overwrite its image
+      - name: No release for this tag yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if out=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName 2>&1); then
+            echo "::error::release $TAG already exists"
+            exit 1
+          elif [[ $out != "release not found" ]]; then
+            echo "::error::cannot look up release $TAG: $out"
+            exit 1
+          fi
+
+      - name: Disk before the build
+        run: df -h
+
+      - name: Debian packages
+        run: snucse/packaging/build-debs.sh "$DEBS"
+
+      - name: Disk after the build
+        run: df -h
+
+      # untracked build outputs only; the packages are outside the checkout
+      - name: Drop the build outputs
+        run: git clean -ffdxq
+
+      - name: Management image
+        run: |
+          ctx=snucse/images/management
+          mkdir -p "$ctx/debs"
+          cp "$DEBS/cloudstack-common_${DEB_VERSION}_all.deb" "$DEBS/cloudstack-management_${DEB_VERSION}_all.deb" "$ctx/debs/"
+          docker build --build-arg DEB_VERSION="$DEB_VERSION" \
+            --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --label org.opencontainers.image.version="$IMAGE_TAG" \
+            -t "$IMAGE:$IMAGE_TAG" "$ctx"
+          rm -r "$ctx/debs"
+          installed=$(docker run --rm --entrypoint dpkg-query "$IMAGE:$IMAGE_TAG" -W -f '${Version}' cloudstack-management)
+          [[ $installed == "$DEB_VERSION" ]] || { echo "::error::image has cloudstack-management $installed"; exit 1; }
+          df -h
+
+      - name: Push the image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE:$IMAGE_TAG"
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd "$DEBS" && sha256sum -- *.deb > SHA256SUMS)
+          flags=()
+          [[ $PRERELEASE == true ]] && flags+=(--prerelease)
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag "${flags[@]}" \
+            --title "$TAG" \
+            --notes "Debian packages $DEB_VERSION; image $IMAGE:$IMAGE_TAG." \
+            "$DEBS"/*.deb "$DEBS/SHA256SUMS"

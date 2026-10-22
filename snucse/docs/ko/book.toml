@@ -1,0 +1,13 @@
+[book]
+authors = ["Bacchus"]
+language = "ko"
+src = "src"
+title = "SNUCSE Cloud 사용 안내"
+
+[build]
+build-dir = "book"
+
+[output.html]
+site-url = "/"
+git-repository-url = "https://github.com/bacchus-snu/cloudstack"
+edit-url-template = "https://github.com/bacchus-snu/cloudstack/edit/main/docs/ko/{path}"

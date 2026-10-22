@@ -22,6 +22,7 @@ import static com.cloud.storage.resource.StorageProcessor.REQUEST_TEMPLATE_RELOA
 import static com.cloud.utils.NumbersUtil.toHumanReadableSize;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
@@ -2443,7 +2444,8 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
     public boolean start() {
         if (configDepot.isNewConfig(VolumeAllocationAlgorithm)) {
             String vmAllocationAlgo = DeploymentClusterPlanner.VmAllocationAlgorithm.value();
-            if (com.cloud.utils.StringUtils.isNotEmpty(vmAllocationAlgo) && !VolumeAllocationAlgorithm.defaultValue().equalsIgnoreCase(vmAllocationAlgo)) {
+            if (com.cloud.utils.StringUtils.isNotEmpty(vmAllocationAlgo) && !VolumeAllocationAlgorithm.defaultValue().equalsIgnoreCase(vmAllocationAlgo)
+                    && Arrays.asList(VolumeAllocationAlgorithm.options().split(",")).contains(vmAllocationAlgo)) {
                 logger.debug("Updating value for configuration: {} to {}", VolumeAllocationAlgorithm.key(), vmAllocationAlgo);
                 configurationDao.update(VolumeAllocationAlgorithm.key(), vmAllocationAlgo);
             }

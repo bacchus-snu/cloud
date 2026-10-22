@@ -31,6 +31,7 @@ import javax.naming.ConfigurationException;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreDriver;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreProvider;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreProviderManager;
+import org.apache.cloudstack.gpu.GpuService;
 import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStoreDriver;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.Configurable;
@@ -51,6 +52,7 @@ import com.cloud.agent.api.Answer;
 import com.cloud.agent.api.Command;
 import com.cloud.agent.api.StartupCommand;
 import com.cloud.capacity.dao.CapacityDao;
+import com.cloud.gpu.dao.GpuDeviceDao;
 import com.cloud.configuration.Config;
 import com.cloud.dc.ClusterDetailsDao;
 import com.cloud.dc.ClusterDetailsVO;
@@ -138,6 +140,8 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
     ClusterDetailsDao _clusterDetailsDao;
     @Inject
     HostPoolCoreManager hostPoolCoreManager;
+    @Inject
+    GpuService gpuService;
     private int _vmCapacityReleaseInterval;
     long _extraBytesPerVolume = 0;
 
@@ -1045,6 +1049,15 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
           hostPoolCoreManager.releasePoolCores(vm.getId());
         } catch (Exception e) {
           logger.warn("Failed to release the pool cores of {}", vm, e);
+        }
+      }
+
+      if (GpuDeviceDao.STATES_WITHOUT_GPUS.contains(newState) && GpuService.GpuDetachOnStop.valueIn(vm.getDomainId())) {
+        // A release missed here is recovered by the host's GPU device sync.
+        try {
+          gpuService.releaseGpuDevicesOfStoppedVm(vm.getId());
+        } catch (Exception e) {
+          logger.warn("Failed to release the GPU devices of {}", vm, e);
         }
       }
 

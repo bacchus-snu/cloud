@@ -633,6 +633,10 @@ StateListener<State, VirtualMachine.Event, VirtualMachine>, Configurable {
             logger.debug("Cannot deploy VM [{}] to host [{}] because this host is in the avoid set.", vm, host);
             return null;
         }
+        if (!_resourceMgr.isGPUDeviceAvailable(vmProfile.getServiceOffering(), host, vm.getId())) {
+            logger.debug("Cannot deploy VM [{}] to host [{}] because this host does not have the GPU devices it requires available.", vm, host);
+            return null;
+        }
 
         Pod pod = _podDao.findById(host.getPodId());
         Cluster cluster = _clusterDao.findById(host.getClusterId());

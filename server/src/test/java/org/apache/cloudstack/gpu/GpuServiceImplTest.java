@@ -18,24 +18,39 @@ package org.apache.cloudstack.gpu;
 
 import com.cloud.agent.api.VgpuTypesInfo;
 import com.cloud.agent.api.to.GPUDeviceTO;
+import com.cloud.event.ActionEvent;
+import com.cloud.event.EventTypes;
+import com.cloud.exception.InsufficientServerCapacityException;
 import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.gpu.GpuCardVO;
 import com.cloud.gpu.GpuDeviceVO;
+import com.cloud.gpu.HostGpuGroupMemberVO;
+import com.cloud.gpu.HostGpuGroupRuleVO;
 import com.cloud.gpu.VgpuProfileVO;
 import com.cloud.gpu.dao.GpuCardDao;
 import com.cloud.gpu.dao.GpuDeviceDao;
+import com.cloud.gpu.dao.HostGpuGroupMemberDao;
+import com.cloud.gpu.dao.HostGpuGroupRuleDao;
 import com.cloud.gpu.dao.VgpuProfileDao;
+import com.cloud.host.Host;
 import com.cloud.host.HostVO;
 import com.cloud.host.Status;
 import com.cloud.host.dao.HostDao;
+import com.cloud.hypervisor.Hypervisor;
+import com.cloud.offering.ServiceOffering;
 import com.cloud.resource.ResourceManager;
+import com.cloud.resource.ResourceState;
 import com.cloud.service.ServiceOfferingVO;
 import com.cloud.service.dao.ServiceOfferingDao;
+import com.cloud.service.dao.ServiceOfferingDetailsDao;
+import com.cloud.storage.DiskOfferingVO;
+import com.cloud.storage.StorageManager;
+import com.cloud.storage.dao.DiskOfferingDao;
 import com.cloud.utils.Pair;
 import com.cloud.utils.db.GlobalLock;
 import com.cloud.utils.db.Transaction;
-import com.cloud.utils.db.TransactionCallback;
 import com.cloud.utils.db.TransactionCallbackNoReturn;
+import com.cloud.utils.db.TransactionCallbackWithException;
 import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.vm.UserVmManager;
 import com.cloud.vm.VMInstanceVO;
@@ -46,46 +61,76 @@ import org.apache.cloudstack.api.command.admin.gpu.CreateGpuCardCmd;
 import org.apache.cloudstack.api.command.admin.gpu.CreateGpuDeviceCmd;
 import org.apache.cloudstack.api.command.admin.gpu.CreateVgpuProfileCmd;
 import org.apache.cloudstack.api.command.admin.gpu.DeleteGpuCardCmd;
+import org.apache.cloudstack.api.command.admin.gpu.DeleteGpuDeviceCmd;
 import org.apache.cloudstack.api.command.admin.gpu.DeleteVgpuProfileCmd;
 import org.apache.cloudstack.api.command.admin.gpu.ListGpuDevicesCmdByAdmin;
 import org.apache.cloudstack.api.command.admin.gpu.UnmanageGpuDeviceCmd;
 import org.apache.cloudstack.api.command.admin.gpu.DiscoverGpuDevicesCmd;
+import org.apache.cloudstack.api.command.admin.gpu.ListHostGpuGroupsCmd;
 import org.apache.cloudstack.api.command.admin.gpu.ManageGpuDeviceCmd;
 import org.apache.cloudstack.api.command.admin.gpu.UpdateGpuCardCmd;
 import org.apache.cloudstack.api.command.admin.gpu.UpdateGpuDeviceCmd;
+import org.apache.cloudstack.api.command.admin.gpu.UpdateHostGpuGroupsCmd;
 import org.apache.cloudstack.api.command.admin.gpu.UpdateVgpuProfileCmd;
 import org.apache.cloudstack.api.command.user.gpu.ListGpuCardsCmd;
 import org.apache.cloudstack.api.command.user.gpu.ListVgpuProfilesCmd;
 import org.apache.cloudstack.api.response.GpuCardResponse;
 import org.apache.cloudstack.api.response.GpuDeviceResponse;
+import org.apache.cloudstack.api.response.HostGpuGroupsResponse;
 import org.apache.cloudstack.api.response.ListResponse;
 import org.apache.cloudstack.api.response.VgpuProfileResponse;
+import org.apache.cloudstack.framework.config.ConfigKey;
+import org.apache.cloudstack.framework.config.ValidatedConfigKey;
+import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
+import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnitRunner;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import javax.naming.ConfigurationException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
+import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.stream.Collectors;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -114,10 +159,6 @@ public class GpuServiceImplTest {
     private static final String HOST_NAME = "test-host";
     private static final String VM_NAME = "test-vm";
     private static final String NUMA_NODE_0 = "numa0";
-    private static final String NUMA_NODE_1 = "numa1";
-    private static final String PCI_ROOT_1 = "0000:00";
-    private static final String PCI_ROOT_2 = "0000:40";
-    private static final String PCI_ROOT_3 = "0000:80";
     private static final String TEST_PROFILE_NAME = "test-profile";
     private static final String UPDATED_PROFILE_NAME = "updated-profile";
     private static final String UPDATED_PROFILE_DESCRIPTION = "Updated description";
@@ -655,6 +696,7 @@ public class GpuServiceImplTest {
         when(gpuDeviceDao.update(eq(GPU_DEVICE_ID_LONG), any(GpuDeviceVO.class))).thenReturn(true);
 
         doReturn(null).when(gpuService).getGpuGroupDetailsFromGpuDevicesOnHost(anyLong());
+        runTransactionsInline();
 
         boolean result = gpuService.disableGpuDevice(cmd);
 
@@ -677,6 +719,7 @@ public class GpuServiceImplTest {
         when(gpuDeviceDao.update(eq(GPU_DEVICE_ID_LONG), any(GpuDeviceVO.class))).thenReturn(true);
 
         doReturn(null).when(gpuService).getGpuGroupDetailsFromGpuDevicesOnHost(anyLong());
+        runTransactionsInline();
 
         boolean result = gpuService.enableGpuDevice(cmd);
 
@@ -770,9 +813,10 @@ public class GpuServiceImplTest {
         VgpuProfile vgpuProfile = mock(VgpuProfile.class);
         when(vgpuProfile.getId()).thenReturn(VGPU_PROFILE_ID);
 
-        GpuDeviceVO additionalDevice = mock(GpuDeviceVO.class);
-        List<GpuDeviceVO> availableDevices = List.of(mockGpuDevice, additionalDevice);
-        when(gpuDeviceDao.listDevicesForAllocation(HOST_ID, VGPU_PROFILE_ID)).thenReturn(availableDevices);
+        GpuDeviceVO additionalDevice = gpu(HOST_ID, 2L, GPU_BUS_ADDRESS_2, null, GpuDevice.State.Free);
+        additionalDevice.setVgpuProfileId(VGPU_PROFILE_ID);
+        registerRule(HOST_ID, GpuService.GroupRule.any);
+        when(gpuDeviceDao.listByHostId(HOST_ID)).thenReturn(List.of(mockGpuDevice, additionalDevice));
 
         boolean result = gpuService.isGPUDeviceAvailable(mockHost, VM_ID, vgpuProfile, 2);
 
@@ -784,11 +828,8 @@ public class GpuServiceImplTest {
         VgpuProfile vgpuProfile = mock(VgpuProfile.class);
         when(vgpuProfile.getId()).thenReturn(VGPU_PROFILE_ID);
 
-        List<GpuDeviceVO> availableDevices = List.of(mockGpuDevice);
-        List<GpuDeviceVO> existingDevices = new ArrayList<>();
-
-        when(gpuDeviceDao.listDevicesForAllocation(HOST_ID, VGPU_PROFILE_ID)).thenReturn(availableDevices);
-        when(gpuDeviceDao.listByHostAndVm(HOST_ID, VM_ID)).thenReturn(existingDevices);
+        registerRule(HOST_ID, GpuService.GroupRule.any);
+        when(gpuDeviceDao.listByHostId(HOST_ID)).thenReturn(List.of(mockGpuDevice));
 
         boolean result = gpuService.isGPUDeviceAvailable(mockHost, VM_ID, vgpuProfile, 3);
 
@@ -830,6 +871,7 @@ public class GpuServiceImplTest {
             when(GlobalLock.getInternLock("add-gpu-devices-to-host-" + HOST_ID)).thenReturn(lock);
             when(lock.lock(30)).thenReturn(true);
 
+            runTransactionsInline();
             gpuService.addGpuDevicesToHost(mockHost, newDevices);
 
             verify(gpuCardDao).persist(any(GpuCardVO.class));
@@ -859,6 +901,7 @@ public class GpuServiceImplTest {
             when(GlobalLock.getInternLock("add-gpu-devices-to-host-" + HOST_ID)).thenReturn(lock);
             when(lock.lock(30)).thenReturn(true);
 
+            runTransactionsInline();
             gpuService.addGpuDevicesToHost(mockHost, newDevices);
             verify(gpuDeviceDao).update(eq(GPU_DEVICE_ID_LONG), any(GpuDeviceVO.class));
         }
@@ -888,6 +931,7 @@ public class GpuServiceImplTest {
             when(GlobalLock.getInternLock("add-gpu-devices-to-host-" + HOST_ID)).thenReturn(lock);
             when(lock.lock(30)).thenReturn(true);
 
+            runTransactionsInline();
             gpuService.addGpuDevicesToHost(mockHost, newDevices);
 
             verify(vmInstanceDao).findVMByInstanceName(VM_NAME);
@@ -899,7 +943,6 @@ public class GpuServiceImplTest {
     public void testGetGPUDevice_Success() {
         VirtualMachine vm = mock(VirtualMachine.class);
         when(vm.getId()).thenReturn(VM_ID);
-        when(vm.getHostId()).thenReturn(HOST_ID);
         when(vm.getServiceOfferingId()).thenReturn(SERVICE_OFFERING_ID);
 
         VgpuProfile vgpuProfile = mock(VgpuProfile.class);
@@ -907,46 +950,35 @@ public class GpuServiceImplTest {
         when(vgpuProfile.getCardId()).thenReturn(GPU_CARD_ID);
         when(vgpuProfile.getName()).thenReturn(TEST_PROFILE_NAME);
 
-        List<GpuDeviceVO> availableDevices = List.of(mockGpuDevice);
-        // Setup mocks before transaction execution
-        when(gpuDeviceDao.listDevicesForAllocation(HOST_ID, VGPU_PROFILE_ID)).thenReturn(availableDevices);
+        when(gpuDeviceDao.listByHostAndVm(HOST_ID, VM_ID)).thenReturn(List.of(mockGpuDevice));
         when(gpuCardDao.findById(GPU_CARD_ID)).thenReturn(mockGpuCard);
-        when(gpuDeviceDao.persist(any(GpuDeviceVO.class))).thenReturn(mockGpuDevice);
-        when(gpuDeviceDao.listByHostId(HOST_ID)).thenReturn(availableDevices);
+        when(gpuDeviceDao.listByHostId(HOST_ID)).thenReturn(List.of(mockGpuDevice));
         when(vgpuProfileDao.findById(VGPU_PROFILE_ID)).thenReturn(mockVgpuProfile);
         when(serviceOfferingDao.findById(SERVICE_OFFERING_ID)).thenReturn(mockServiceOffering);
-        try (MockedStatic<Transaction> transactionMock = Mockito.mockStatic(Transaction.class)) {
 
-            transactionMock.when(() -> Transaction.execute(any(TransactionCallback.class))).thenAnswer(invocation -> {
-                TransactionCallback<GPUDeviceTO> callback = invocation.getArgument(0);
-                return callback.doInTransaction(null);
-            });
+        GPUDeviceTO result = gpuService.getGPUDevice(vm, HOST_ID, vgpuProfile, 1);
 
-            GPUDeviceTO result = gpuService.getGPUDevice(vm, HOST_ID, vgpuProfile, 1);
-
-            assertNotNull(result);
-        }
+        assertNotNull(result);
+        assertEquals(List.of(GPU_BUS_ADDRESS), result.getGpuDevices().stream().map(VgpuTypesInfo::getBusAddress).collect(Collectors.toList()));
+        verify(gpuDeviceDao, never()).persist(any(GpuDeviceVO.class));
+        verify(gpuDeviceDao, never()).lockByHostId(anyLong());
     }
 
-    @Test(expected = CloudRuntimeException.class)
-    public void testGetGPUDevice_InsufficientDevices() {
+    @Test
+    public void testGetGPUDevice_DescribesOnlyTheDevicesTheVmHolds() {
         VirtualMachine vm = mock(VirtualMachine.class);
         when(vm.getId()).thenReturn(VM_ID);
-        when(vm.getHostId()).thenReturn(HOST_ID);
-
+        when(vm.getServiceOfferingId()).thenReturn(SERVICE_OFFERING_ID);
         VgpuProfile vgpuProfile = mock(VgpuProfile.class);
-        when(vgpuProfile.getId()).thenReturn(VGPU_PROFILE_ID);
+        when(vgpuProfile.getCardId()).thenReturn(GPU_CARD_ID);
+        when(gpuCardDao.findById(GPU_CARD_ID)).thenReturn(mockGpuCard);
+        when(serviceOfferingDao.findById(SERVICE_OFFERING_ID)).thenReturn(mockServiceOffering);
+        when(gpuDeviceDao.listByHostAndVm(HOST_ID, VM_ID)).thenReturn(new ArrayList<>());
 
-        try (MockedStatic<Transaction> transactionMock = Mockito.mockStatic(Transaction.class)) {
-            when(gpuDeviceDao.listDevicesForAllocation(HOST_ID, VGPU_PROFILE_ID)).thenReturn(new ArrayList<>());
+        GPUDeviceTO result = gpuService.getGPUDevice(vm, HOST_ID, vgpuProfile, 2);
 
-            transactionMock.when(() -> Transaction.execute(any(TransactionCallback.class))).thenAnswer(invocation -> {
-                TransactionCallback<GPUDeviceTO> callback = invocation.getArgument(0);
-                return callback.doInTransaction(null);
-            });
-
-            gpuService.getGPUDevice(vm, HOST_ID, vgpuProfile, 2);
-        }
+        assertTrue("a VM that holds no device on the host is given none", result.getGpuDevices().isEmpty());
+        verify(gpuDeviceDao, never()).persist(any(GpuDeviceVO.class));
     }
 
     @Test
@@ -1075,18 +1107,14 @@ public class GpuServiceImplTest {
         VgpuProfile vgpuProfile = mock(VgpuProfile.class);
         when(vgpuProfile.getId()).thenReturn(VGPU_PROFILE_ID);
 
-        List<GpuDeviceVO> availableDevices = List.of(mockGpuDevice);
+        GpuDeviceVO existingDevice = gpu(HOST_ID, 2L, GPU_BUS_ADDRESS_2, null, GpuDevice.State.Allocated);
+        existingDevice.setVgpuProfileId(VGPU_PROFILE_ID);
+        existingDevice.setVmId(VM_ID);
+        registerRule(HOST_ID, GpuService.GroupRule.any);
+        when(gpuDeviceDao.listByHostId(HOST_ID)).thenReturn(List.of(mockGpuDevice, existingDevice));
 
-        GpuDeviceVO existingDevice = mock(GpuDeviceVO.class);
-        when(existingDevice.getVgpuProfileId()).thenReturn(VGPU_PROFILE_ID);
-        List<GpuDeviceVO> existingDevices = List.of(existingDevice);
-
-        when(gpuDeviceDao.listDevicesForAllocation(HOST_ID, VGPU_PROFILE_ID)).thenReturn(availableDevices);
-        when(gpuDeviceDao.listByHostAndVm(HOST_ID, VM_ID)).thenReturn(existingDevices);
-
-        boolean result = gpuService.isGPUDeviceAvailable(mockHost, VM_ID, vgpuProfile, 2);
-
-        assertTrue(result);
+        assertTrue("the VM's own GPUs count as free for it", gpuService.isGPUDeviceAvailable(mockHost, VM_ID, vgpuProfile, 2));
+        assertFalse(gpuService.isGPUDeviceAvailable(mockHost, VM_ID_100, vgpuProfile, 2));
     }
 
     @Test
@@ -1107,6 +1135,7 @@ public class GpuServiceImplTest {
             when(GlobalLock.getInternLock("add-gpu-devices-to-host-" + HOST_ID)).thenReturn(lock);
             when(lock.lock(30)).thenReturn(true);
 
+            runTransactionsInline();
             gpuService.addGpuDevicesToHost(mockHost, newDevices);
             verify(gpuDeviceDao).update(eq(GPU_DEVICE_ID_2), any(GpuDeviceVO.class));
         }
@@ -1129,124 +1158,6 @@ public class GpuServiceImplTest {
         assertNotNull(result);
         assertEquals(VGPU_PROFILE_UUID, result.getId());
         verify(vgpuProfileDao, never()).findByNameAndCardId(anyString(), anyLong());
-    }
-
-    // Tests for the refactored GPU allocation methods
-    @Test
-    public void testGetGpuDevicesToAllocate_OptimalAllocation() {
-        // Create devices in same NUMA node and PCIe root
-        List<GpuDeviceVO> availableDevices = createMockGpuDevices(4, NUMA_NODE_0, PCI_ROOT_1);
-
-        List<GpuDeviceVO> result = gpuService.getGpuDevicesToAllocate(availableDevices, 2);
-
-        assertNotNull(result);
-        assertEquals(2, result.size());
-        // Should select first 2 devices (sorted by ID)
-        assertEquals(GPU_DEVICE_ID_LONG.longValue(), result.get(0).getId());
-        assertEquals(GPU_DEVICE_ID_2.longValue(), result.get(1).getId());
-    }
-
-    // Helper methods for creating mock GPU devices
-    private List<GpuDeviceVO> createMockGpuDevices(int count, String numaNode, String pciRoot) {
-        return createMockGpuDevices(count, numaNode, pciRoot, GPU_DEVICE_ID_LONG);
-    }
-
-    private List<GpuDeviceVO> createMockGpuDevices(int count, String numaNode, String pciRoot, long startId) {
-        List<GpuDeviceVO> devices = new ArrayList<>();
-        for (int i = 0; i < count; i++) {
-            GpuDeviceVO device = mock(GpuDeviceVO.class);
-            Long deviceId = startId + i;
-            when(device.getId()).thenReturn(deviceId);
-            when(device.getNumaNode()).thenReturn(numaNode);
-            when(device.getPciRoot()).thenReturn(pciRoot);
-            // Ensure mock is properly configured
-            devices.add(device);
-        }
-        return devices;
-    }
-
-    @Test
-    public void testGetGpuDevicesToAllocate_SingleNumaAllocation() {
-        // Create devices in same NUMA node but different PCIe roots
-        List<GpuDeviceVO> availableDevices = new ArrayList<>();
-        availableDevices.addAll(createMockGpuDevices(2, NUMA_NODE_0, PCI_ROOT_1, GPU_DEVICE_ID_LONG));
-        availableDevices.addAll(createMockGpuDevices(2, NUMA_NODE_0, PCI_ROOT_2, 3L));
-
-        List<GpuDeviceVO> result = gpuService.getGpuDevicesToAllocate(availableDevices, 3);
-
-        assertNotNull(result);
-        assertEquals(3, result.size());
-        // Should prefer devices from same PCIe root first
-        assertTrue(result.stream().allMatch(device -> NUMA_NODE_0.equals(device.getNumaNode())));
-    }
-
-    @Test
-    public void testGetGpuDevicesToAllocate_DistributedAllocation() {
-        // Create devices across different NUMA nodes
-        List<GpuDeviceVO> availableDevices = new ArrayList<>();
-        availableDevices.addAll(createMockGpuDevices(2, NUMA_NODE_0, PCI_ROOT_1, GPU_DEVICE_ID_LONG));
-        availableDevices.addAll(createMockGpuDevices(2, NUMA_NODE_1, PCI_ROOT_3, 3L));
-
-        List<GpuDeviceVO> result = gpuService.getGpuDevicesToAllocate(availableDevices, 3);
-
-        assertNotNull(result);
-        assertEquals(3, result.size());
-        // Should distribute across NUMA nodes
-        long numa0Count = result.stream().filter(device -> NUMA_NODE_0.equals(device.getNumaNode())).count();
-        long numa1Count = result.stream().filter(device -> NUMA_NODE_1.equals(device.getNumaNode())).count();
-        assertTrue(numa0Count > 0 && numa1Count > 0);
-    }
-
-    @Test(expected = CloudRuntimeException.class)
-    public void testGetGpuDevicesToAllocate_InsufficientDevices() {
-        List<GpuDeviceVO> availableDevices = createMockGpuDevices(2, NUMA_NODE_0, PCI_ROOT_1);
-
-        gpuService.getGpuDevicesToAllocate(availableDevices, 5);
-    }
-
-    @Test
-    public void testGetGpuDevicesToAllocate_UnknownNumaAndPci() {
-        // Test with devices having null/blank NUMA nodes and PCIe roots
-        List<GpuDeviceVO> availableDevices = createMockGpuDevicesWithNullValues(3);
-
-        List<GpuDeviceVO> result = gpuService.getGpuDevicesToAllocate(availableDevices, 2);
-
-        assertNotNull(result);
-        assertEquals(2, result.size());
-    }
-
-    private List<GpuDeviceVO> createMockGpuDevicesWithNullValues(int count) {
-        List<GpuDeviceVO> devices = new ArrayList<>();
-        for (int i = 0; i < count; i++) {
-            GpuDeviceVO device = mock(GpuDeviceVO.class);
-            when(device.getId()).thenReturn((long) (i + 1));
-            when(device.getNumaNode()).thenReturn(i == 0 ? null : (i == 1 ? "" : NUMA_NODE_0));
-            when(device.getPciRoot()).thenReturn(i == 0 ? null : (i == 1 ? "" : PCI_ROOT_1));
-            devices.add(device);
-        }
-        return devices;
-    }
-
-    @Test
-    public void testGetGpuDevicesToAllocate_SimpleDebug() {
-        // Simple test with minimal setup
-        GpuDeviceVO device1 = mock(GpuDeviceVO.class);
-        when(device1.getId()).thenReturn(GPU_DEVICE_ID_LONG);
-        when(device1.getNumaNode()).thenReturn(NUMA_NODE_0);
-        when(device1.getPciRoot()).thenReturn(PCI_ROOT_1);
-
-        GpuDeviceVO device2 = mock(GpuDeviceVO.class);
-        when(device2.getId()).thenReturn(GPU_DEVICE_ID_2);
-        when(device2.getNumaNode()).thenReturn(NUMA_NODE_0);
-        when(device2.getPciRoot()).thenReturn(PCI_ROOT_1);
-
-        List<GpuDeviceVO> availableDevices = Arrays.asList(device1, device2);
-
-        List<GpuDeviceVO> result = gpuService.getGpuDevicesToAllocate(availableDevices, 1);
-
-        assertNotNull(result);
-        assertEquals(1, result.size());
-        assertEquals(GPU_DEVICE_ID_LONG.longValue(), result.get(0).getId());
     }
 
     // Tests for checkAndUpdateParentGpuDeviceState methods
@@ -1491,5 +1402,1034 @@ public class GpuServiceImplTest {
         verify(gpuDeviceDao).listByParentGpuDeviceId(PARENT_GPU_DEVICE_ID);
         verify(parentDevice).setState(GpuDevice.State.Error);
         verify(gpuDeviceDao).update(eq(PARENT_GPU_DEVICE_ID), eq(parentDevice));
+    }
+
+    private static final long GROUP_HOST_ID = 7L;
+    private static final long OTHER_GROUP_HOST_ID = 8L;
+    private static final long A100_PROFILE_ID = 11L;
+    private static final long A100_CARD_ID = 12L;
+    private static final long OTHER_CARD_ID = 13L;
+    private static final long LOCAL_DISK_OFFERING_ID = 5L;
+
+    @Mock
+    private HostGpuGroupRuleDao hostGpuGroupRuleDao;
+
+    @Mock
+    private HostGpuGroupMemberDao hostGpuGroupMemberDao;
+
+    @Mock
+    private ServiceOfferingDetailsDao serviceOfferingDetailsDao;
+
+    @Mock
+    private DiskOfferingDao diskOfferingDao;
+
+    @Mock
+    private PrimaryDataStoreDao primaryDataStoreDao;
+
+    @Mock
+    private StorageManager storageManager;
+
+    private static String position(int index) {
+        return String.format("0000:%02x:00.0", 0x10 + index);
+    }
+
+    /**
+     * The address the agent reports for a position, as lspci prints devices in PCI domain 0.
+     */
+    private static String agentAddress(int index) {
+        return String.format("%02x:00.0", 0x10 + index);
+    }
+
+    private static List<String> positions(int... indexes) {
+        List<String> buses = new ArrayList<>();
+        for (int index : indexes) {
+            buses.add(position(index));
+        }
+        return buses;
+    }
+
+    private GpuDeviceVO gpu(long hostId, long id, String busAddress, String node, GpuDevice.State state) {
+        GpuDeviceVO device = new GpuDeviceVO(A100_CARD_ID, A100_PROFILE_ID, busAddress, hostId, null, node, null);
+        ReflectionTestUtils.setField(device, "id", id);
+        device.setState(state);
+        return device;
+    }
+
+    /**
+     * GPUs at positions 0..n-1 of a host, positions 0-3 on NUMA node 0 and 4-7 on node 1; the given positions are
+     * allocated.
+     */
+    private List<GpuDeviceVO> hostGpus(long hostId, int n, Integer... allocated) {
+        List<Integer> taken = Arrays.asList(allocated);
+        List<GpuDeviceVO> devices = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            GpuDeviceVO device = gpu(hostId, hostId * 100 + i, agentAddress(i), i < 4 ? "0" : "1",
+                    taken.contains(i) ? GpuDevice.State.Allocated : GpuDevice.State.Free);
+            if (taken.contains(i)) {
+                device.setVmId(VM_ID_100);
+            }
+            devices.add(device);
+        }
+        Mockito.lenient().when(gpuDeviceDao.listByHostId(hostId)).thenReturn(devices);
+        return devices;
+    }
+
+    private void registerRule(long hostId, GpuService.GroupRule rule) {
+        Mockito.lenient().when(hostGpuGroupRuleDao.findByHostId(hostId)).thenReturn(new HostGpuGroupRuleVO(hostId, rule.name()));
+    }
+
+    private void registerPartitions(long hostId, List<List<String>> groups) {
+        registerRule(hostId, GpuService.GroupRule.partitions);
+        List<HostGpuGroupMemberVO> members = new ArrayList<>();
+        for (int i = 0; i < groups.size(); i++) {
+            for (String bus : groups.get(i)) {
+                members.add(new HostGpuGroupMemberVO(hostId, i, bus));
+            }
+        }
+        Mockito.lenient().when(hostGpuGroupMemberDao.listByHostId(hostId)).thenReturn(members);
+    }
+
+    /**
+     * The Fabric Manager partitions of an 8-GPU NVSwitch host: all eight, two halves, four pairs and eight singles.
+     */
+    private static List<List<String>> fabricManagerPartitions() {
+        List<List<String>> groups = new ArrayList<>();
+        groups.add(positions(0, 1, 2, 3, 4, 5, 6, 7));
+        groups.add(positions(0, 1, 2, 3));
+        groups.add(positions(4, 5, 6, 7));
+        for (int i = 0; i < 8; i += 2) {
+            groups.add(positions(i, i + 1));
+        }
+        for (int i = 0; i < 8; i++) {
+            groups.add(positions(i));
+        }
+        return groups;
+    }
+
+    private HostVO eligibleHost(long hostId) {
+        HostVO host = mock(HostVO.class);
+        Mockito.lenient().when(host.getId()).thenReturn(hostId);
+        Mockito.lenient().when(host.getType()).thenReturn(Host.Type.Routing);
+        Mockito.lenient().when(host.getStatus()).thenReturn(Status.Up);
+        Mockito.lenient().when(host.getResourceState()).thenReturn(ResourceState.Enabled);
+        Mockito.lenient().when(host.getHypervisorType()).thenReturn(Hypervisor.HypervisorType.KVM);
+        Mockito.lenient().when(host.getDataCenterId()).thenReturn(1L);
+        Mockito.lenient().when(host.getUuid()).thenReturn("host-" + hostId);
+        Mockito.lenient().when(host.checkHostServiceOfferingTags(any())).thenReturn(true);
+        Mockito.lenient().when(hostDao.findById(hostId)).thenReturn(host);
+        return host;
+    }
+
+    private void registeredHosts(long... hostIds) {
+        List<HostGpuGroupRuleVO> rules = new ArrayList<>();
+        for (long hostId : hostIds) {
+            rules.add(hostGpuGroupRuleDao.findByHostId(hostId));
+        }
+        Mockito.lenient().when(hostGpuGroupRuleDao.listAll()).thenReturn(rules);
+    }
+
+    private ServiceOffering gpuOffering(int gpuCount) {
+        ServiceOffering offering = mock(ServiceOffering.class);
+        Mockito.lenient().when(offering.getId()).thenReturn(30L + gpuCount);
+        Mockito.lenient().when(offering.getVgpuProfileId()).thenReturn(A100_PROFILE_ID);
+        Mockito.lenient().when(offering.getGpuCount()).thenReturn(gpuCount);
+        return offering;
+    }
+
+    private GpuService.SlotCount slots(int gpuCount, Long hostId) {
+        return gpuService.slotCount(gpuOffering(gpuCount), hostId);
+    }
+
+    private Optional<List<String>> pick(long hostId, int count) {
+        return gpuService.pickGroup(hostId, A100_PROFILE_ID, count).map(GpuGroupPick::getPositions);
+    }
+
+    private void runTransactionsInline() {
+        doAnswer(invocation -> ((TransactionCallbackWithException<?, ?>) invocation.getArgument(0)).doInTransaction(null))
+                .when(gpuService).inTransaction(any());
+    }
+
+    private UpdateHostGpuGroupsCmd registration(long hostId, String json) {
+        UpdateHostGpuGroupsCmd cmd = mock(UpdateHostGpuGroupsCmd.class);
+        when(cmd.getHostId()).thenReturn(hostId);
+        when(cmd.getGroups()).thenReturn(json);
+        return cmd;
+    }
+
+    private static String partitionsJson(List<List<String>> groups) {
+        return "{\"rule\":\"partitions\",\"groups\":[" + groups.stream()
+                .map(group -> group.stream().map(bus -> "\"" + bus + "\"").collect(Collectors.joining(",", "[", "]")))
+                .collect(Collectors.joining(",")) + "]}";
+    }
+
+    private void assertRefused(UpdateHostGpuGroupsCmd cmd, String expected) {
+        try {
+            gpuService.updateHostGpuGroups(cmd);
+            Assert.fail("registration accepted: " + cmd.getGroups());
+        } catch (InvalidParameterValueException e) {
+            assertTrue(e.getMessage(), e.getMessage().contains(expected));
+        }
+        verify(hostGpuGroupRuleDao, never()).persist(any());
+        verify(hostGpuGroupMemberDao, never()).persist(any());
+    }
+
+    @Test
+    public void groupsMustBeLaminar() {
+        eligibleHost(GROUP_HOST_ID);
+        hostGpus(GROUP_HOST_ID, 4);
+        assertRefused(registration(GROUP_HOST_ID, partitionsJson(List.of(positions(0, 1), positions(1, 2)))), "laminar");
+    }
+
+    @Test
+    public void groupsMustBeOneCard() {
+        eligibleHost(GROUP_HOST_ID);
+        List<GpuDeviceVO> devices = hostGpus(GROUP_HOST_ID, 2);
+        devices.get(1).setCardId(OTHER_CARD_ID);
+        runTransactionsInline();
+        assertRefused(registration(GROUP_HOST_ID, partitionsJson(List.of(positions(0, 1)))), "more than one card");
+        assertRefused(registration(GROUP_HOST_ID, partitionsJson(List.of(positions(0, 1, 2, 3)))), "more than one card");
+    }
+
+    @Test
+    public void groupsMayNameAPositionWithoutADevice() {
+        eligibleHost(GROUP_HOST_ID);
+        hostGpus(GROUP_HOST_ID, 7);
+        runTransactionsInline();
+
+        HostGpuGroupsResponse response = gpuService.updateHostGpuGroups(registration(GROUP_HOST_ID, partitionsJson(fabricManagerPartitions())));
+
+        assertEquals(15, response.getGroups().size());
+        ArgumentCaptor<HostGpuGroupMemberVO> members = ArgumentCaptor.forClass(HostGpuGroupMemberVO.class);
+        verify(hostGpuGroupMemberDao, times(8 + 2 * 4 + 4 * 2 + 8)).persist(members.capture());
+        assertTrue("the position of the card under repair is registered",
+                members.getAllValues().stream().anyMatch(member -> position(7).equals(member.getBusAddress())));
+    }
+
+    @Test
+    public void shortAndFullBusAddressesAreOneForm() {
+        assertEquals("0000:07:00.0", GpuServiceImpl.canonicalBusAddress("07:00.0"));
+        assertEquals("0000:0b:00.1", GpuServiceImpl.canonicalBusAddress("0000:0b:00.1"));
+        assertEquals("0000:0b:00.0", GpuServiceImpl.canonicalBusAddress("0:b:0.0"));
+        assertEquals("0001:af:1f.7", GpuServiceImpl.canonicalBusAddress("1:af:1f.7"));
+        for (String invalid : List.of("07:20.0", "07:00.8", "10000:07:00.0", "07:00", "zz:00.0", "")) {
+            assertEquals(invalid, null, GpuServiceImpl.canonicalBusAddress(invalid));
+        }
+        assertEquals("0000:1a:00.0", GpuServiceImpl.normalizeBusAddress(" 1A:00.0 "));
+
+        eligibleHost(GROUP_HOST_ID);
+        hostGpus(GROUP_HOST_ID, 2);
+        runTransactionsInline();
+        HostGpuGroupsResponse response = gpuService.updateHostGpuGroups(registration(GROUP_HOST_ID,
+                "{\"rule\":\"partitions\",\"groups\":[[\"" + agentAddress(0) + "\",\"" + position(1).toUpperCase() + "\"]]}"));
+        assertEquals(List.of(positions(0, 1)), response.getGroups());
+        registerPartitions(GROUP_HOST_ID, response.getGroups());
+        assertEquals("a group registered in either form matches device rows in the agent's short form", Optional.of(positions(0, 1)),
+                pick(GROUP_HOST_ID, 2));
+    }
+
+    @Test
+    public void updateHostGpuGroupsIsAnEvent() throws Exception {
+        ActionEvent event = GpuServiceImpl.class.getMethod("updateHostGpuGroups", UpdateHostGpuGroupsCmd.class).getAnnotation(ActionEvent.class);
+        assertNotNull(event);
+        assertEquals(EventTypes.EVENT_HOST_GPU_GROUPS_UPDATE, event.eventType());
+    }
+
+    @Test
+    public void groupsMustHaveOneTwoFourOrEightGpusAndOnlyForPartitions() {
+        eligibleHost(GROUP_HOST_ID);
+        hostGpus(GROUP_HOST_ID, 4);
+        assertRefused(registration(GROUP_HOST_ID, partitionsJson(List.of(positions(0, 1, 2)))), "1, 2, 4 or 8");
+        assertRefused(registration(GROUP_HOST_ID, partitionsJson(List.of(positions(0, 1), positions(0, 1)))), "twice");
+        assertRefused(registration(GROUP_HOST_ID, partitionsJson(List.of(List.of(position(0), position(0))))), "twice");
+        assertRefused(registration(GROUP_HOST_ID, "{\"rule\":\"any\",\"groups\":[[\"" + position(0) + "\"]]}"), "only for rule partitions");
+        assertRefused(registration(GROUP_HOST_ID, "{\"rule\":\"partitions\"}"), "non-empty array of groups");
+        assertRefused(registration(GROUP_HOST_ID, "{\"rule\":\"mesh\"}"), "the rule must be one of");
+        assertRefused(registration(GROUP_HOST_ID, "[\"single\"]"), "JSON object");
+        assertRefused(registration(GROUP_HOST_ID, "{\"rule\":"), "not valid JSON");
+        assertRefused(registration(GROUP_HOST_ID, partitionsJson(List.of(List.of("07:20.0")))), "not a PCI bus address");
+    }
+
+    @Test
+    public void registrationReplacesTheHostGroupsUnderTheDeviceLock() {
+        HostVO host = eligibleHost(GROUP_HOST_ID);
+        String a = "0000:1a:00.0";
+        String b = "0000:1b:00.0";
+        when(gpuDeviceDao.listByHostId(GROUP_HOST_ID)).thenReturn(List.of(gpu(GROUP_HOST_ID, 1L, a, "0", GpuDevice.State.Free),
+                gpu(GROUP_HOST_ID, 2L, b, "0", GpuDevice.State.Allocated)));
+        runTransactionsInline();
+
+        HostGpuGroupsResponse response = gpuService.updateHostGpuGroups(registration(GROUP_HOST_ID,
+                "{\"rule\":\"partitions\",\"groups\":[[\"" + b + "\"],[\"0000:1B:00.0\",\" " + a + "\"],[\"" + a + "\"]],\"note\":1}"));
+
+        InOrder inOrder = Mockito.inOrder(gpuDeviceDao, hostGpuGroupMemberDao, hostGpuGroupRuleDao);
+        inOrder.verify(gpuDeviceDao).lockByHostId(GROUP_HOST_ID);
+        inOrder.verify(gpuDeviceDao).listByHostId(GROUP_HOST_ID);
+        inOrder.verify(hostGpuGroupMemberDao).removeByHostId(GROUP_HOST_ID);
+        ArgumentCaptor<HostGpuGroupRuleVO> rule = ArgumentCaptor.forClass(HostGpuGroupRuleVO.class);
+        inOrder.verify(hostGpuGroupRuleDao).persist(rule.capture());
+        assertEquals("partitions", rule.getValue().getRule());
+        ArgumentCaptor<HostGpuGroupMemberVO> members = ArgumentCaptor.forClass(HostGpuGroupMemberVO.class);
+        verify(hostGpuGroupMemberDao, times(4)).persist(members.capture());
+        assertEquals("larger groups first, bus addresses in lower case and ascending", List.of("0:" + a, "0:" + b, "1:" + a, "2:" + b),
+                members.getAllValues().stream().map(m -> m.getGroupIndex() + ":" + m.getBusAddress()).collect(Collectors.toList()));
+        assertEquals(host.getUuid(), response.getHostId());
+        assertEquals("partitions", response.getRule());
+        assertEquals(List.of(List.of(a, b), List.of(a), List.of(b)), response.getGroups());
+
+        registerRule(GROUP_HOST_ID, GpuService.GroupRule.single);
+        response = gpuService.updateHostGpuGroups(registration(GROUP_HOST_ID, "{\"rule\":\"single\"}"));
+        assertEquals("single", response.getRule());
+        assertEquals(null, response.getGroups());
+        verify(hostGpuGroupRuleDao).update(eq(0L), any(HostGpuGroupRuleVO.class));
+        verify(hostGpuGroupMemberDao, times(2)).removeByHostId(GROUP_HOST_ID);
+        verify(hostGpuGroupMemberDao, times(4)).persist(any());
+    }
+
+    @Test
+    public void onlyKvmRoutingHostsTakeGpuGroups() {
+        HostVO host = eligibleHost(GROUP_HOST_ID);
+        when(host.getHypervisorType()).thenReturn(Hypervisor.HypervisorType.XenServer);
+        assertRefused(registration(GROUP_HOST_ID, "{\"rule\":\"single\"}"), "only KVM hosts");
+    }
+
+    @Test
+    public void listHostGpuGroupsReturnsTheRegistration() {
+        eligibleHost(GROUP_HOST_ID);
+        registerPartitions(GROUP_HOST_ID, List.of(positions(0, 1), positions(0), positions(1)));
+        registeredHosts(GROUP_HOST_ID);
+        ListHostGpuGroupsCmd cmd = mock(ListHostGpuGroupsCmd.class);
+        when(cmd.getHostId()).thenReturn(null);
+
+        ListResponse<HostGpuGroupsResponse> response = gpuService.listHostGpuGroups(cmd);
+
+        assertEquals(1, response.getCount().intValue());
+        HostGpuGroupsResponse groups = response.getResponses().get(0);
+        assertEquals("host-" + GROUP_HOST_ID, groups.getHostId());
+        assertEquals(List.of(positions(0, 1), positions(0), positions(1)), groups.getGroups());
+        assertEquals(List.of(Set.copyOf(positions(0, 1)), Set.copyOf(positions(0)), Set.copyOf(positions(1))),
+                gpuService.getGpuGroups(GROUP_HOST_ID));
+
+        when(cmd.getHostId()).thenReturn(OTHER_GROUP_HOST_ID);
+        eligibleHost(OTHER_GROUP_HOST_ID);
+        assertEquals("a host without a registration lists nothing", 0, gpuService.listHostGpuGroups(cmd).getCount().intValue());
+    }
+
+    @Test
+    public void pickGroupTakesOnlyWholeFreeGroup() {
+        registerPartitions(GROUP_HOST_ID, List.of(positions(0, 1), positions(2, 3)));
+        List<GpuDeviceVO> devices = hostGpus(GROUP_HOST_ID, 4, 1);
+
+        Optional<GpuGroupPick> pick = gpuService.pickGroup(GROUP_HOST_ID, A100_PROFILE_ID, 2);
+
+        assertTrue(pick.isPresent());
+        assertEquals(GROUP_HOST_ID, pick.get().getHostId());
+        assertEquals(positions(2, 3), pick.get().getPositions());
+        assertEquals(List.of(devices.get(2).getId(), devices.get(3).getId()), pick.get().getDeviceIds());
+    }
+
+    @Test
+    public void pickGroupBestFitPrefersFragmentedHalf() {
+        registerPartitions(GROUP_HOST_ID, fabricManagerPartitions());
+        hostGpus(GROUP_HOST_ID, 8, 2, 3);
+
+        assertEquals("the pair left in the half that already has a pair taken", Optional.of(positions(0, 1)), pick(GROUP_HOST_ID, 2));
+
+        hostGpus(GROUP_HOST_ID, 8, 1);
+        assertEquals("the single whose pair is already half taken", Optional.of(positions(0)), pick(GROUP_HOST_ID, 1));
+        assertEquals("the pair in the half with a GPU taken", Optional.of(positions(2, 3)), pick(GROUP_HOST_ID, 2));
+        assertEquals(Optional.of(positions(4, 5, 6, 7)), pick(GROUP_HOST_ID, 4));
+        assertEquals(Optional.empty(), pick(GROUP_HOST_ID, 8));
+    }
+
+    @Test
+    public void pickGroupEmptyWhenOnlyScatteredFree() {
+        registerPartitions(GROUP_HOST_ID, List.of(positions(0, 1), positions(2, 3)));
+        hostGpus(GROUP_HOST_ID, 4, 1, 3);
+        VgpuProfile profile = mock(VgpuProfile.class);
+        when(profile.getId()).thenReturn(A100_PROFILE_ID);
+
+        assertEquals(Optional.empty(), pick(GROUP_HOST_ID, 2));
+        assertFalse(gpuService.isGPUDeviceAvailable(eligibleHost(GROUP_HOST_ID), VM_ID, profile, 2));
+        assertEquals(Integer.MAX_VALUE, gpuService.bestFitScore(GROUP_HOST_ID, A100_PROFILE_ID, 2));
+    }
+
+    @Test
+    public void slotCountExcludesGroupWithMissingDevice() {
+        eligibleHost(GROUP_HOST_ID);
+        registerPartitions(GROUP_HOST_ID, fabricManagerPartitions());
+        registeredHosts(GROUP_HOST_ID);
+        List<GpuDeviceVO> devices = hostGpus(GROUP_HOST_ID, 8);
+        devices.get(7).setState(GpuDevice.State.Error);
+
+        assertEquals(new GpuService.SlotCount(7, 7), slots(1, null));
+        assertEquals(new GpuService.SlotCount(3, 3), slots(2, null));
+        assertEquals(new GpuService.SlotCount(1, 1), slots(4, null));
+        assertEquals(new GpuService.SlotCount(0, 0), slots(8, null));
+    }
+
+    @Test
+    public void groupWithAnUnseenCardIsUsableOnceTheSyncAddsIt() {
+        eligibleHost(GROUP_HOST_ID);
+        registerPartitions(GROUP_HOST_ID, fabricManagerPartitions());
+        registeredHosts(GROUP_HOST_ID);
+        List<GpuDeviceVO> devices = new ArrayList<>(hostGpus(GROUP_HOST_ID, 7));
+        when(gpuDeviceDao.listByHostId(GROUP_HOST_ID)).thenReturn(devices);
+        assertEquals(new GpuService.SlotCount(7, 7), slots(1, null));
+        assertEquals(new GpuService.SlotCount(3, 3), slots(2, null));
+        assertEquals(new GpuService.SlotCount(1, 1), slots(4, null));
+        assertEquals(new GpuService.SlotCount(0, 0), slots(8, null));
+        assertEquals(Optional.empty(), pick(GROUP_HOST_ID, 8));
+
+        List<VgpuTypesInfo> reported = new ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            VgpuTypesInfo info = mock(VgpuTypesInfo.class);
+            when(info.getBusAddress()).thenReturn(agentAddress(i));
+            when(info.getDeviceId()).thenReturn(GPU_DEVICE_ID);
+            when(info.getVendorId()).thenReturn(GPU_VENDOR_ID);
+            when(info.getModelName()).thenReturn(PASSTHROUGH_PROFILE);
+            when(info.isPassthroughEnabled()).thenReturn(true);
+            when(info.getDeviceType()).thenReturn(GpuDevice.DeviceType.PCI);
+            reported.add(info);
+        }
+        GpuCardVO a100 = mock(GpuCardVO.class);
+        when(a100.getId()).thenReturn(A100_CARD_ID);
+        when(a100.getUuid()).thenReturn("a100");
+        VgpuProfileVO passthrough = mock(VgpuProfileVO.class);
+        when(passthrough.getId()).thenReturn(A100_PROFILE_ID);
+        when(gpuCardDao.findByVendorIdAndDeviceId(GPU_VENDOR_ID, GPU_DEVICE_ID)).thenReturn(a100);
+        when(vgpuProfileDao.findByNameAndCardId(PASSTHROUGH_PROFILE, A100_CARD_ID)).thenReturn(passthrough);
+        when(gpuDeviceDao.persist(any(GpuDeviceVO.class))).thenAnswer(invocation -> {
+            GpuDeviceVO row = invocation.getArgument(0);
+            ReflectionTestUtils.setField(row, "id", GROUP_HOST_ID * 100 + 7);
+            devices.add(row);
+            return row;
+        });
+        Host host = mock(Host.class);
+        when(host.getId()).thenReturn(GROUP_HOST_ID);
+        try (MockedStatic<GlobalLock> ignored = Mockito.mockStatic(GlobalLock.class)) {
+            GlobalLock lock = mock(GlobalLock.class);
+            when(GlobalLock.getInternLock("add-gpu-devices-to-host-" + GROUP_HOST_ID)).thenReturn(lock);
+            when(lock.lock(30)).thenReturn(true);
+            runTransactionsInline();
+
+            gpuService.addGpuDevicesToHost(host, reported, new Date());
+        }
+
+        assertEquals(agentAddress(7), devices.get(7).getBusAddress());
+        assertEquals(new GpuService.SlotCount(1, 1), slots(8, null));
+        assertEquals(new GpuService.SlotCount(4, 4), slots(2, null));
+        assertEquals(Optional.of(positions(0, 1, 2, 3, 4, 5, 6, 7)), pick(GROUP_HOST_ID, 8));
+    }
+
+    @Test
+    public void slotCountReturnsWhenDeviceRediscovered() {
+        eligibleHost(GROUP_HOST_ID);
+        registerPartitions(GROUP_HOST_ID, fabricManagerPartitions());
+        registeredHosts(GROUP_HOST_ID);
+        List<GpuDeviceVO> devices = hostGpus(GROUP_HOST_ID, 8, 0);
+        devices.get(7).setState(GpuDevice.State.Error);
+        assertEquals(new GpuService.SlotCount(0, 0), slots(8, null));
+        assertEquals(new GpuService.SlotCount(2, 3), slots(2, null));
+
+        devices.get(7).setState(GpuDevice.State.Free);
+
+        assertEquals(new GpuService.SlotCount(0, 1), slots(8, null));
+        assertEquals(new GpuService.SlotCount(3, 4), slots(2, null));
+        assertEquals(new GpuService.SlotCount(7, 8), slots(1, null));
+    }
+
+    @Test
+    public void slotNotUsableWhenLocalPoolClosed() {
+        HostVO host = eligibleHost(GROUP_HOST_ID);
+        registerRule(GROUP_HOST_ID, GpuService.GroupRule.single);
+        registeredHosts(GROUP_HOST_ID);
+        hostGpus(GROUP_HOST_ID, 2);
+        ServiceOffering offering = gpuOffering(1);
+        when(offering.getDiskOfferingId()).thenReturn(LOCAL_DISK_OFFERING_ID);
+        DiskOfferingVO diskOffering = mock(DiskOfferingVO.class);
+        when(diskOffering.isUseLocalStorage()).thenReturn(true);
+        when(diskOfferingDao.findById(LOCAL_DISK_OFFERING_ID)).thenReturn(diskOffering);
+        StoragePoolVO pool = mock(StoragePoolVO.class);
+        when(primaryDataStoreDao.findLocalStoragePoolsByHostAndTags(host.getId(), null)).thenReturn(List.of(pool));
+
+        when(storageManager.storagePoolCrossedDisableThreshold(pool)).thenReturn(true);
+        assertEquals(new GpuService.SlotCount(0, 2), gpuService.slotCount(offering, null));
+        assertEquals(new GpuService.SlotCount(0, 2), gpuService.slotCount(offering, GROUP_HOST_ID));
+
+        when(storageManager.storagePoolCrossedDisableThreshold(pool)).thenReturn(false);
+        assertEquals(new GpuService.SlotCount(2, 2), gpuService.slotCount(offering, null));
+
+        when(primaryDataStoreDao.findLocalStoragePoolsByHostAndTags(host.getId(), null)).thenReturn(List.of());
+        assertEquals("no local pool for a local-storage offering", new GpuService.SlotCount(0, 2), gpuService.slotCount(offering, null));
+    }
+
+    @Test
+    public void slotCountForOneHostCountsOnlyThatHost() {
+        eligibleHost(GROUP_HOST_ID);
+        eligibleHost(OTHER_GROUP_HOST_ID);
+        registerRule(GROUP_HOST_ID, GpuService.GroupRule.single);
+        registerRule(OTHER_GROUP_HOST_ID, GpuService.GroupRule.single);
+        registeredHosts(GROUP_HOST_ID, OTHER_GROUP_HOST_ID);
+        hostGpus(GROUP_HOST_ID, 2, 1);
+        hostGpus(OTHER_GROUP_HOST_ID, 3);
+
+        assertEquals(new GpuService.SlotCount(1, 2), slots(1, GROUP_HOST_ID));
+        assertEquals(new GpuService.SlotCount(3, 3), slots(1, OTHER_GROUP_HOST_ID));
+        assertEquals(new GpuService.SlotCount(4, 5), slots(1, null));
+    }
+
+    @Test
+    public void slotCountLeavesOutHostsThatCannotStartTheOffering() {
+        HostVO host = eligibleHost(GROUP_HOST_ID);
+        registerRule(GROUP_HOST_ID, GpuService.GroupRule.single);
+        registeredHosts(GROUP_HOST_ID);
+        hostGpus(GROUP_HOST_ID, 2);
+        assertEquals(new GpuService.SlotCount(2, 2), slots(1, null));
+
+        when(host.getResourceState()).thenReturn(ResourceState.Maintenance);
+        assertEquals(new GpuService.SlotCount(0, 0), slots(1, null));
+        when(host.getResourceState()).thenReturn(ResourceState.Enabled);
+
+        when(host.getStatus()).thenReturn(Status.Disconnected);
+        assertEquals(new GpuService.SlotCount(0, 0), slots(1, null));
+        when(host.getStatus()).thenReturn(Status.Up);
+
+        when(host.checkHostServiceOfferingTags(any())).thenReturn(false);
+        assertEquals("a host without the offering's tags", new GpuService.SlotCount(0, 0), slots(1, null));
+        Mockito.lenient().when(host.checkHostServiceOfferingTags(any())).thenReturn(true);
+
+        when(serviceOfferingDetailsDao.findZoneIds(31L)).thenReturn(List.of(2L));
+        assertEquals("a host outside the offering's zones", new GpuService.SlotCount(0, 0), slots(1, null));
+    }
+
+    @Test
+    public void hostWithoutGroupsOffersNoGpu() {
+        HostVO host = eligibleHost(GROUP_HOST_ID);
+        hostGpus(GROUP_HOST_ID, 8);
+        VgpuProfile profile = mock(VgpuProfile.class);
+        when(profile.getId()).thenReturn(A100_PROFILE_ID);
+
+        assertFalse(gpuService.isGPUDeviceAvailable(host, VM_ID, profile, 1));
+        assertEquals(Optional.empty(), pick(GROUP_HOST_ID, 1));
+        assertEquals(Integer.MAX_VALUE, gpuService.bestFitScore(GROUP_HOST_ID, A100_PROFILE_ID, 1));
+        assertEquals(new GpuService.SlotCount(0, 0), slots(1, GROUP_HOST_ID));
+        assertEquals(new GpuService.SlotCount(0, 0), slots(1, null));
+        assertTrue(gpuService.getGpuGroups(GROUP_HOST_ID).isEmpty());
+
+        VirtualMachine vm = mock(VirtualMachine.class);
+        when(vm.getUuid()).thenReturn("vm-uuid");
+        runTransactionsInline();
+        try {
+            gpuService.allocateGpuGroup(vm, GROUP_HOST_ID, A100_PROFILE_ID, 1);
+            Assert.fail("a host without groups gave a GPU");
+        } catch (InsufficientServerCapacityException e) {
+            assertTrue(e.getMessage(), e.getMessage().contains("no whole free group of 1 GPUs"));
+            assertEquals(GROUP_HOST_ID, e.getId());
+        }
+        verify(gpuDeviceDao, never()).persist(any());
+    }
+
+    @Test
+    public void anyRulePicksSameNodeFirst() {
+        registerRule(GROUP_HOST_ID, GpuService.GroupRule.any);
+        List<GpuDeviceVO> devices = new ArrayList<>();
+        devices.add(gpu(GROUP_HOST_ID, 1L, agentAddress(0), "0", GpuDevice.State.Free));
+        devices.add(gpu(GROUP_HOST_ID, 2L, agentAddress(2), "1", GpuDevice.State.Free));
+        devices.add(gpu(GROUP_HOST_ID, 3L, agentAddress(3), "1", GpuDevice.State.Free));
+        when(gpuDeviceDao.listByHostId(GROUP_HOST_ID)).thenReturn(devices);
+
+        assertEquals(Optional.of(positions(2, 3)), pick(GROUP_HOST_ID, 2));
+    }
+
+    @Test
+    public void anyRuleSlotCountIsFloorFreeOverN() {
+        eligibleHost(GROUP_HOST_ID);
+        registerRule(GROUP_HOST_ID, GpuService.GroupRule.any);
+        registeredHosts(GROUP_HOST_ID);
+        hostGpus(GROUP_HOST_ID, 4, 3);
+
+        assertEquals(new GpuService.SlotCount(1, 2), slots(2, null));
+        assertEquals(new GpuService.SlotCount(3, 4), slots(1, null));
+        assertEquals(new GpuService.SlotCount(0, 1), slots(4, null));
+    }
+
+    @Test
+    public void singleRuleRefusesMultiGpu() {
+        HostVO host = eligibleHost(GROUP_HOST_ID);
+        registerRule(GROUP_HOST_ID, GpuService.GroupRule.single);
+        registeredHosts(GROUP_HOST_ID);
+        hostGpus(GROUP_HOST_ID, 2);
+        VgpuProfile profile = mock(VgpuProfile.class);
+        when(profile.getId()).thenReturn(A100_PROFILE_ID);
+
+        assertFalse(gpuService.isGPUDeviceAvailable(host, VM_ID, profile, 2));
+        assertEquals(Optional.empty(), pick(GROUP_HOST_ID, 2));
+        assertEquals(new GpuService.SlotCount(0, 0), slots(2, null));
+
+        assertTrue(gpuService.isGPUDeviceAvailable(host, VM_ID, profile, 1));
+        assertEquals(Optional.of(positions(0)), pick(GROUP_HOST_ID, 1));
+        assertEquals(new GpuService.SlotCount(2, 2), slots(1, null));
+    }
+
+    @Test
+    public void multiNodeAnyHostPicksOnlyEvenSpreads() {
+        registerRule(GROUP_HOST_ID, GpuService.GroupRule.any);
+        hostGpus(GROUP_HOST_ID, 8, 3, 5, 6, 7);
+        assertEquals("three free on node 0 and one on node 1 hold no even spread of four", Optional.empty(), pick(GROUP_HOST_ID, 4));
+
+        hostGpus(GROUP_HOST_ID, 8, 2, 3, 6, 7);
+        assertEquals(Optional.of(positions(0, 1, 4, 5)), pick(GROUP_HOST_ID, 4));
+
+        hostGpus(GROUP_HOST_ID, 8, 6, 7);
+        assertEquals("a set on one node before a spread one", Optional.of(positions(0, 1, 2, 3)), pick(GROUP_HOST_ID, 4));
+        assertEquals("the node left with fewer free GPUs", Optional.of(positions(4, 5)), pick(GROUP_HOST_ID, 2));
+    }
+
+    @Test
+    public void slotCountCountsOnlyEvenSpreadSubsetsOnMultiNodeAnyHost() {
+        eligibleHost(GROUP_HOST_ID);
+        registerRule(GROUP_HOST_ID, GpuService.GroupRule.any);
+        registeredHosts(GROUP_HOST_ID);
+
+        hostGpus(GROUP_HOST_ID, 8, 3, 5, 6, 7);
+        assertEquals(new GpuService.SlotCount(0, 2), slots(4, null));
+
+        hostGpus(GROUP_HOST_ID, 8, 2, 3, 6, 7);
+        assertEquals(new GpuService.SlotCount(1, 2), slots(4, null));
+
+        hostGpus(GROUP_HOST_ID, 8, 0, 1, 2);
+        assertEquals("one free on node 0 and four on node 1", new GpuService.SlotCount(1, 2), slots(4, null));
+        assertEquals(new GpuService.SlotCount(0, 1), slots(8, null));
+    }
+
+    @Test
+    public void bestFitScorePrefersTheHostLeftWithFewestFreeGpus() {
+        registerRule(GROUP_HOST_ID, GpuService.GroupRule.single);
+        hostGpus(GROUP_HOST_ID, 2, 1);
+        registerPartitions(OTHER_GROUP_HOST_ID, fabricManagerPartitions());
+        hostGpus(OTHER_GROUP_HOST_ID, 8);
+
+        int oneFree = gpuService.bestFitScore(GROUP_HOST_ID, A100_PROFILE_ID, 1);
+        int emptyEight = gpuService.bestFitScore(OTHER_GROUP_HOST_ID, A100_PROFILE_ID, 1);
+
+        assertEquals(0, oneFree);
+        assertEquals(7 * 1024 + 1, emptyEight);
+        assertTrue(oneFree < emptyEight);
+        assertEquals(4 * 1024 + 4, gpuService.bestFitScore(OTHER_GROUP_HOST_ID, A100_PROFILE_ID, 4));
+    }
+
+    @Test
+    public void gpuAllocationAlgorithmIsASetting() {
+        ConfigKey<String> key = GpuService.GpuAllocationAlgorithm;
+        assertEquals("gpu.allocation.algorithm", key.key());
+        assertEquals("bestfit", key.defaultValue());
+        assertEquals(ConfigKey.Kind.Select, key.kind());
+        assertEquals("bestfit,firstfit,random", key.options());
+        assertTrue(key.isDynamic());
+        assertTrue(Arrays.asList(gpuService.getConfigKeys()).contains(key));
+        for (String value : List.of("bestfit", "firstfit", "random")) {
+            ((ValidatedConfigKey<String>) key).validateValue(value);
+        }
+        try {
+            ((ValidatedConfigKey<String>) key).validateValue("worstfit");
+            Assert.fail("an unknown algorithm was accepted");
+        } catch (InvalidParameterValueException e) {
+            assertTrue(e.getMessage().contains("worstfit"));
+        }
+
+        registerPartitions(GROUP_HOST_ID, fabricManagerPartitions());
+        hostGpus(GROUP_HOST_ID, 8, 4);
+        assertEquals(GpuService.AllocationAlgorithm.bestfit, gpuService.getAllocationAlgorithm());
+        assertEquals(Optional.of(positions(6, 7)), pick(GROUP_HOST_ID, 2));
+
+        doReturn(GpuService.AllocationAlgorithm.firstfit).when(gpuService).getAllocationAlgorithm();
+        assertEquals(Optional.of(positions(0, 1)), pick(GROUP_HOST_ID, 2));
+
+        doReturn(GpuService.AllocationAlgorithm.random).when(gpuService).getAllocationAlgorithm();
+        Set<List<String>> usable = Set.of(positions(0, 1), positions(2, 3), positions(6, 7));
+        Set<List<String>> seen = new HashSet<>();
+        for (int i = 0; i < 200; i++) {
+            List<String> picked = pick(GROUP_HOST_ID, 2).orElseThrow();
+            assertTrue("random picked " + picked, usable.contains(picked));
+            seen.add(picked);
+        }
+        assertTrue("random picks vary", seen.size() > 1);
+        assertEquals("random never makes a group usable", Optional.empty(), pick(GROUP_HOST_ID, 8));
+    }
+
+    @Test
+    public void syncDoesNotFreeStartingVmDevices() {
+        Date reportTime = new Date(1_000_000L);
+        Date before = new Date(reportTime.getTime() - 2000);
+        Date after = new Date(reportTime.getTime() + 1000);
+        Date sameSecond = new Date(reportTime.getTime() - 500);
+        String[] buses = {GPU_BUS_ADDRESS, GPU_BUS_ADDRESS_2, GPU_BUS_ADDRESS_3, "0000:04:00.0", "0000:05:00.0"};
+        Object[][] vms = {
+            {VirtualMachine.State.Starting, HOST_ID, before},
+            {VirtualMachine.State.Running, HOST_ID, before},
+            {VirtualMachine.State.Running, HOST_ID, after},
+            {VirtualMachine.State.Running, DIFFERENT_HOST_ID, after},
+            {VirtualMachine.State.Running, HOST_ID, sameSecond},
+        };
+        List<GpuDeviceVO> rows = new ArrayList<>();
+        List<VgpuTypesInfo> reported = new ArrayList<>();
+        for (int i = 0; i < buses.length; i++) {
+            GpuDeviceVO row = gpu(HOST_ID, 21L + i, buses[i], null, GpuDevice.State.Allocated);
+            row.setVmId(VM_ID_100 + i);
+            rows.add(row);
+            VMInstanceVO vm = mock(VMInstanceVO.class);
+            when(vm.getState()).thenReturn((VirtualMachine.State) vms[i][0]);
+            when(vm.getHostId()).thenReturn((Long) vms[i][1]);
+            Mockito.lenient().when(vm.getUpdateTime()).thenReturn((Date) vms[i][2]);
+            when(vmInstanceDao.findById(VM_ID_100 + i)).thenReturn(vm);
+            VgpuTypesInfo info = mock(VgpuTypesInfo.class);
+            when(info.getBusAddress()).thenReturn(buses[i]);
+            when(info.getDeviceId()).thenReturn(GPU_DEVICE_ID);
+            when(info.getVendorId()).thenReturn(GPU_VENDOR_ID);
+            when(info.getModelName()).thenReturn(PASSTHROUGH_PROFILE);
+            reported.add(info);
+        }
+        when(gpuDeviceDao.listByHostId(HOST_ID)).thenReturn(rows);
+        when(gpuCardDao.findByVendorIdAndDeviceId(GPU_VENDOR_ID, GPU_DEVICE_ID)).thenReturn(mockGpuCard);
+        when(vgpuProfileDao.findByNameAndCardId(PASSTHROUGH_PROFILE, GPU_CARD_ID)).thenReturn(mockVgpuProfile);
+
+        try (MockedStatic<GlobalLock> ignored = Mockito.mockStatic(GlobalLock.class)) {
+            GlobalLock lock = mock(GlobalLock.class);
+            when(GlobalLock.getInternLock("add-gpu-devices-to-host-" + HOST_ID)).thenReturn(lock);
+            when(lock.lock(30)).thenReturn(true);
+            runTransactionsInline();
+
+            gpuService.addGpuDevicesToHost(mockHost, reported, reportTime);
+        }
+
+        assertEquals("a starting VM has its devices before its domain exists", GpuDevice.State.Allocated, rows.get(0).getState());
+        assertEquals(Long.valueOf(VM_ID_100), rows.get(0).getVmId());
+        assertEquals("for a running VM the host's report is authoritative", GpuDevice.State.Free, rows.get(1).getState());
+        assertNull(rows.get(1).getVmId());
+        assertEquals("a report gathered before the VM's last state change does not judge it", GpuDevice.State.Allocated, rows.get(2).getState());
+        assertEquals(Long.valueOf(VM_ID_100 + 2), rows.get(2).getVmId());
+        assertEquals("a VM running on another host does not hold this host's device", GpuDevice.State.Free, rows.get(3).getState());
+        assertNull(rows.get(3).getVmId());
+        assertEquals("the stored update time keeps whole seconds, so a change in the report's second counts as after it",
+                GpuDevice.State.Allocated, rows.get(4).getState());
+        InOrder inOrder = Mockito.inOrder(gpuDeviceDao);
+        inOrder.verify(gpuDeviceDao).lockByHostId(HOST_ID);
+        inOrder.verify(gpuDeviceDao).listByHostId(HOST_ID);
+    }
+
+    private VirtualMachine startingVm(long vmId, long hostId) {
+        VirtualMachine vm = mock(VirtualMachine.class);
+        Mockito.lenient().when(vm.getId()).thenReturn(vmId);
+        Mockito.lenient().when(vm.getHostId()).thenReturn(hostId);
+        Mockito.lenient().when(vm.getUuid()).thenReturn("vm-" + vmId);
+        Mockito.lenient().when(vm.getServiceOfferingId()).thenReturn(SERVICE_OFFERING_ID);
+        return vm;
+    }
+
+    private VgpuProfile a100Profile() {
+        VgpuProfile profile = mock(VgpuProfile.class);
+        Mockito.lenient().when(profile.getId()).thenReturn(A100_PROFILE_ID);
+        Mockito.lenient().when(profile.getCardId()).thenReturn(A100_CARD_ID);
+        Mockito.lenient().when(profile.getName()).thenReturn(PASSTHROUGH_PROFILE);
+        Mockito.lenient().when(gpuCardDao.findById(A100_CARD_ID)).thenReturn(mockGpuCard);
+        Mockito.lenient().when(serviceOfferingDao.findById(SERVICE_OFFERING_ID)).thenReturn(mockServiceOffering);
+        Mockito.lenient().doReturn(new HashMap<>()).when(gpuService).getGpuGroupDetailsFromGpuDevicesOnHost(Mockito.anyLong());
+        return profile;
+    }
+
+    @Test
+    public void concurrentAllocationLocksHostDevicesFirst() throws Exception {
+        registerPartitions(GROUP_HOST_ID, List.of(positions(0, 1), positions(2, 3)));
+        List<GpuDeviceVO> devices = hostGpus(GROUP_HOST_ID, 4, 0);
+        runTransactionsInline();
+
+        GpuGroupPick pick = gpuService.allocateGpuGroup(startingVm(VM_ID, GROUP_HOST_ID), GROUP_HOST_ID, A100_PROFILE_ID, 2);
+
+        assertEquals(positions(2, 3), pick.getPositions());
+        InOrder inOrder = Mockito.inOrder(gpuService, gpuDeviceDao);
+        inOrder.verify(gpuDeviceDao).listByVmId(VM_ID);
+        inOrder.verify(gpuService).inTransaction(any());
+        inOrder.verify(gpuDeviceDao).lockByHostId(GROUP_HOST_ID);
+        inOrder.verify(gpuDeviceDao).listByHostAndVm(GROUP_HOST_ID, VM_ID);
+        inOrder.verify(gpuDeviceDao).listByHostId(GROUP_HOST_ID);
+        inOrder.verify(gpuDeviceDao, times(2)).persist(any(GpuDeviceVO.class));
+        assertEquals(GpuDevice.State.Allocated, devices.get(2).getState());
+        assertEquals(Long.valueOf(VM_ID), devices.get(3).getVmId());
+    }
+
+    @Test
+    public void startWithoutAUsableGroupGetsAHostScopedCapacityException() {
+        registerPartitions(GROUP_HOST_ID, List.of(positions(0, 1), positions(2, 3)));
+        hostGpus(GROUP_HOST_ID, 4, 0, 2);
+        runTransactionsInline();
+
+        try {
+            gpuService.allocateGpuGroup(startingVm(VM_ID, GROUP_HOST_ID), GROUP_HOST_ID, A100_PROFILE_ID, 2);
+            Assert.fail("a start without a usable group got one");
+        } catch (InsufficientServerCapacityException e) {
+            assertEquals(Host.class, e.getScope());
+            assertEquals(GROUP_HOST_ID, e.getId());
+        }
+        verify(gpuDeviceDao, never()).persist(any(GpuDeviceVO.class));
+    }
+
+    @Test
+    public void rebootKeepsTheGroupTheVmHolds() {
+        registerPartitions(GROUP_HOST_ID, fabricManagerPartitions());
+        List<GpuDeviceVO> devices = hostGpus(GROUP_HOST_ID, 8, 0, 1, 4, 5);
+        devices.get(4).setVmId(VM_ID_100 + 1);
+        devices.get(5).setVmId(VM_ID_100 + 1);
+        when(gpuDeviceDao.listByHostAndVm(GROUP_HOST_ID, VM_ID_100)).thenReturn(List.of(devices.get(1), devices.get(0)));
+        VgpuProfile profile = a100Profile();
+        assertEquals("a fresh pick would take another pair", Optional.of(positions(2, 3)), pick(GROUP_HOST_ID, 2));
+
+        GPUDeviceTO to = gpuService.getGPUDevice(startingVm(VM_ID_100, GROUP_HOST_ID), GROUP_HOST_ID, profile, 2);
+
+        assertEquals(List.of(agentAddress(0), agentAddress(1)), to.getGpuDevices().stream().map(VgpuTypesInfo::getBusAddress).collect(Collectors.toList()));
+        verify(gpuDeviceDao, never()).lockByHostId(anyLong());
+        verify(gpuDeviceDao, never()).persist(any(GpuDeviceVO.class));
+        verify(gpuDeviceDao, never()).listByVmId(anyLong());
+        assertEquals(Long.valueOf(VM_ID_100), devices.get(0).getVmId());
+        assertEquals(GpuDevice.State.Free, devices.get(6).getState());
+    }
+
+    @Test
+    public void managedStateChangeRechecksTheDeviceUnderItsHostLock() {
+        GpuDeviceVO free = gpu(HOST_ID, 31L, GPU_BUS_ADDRESS, null, GpuDevice.State.Free);
+        GpuDeviceVO takenMeanwhile = gpu(HOST_ID, 31L, GPU_BUS_ADDRESS, null, GpuDevice.State.Allocated);
+        takenMeanwhile.setVmId(VM_ID);
+        when(gpuDeviceDao.findById(31L)).thenReturn(free, takenMeanwhile);
+        UnmanageGpuDeviceCmd cmd = mock(UnmanageGpuDeviceCmd.class);
+        when(cmd.getIds()).thenReturn(List.of(31L));
+        runTransactionsInline();
+
+        try {
+            gpuService.disableGpuDevice(cmd);
+            Assert.fail("a device allocated meanwhile was unmanaged");
+        } catch (InvalidParameterValueException e) {
+            assertTrue(e.getMessage().contains("in use"));
+        }
+        InOrder inOrder = Mockito.inOrder(gpuDeviceDao);
+        inOrder.verify(gpuDeviceDao).findById(31L);
+        inOrder.verify(gpuDeviceDao).lockByHostId(HOST_ID);
+        inOrder.verify(gpuDeviceDao).findById(31L);
+        verify(gpuDeviceDao, never()).update(anyLong(), any(GpuDeviceVO.class));
+
+        DeleteGpuDeviceCmd delete = mock(DeleteGpuDeviceCmd.class);
+        when(delete.getIds()).thenReturn(List.of(31L));
+        when(gpuDeviceDao.listByIds(List.of(31L))).thenReturn(List.of(free), List.of(takenMeanwhile));
+        try {
+            gpuService.deleteGpuDevices(delete);
+            Assert.fail("a device allocated meanwhile was deleted");
+        } catch (InvalidParameterValueException e) {
+            assertTrue(e.getMessage().contains("allocated"));
+        }
+        verify(gpuDeviceDao, times(2)).lockByHostId(HOST_ID);
+        verify(gpuDeviceDao, never()).remove(anyLong());
+    }
+
+    /**
+     * A table of GPU device rows shared by threads, with a per-host row lock that is held until the enclosing
+     * transaction ends, as SELECT ... FOR UPDATE does.
+     */
+    private final class DeviceTable {
+        private final Map<Long, GpuDeviceVO> rows = new ConcurrentHashMap<>();
+        private final ReentrantLock hostLock = new ReentrantLock(true);
+        private final ThreadLocal<Integer> held = ThreadLocal.withInitial(() -> 0);
+
+        DeviceTable(boolean locking, CyclicBarrier readBarrier) {
+            Mockito.lenient().when(gpuDeviceDao.lockByHostId(GROUP_HOST_ID)).thenAnswer(invocation -> {
+                if (locking) {
+                    hostLock.lock();
+                    held.set(held.get() + 1);
+                }
+                return null;
+            });
+            Mockito.lenient().when(gpuDeviceDao.listByHostId(GROUP_HOST_ID)).thenAnswer(invocation -> {
+                List<GpuDeviceVO> copies = rows.values().stream().map(this::copy).collect(Collectors.toList());
+                if (readBarrier != null) {
+                    readBarrier.await(10, TimeUnit.SECONDS);
+                }
+                return copies;
+            });
+            Mockito.lenient().when(gpuDeviceDao.listByVmId(Mockito.anyLong())).thenAnswer(invocation -> rows.values().stream()
+                    .filter(row -> Objects.equals(row.getVmId(), invocation.getArgument(0))).map(this::copy).collect(Collectors.toList()));
+            Mockito.lenient().when(gpuDeviceDao.persist(any(GpuDeviceVO.class))).thenAnswer(invocation -> {
+                GpuDeviceVO row = invocation.getArgument(0);
+                rows.put(row.getId(), copy(row));
+                return row;
+            });
+            doAnswer(invocation -> {
+                try {
+                    return ((TransactionCallbackWithException<?, ?>) invocation.getArgument(0)).doInTransaction(null);
+                } finally {
+                    for (; held.get() > 0; held.set(held.get() - 1)) {
+                        hostLock.unlock();
+                    }
+                }
+            }).when(gpuService).inTransaction(any());
+        }
+
+        void reset(int gpus) {
+            rows.clear();
+            for (GpuDeviceVO device : hostGpusRows(gpus)) {
+                rows.put(device.getId(), device);
+            }
+        }
+
+        private List<GpuDeviceVO> hostGpusRows(int n) {
+            List<GpuDeviceVO> devices = new ArrayList<>();
+            for (int i = 0; i < n; i++) {
+                devices.add(gpu(GROUP_HOST_ID, GROUP_HOST_ID * 100 + i, agentAddress(i), "0", GpuDevice.State.Free));
+            }
+            return devices;
+        }
+
+        private GpuDeviceVO copy(GpuDeviceVO row) {
+            GpuDeviceVO copy = gpu(row.getHostId(), row.getId(), row.getBusAddress(), row.getNumaNode(), row.getState());
+            copy.setVmId(row.getVmId());
+            return copy;
+        }
+
+        Map<Long, List<String>> holders() {
+            Map<Long, List<String>> holders = new TreeMap<>();
+            rows.values().stream().filter(row -> row.getVmId() != null).sorted(Comparator.comparing(GpuDeviceVO::getBusAddress))
+                    .forEach(row -> holders.computeIfAbsent(row.getVmId(), vm -> new ArrayList<>()).add(GpuServiceImpl.normalizeBusAddress(row.getBusAddress())));
+            return holders;
+        }
+    }
+
+    /**
+     * Starts the given VMs at once on the host, each asking for two GPUs, and returns each VM's devices, or null for a
+     * VM that got none.
+     */
+    private Map<Long, List<String>> raceStarts(List<Long> vmIds, VgpuProfile profile, CyclicBarrier start) throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(vmIds.size());
+        try {
+            Map<Long, Future<List<String>>> futures = new LinkedHashMap<>();
+            for (Long vmId : vmIds) {
+                VirtualMachine vm = startingVm(vmId, GROUP_HOST_ID);
+                futures.put(vmId, pool.submit(() -> {
+                    if (start != null) {
+                        start.await(10, TimeUnit.SECONDS);
+                    }
+                    try {
+                        return gpuService.allocateGpuGroup(vm, GROUP_HOST_ID, profile.getId(), 2).getPositions();
+                    } catch (InsufficientServerCapacityException e) {
+                        return null;
+                    }
+                }));
+            }
+            Map<Long, List<String>> results = new LinkedHashMap<>();
+            for (Map.Entry<Long, Future<List<String>>> future : futures.entrySet()) {
+                results.put(future.getKey(), future.getValue().get(30, TimeUnit.SECONDS));
+            }
+            return results;
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    public void racingStartsTakeDisjointGroupsOrFailCleanly() throws Exception {
+        registerPartitions(GROUP_HOST_ID, List.of(positions(0, 1), positions(2, 3), positions(4, 5), positions(6, 7)));
+        VgpuProfile profile = a100Profile();
+        DeviceTable table = new DeviceTable(true, null);
+        List<Long> vmIds = List.of(201L, 202L, 203L, 204L, 205L, 206L);
+
+        for (int round = 0; round < 30; round++) {
+            table.reset(8);
+            Map<Long, List<String>> results = raceStarts(vmIds, profile, new CyclicBarrier(vmIds.size()));
+
+            List<List<String>> granted = results.values().stream().filter(Objects::nonNull).collect(Collectors.toList());
+            assertEquals("four pairs for six starts; the other two get a host-scoped capacity exception", 4, granted.size());
+            Set<String> taken = new HashSet<>();
+            for (List<String> group : granted) {
+                assertTrue("a whole registered pair " + group, group.size() == 2 && group.get(0).compareTo(group.get(1)) < 0);
+                for (String bus : group) {
+                    assertTrue("GPU " + bus + " given twice in round " + round, taken.add(bus));
+                }
+            }
+            Map<Long, List<String>> expected = new TreeMap<>();
+            results.forEach((vmId, group) -> {
+                if (group != null) {
+                    expected.put(vmId, group);
+                }
+            });
+            assertEquals("the device rows record exactly the groups handed out", expected, table.holders());
+        }
+    }
+
+    @Test
+    public void racingStartsWithoutTheHostLockShareAGroup() throws Exception {
+        registerPartitions(GROUP_HOST_ID, List.of(positions(0, 1), positions(2, 3)));
+        VgpuProfile profile = a100Profile();
+        DeviceTable table = new DeviceTable(false, new CyclicBarrier(2));
+        table.reset(4);
+
+        Map<Long, List<String>> results = raceStarts(List.of(301L, 302L), profile, null);
+
+        assertNotNull(results.get(301L));
+        assertEquals("without the lock both starts read the same free rows and take the same group",
+                results.get(301L), results.get(302L));
+    }
+
+    @Test
+    public void stoppedVmDevicesAreReleasedOnlyByTheStatementThatChecksItsState() {
+        GpuDeviceVO freed = gpu(HOST_ID, 41L, GPU_BUS_ADDRESS, null, GpuDevice.State.Allocated);
+        freed.setVmId(VM_ID);
+        GpuDeviceVO keptByALaterStart = gpu(HOST_ID, 42L, GPU_BUS_ADDRESS_2, null, GpuDevice.State.Allocated);
+        keptByALaterStart.setVmId(VM_ID);
+        when(gpuDeviceDao.listByVmId(VM_ID)).thenReturn(List.of(freed, keptByALaterStart));
+        when(gpuDeviceDao.releaseIfVmHoldsNone(41L, VM_ID)).thenReturn(true);
+        when(gpuDeviceDao.releaseIfVmHoldsNone(42L, VM_ID)).thenReturn(false);
+
+        gpuService.releaseGpuDevicesOfStoppedVm(VM_ID);
+
+        verify(gpuDeviceDao).releaseIfVmHoldsNone(41L, VM_ID);
+        verify(gpuDeviceDao).releaseIfVmHoldsNone(42L, VM_ID);
+        verify(gpuDeviceDao, never()).persist(any(GpuDeviceVO.class));
+        verify(gpuDeviceDao, never()).update(anyLong(), any(GpuDeviceVO.class));
+        verify(gpuDeviceDao, never()).lockByHostId(anyLong());
+    }
+
+    @Test
+    public void startReleasesItsDevicesOnOtherHostsBeforeTakingTheTargetLock() throws Exception {
+        registerPartitions(GROUP_HOST_ID, List.of(positions(0, 1), positions(2, 3)));
+        hostGpus(GROUP_HOST_ID, 4);
+        GpuDeviceVO leftOver = gpu(OTHER_GROUP_HOST_ID, 51L, agentAddress(0), "0", GpuDevice.State.Allocated);
+        leftOver.setVmId(VM_ID);
+        when(gpuDeviceDao.listByVmId(VM_ID)).thenReturn(List.of(leftOver));
+        runTransactionsInline();
+
+        gpuService.allocateGpuGroup(startingVm(VM_ID, GROUP_HOST_ID), GROUP_HOST_ID, A100_PROFILE_ID, 2);
+
+        assertEquals(GpuDevice.State.Free, leftOver.getState());
+        assertNull(leftOver.getVmId());
+        InOrder inOrder = Mockito.inOrder(gpuService, gpuDeviceDao);
+        inOrder.verify(gpuDeviceDao).persist(leftOver);
+        inOrder.verify(gpuService).inTransaction(any());
+        inOrder.verify(gpuDeviceDao).lockByHostId(GROUP_HOST_ID);
+        verify(gpuDeviceDao, never()).lockByHostId(OTHER_GROUP_HOST_ID);
+    }
+
+    @Test
+    public void startingVmWithoutItsWholeGroupFailsItsStart() {
+        registerPartitions(GROUP_HOST_ID, List.of(positions(0, 1)));
+        List<GpuDeviceVO> devices = hostGpus(GROUP_HOST_ID, 2, 0);
+        when(gpuDeviceDao.listByHostAndVm(GROUP_HOST_ID, VM_ID_100)).thenReturn(List.of(devices.get(0)));
+        VgpuProfile profile = a100Profile();
+        VirtualMachine vm = startingVm(VM_ID_100, GROUP_HOST_ID);
+
+        when(vm.getState()).thenReturn(VirtualMachine.State.Starting);
+        try {
+            gpuService.getGPUDevice(vm, GROUP_HOST_ID, profile, 2);
+            Assert.fail("a VM started with part of its group");
+        } catch (CloudRuntimeException e) {
+            assertTrue(e.getMessage(), e.getMessage().contains("with 1 of its 2 GPU devices"));
+        }
+
+        when(vm.getState()).thenReturn(VirtualMachine.State.Running);
+        assertEquals("a running VM's description keeps what it holds", 1, gpuService.getGPUDevice(vm, GROUP_HOST_ID, profile, 2).getGpuDevices().size());
     }
 }

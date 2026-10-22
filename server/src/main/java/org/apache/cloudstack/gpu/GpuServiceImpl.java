@@ -20,28 +20,40 @@ import com.cloud.agent.api.VgpuTypesInfo;
 import com.cloud.agent.api.to.GPUDeviceTO;
 import com.cloud.event.ActionEvent;
 import com.cloud.event.EventTypes;
+import com.cloud.exception.InsufficientServerCapacityException;
 import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.gpu.GpuCardVO;
 import com.cloud.gpu.GpuDeviceVO;
+import com.cloud.gpu.HostGpuGroupMemberVO;
+import com.cloud.gpu.HostGpuGroupRuleVO;
 import com.cloud.gpu.VgpuProfileVO;
 import com.cloud.gpu.dao.GpuCardDao;
 import com.cloud.gpu.dao.GpuDeviceDao;
+import com.cloud.gpu.dao.HostGpuGroupMemberDao;
+import com.cloud.gpu.dao.HostGpuGroupRuleDao;
 import com.cloud.gpu.dao.VgpuProfileDao;
 import com.cloud.host.Host;
 import com.cloud.host.HostVO;
 import com.cloud.host.Status;
 import com.cloud.host.dao.HostDao;
+import com.cloud.hypervisor.Hypervisor.HypervisorType;
+import com.cloud.offering.ServiceOffering;
 import com.cloud.resource.ResourceManager;
+import com.cloud.resource.ResourceState;
 import com.cloud.service.ServiceOfferingVO;
 import com.cloud.service.dao.ServiceOfferingDao;
+import com.cloud.service.dao.ServiceOfferingDetailsDao;
+import com.cloud.storage.DiskOfferingVO;
+import com.cloud.storage.StorageManager;
+import com.cloud.storage.dao.DiskOfferingDao;
 import com.cloud.utils.Pair;
 import com.cloud.utils.component.ManagerBase;
 import com.cloud.utils.component.PluggableService;
 import com.cloud.utils.db.DB;
 import com.cloud.utils.db.GlobalLock;
 import com.cloud.utils.db.Transaction;
-import com.cloud.utils.db.TransactionCallback;
 import com.cloud.utils.db.TransactionCallbackNoReturn;
+import com.cloud.utils.db.TransactionCallbackWithException;
 import com.cloud.utils.db.TransactionStatus;
 import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.vm.UserVmManager;
@@ -59,34 +71,56 @@ import org.apache.cloudstack.api.command.admin.gpu.DeleteGpuDeviceCmd;
 import org.apache.cloudstack.api.command.admin.gpu.DeleteVgpuProfileCmd;
 import org.apache.cloudstack.api.command.admin.gpu.DiscoverGpuDevicesCmd;
 import org.apache.cloudstack.api.command.admin.gpu.ListGpuDevicesCmdByAdmin;
+import org.apache.cloudstack.api.command.admin.gpu.ListHostGpuGroupsCmd;
 import org.apache.cloudstack.api.command.admin.gpu.ManageGpuDeviceCmd;
 import org.apache.cloudstack.api.command.admin.gpu.UnmanageGpuDeviceCmd;
 import org.apache.cloudstack.api.command.admin.gpu.UpdateGpuCardCmd;
 import org.apache.cloudstack.api.command.admin.gpu.UpdateGpuDeviceCmd;
+import org.apache.cloudstack.api.command.admin.gpu.UpdateHostGpuGroupsCmd;
 import org.apache.cloudstack.api.command.admin.gpu.UpdateVgpuProfileCmd;
 import org.apache.cloudstack.api.command.user.gpu.ListGpuCardsCmd;
 import org.apache.cloudstack.api.command.user.gpu.ListGpuDevicesCmd;
 import org.apache.cloudstack.api.command.user.gpu.ListVgpuProfilesCmd;
 import org.apache.cloudstack.api.response.GpuCardResponse;
 import org.apache.cloudstack.api.response.GpuDeviceResponse;
+import org.apache.cloudstack.api.response.HostGpuGroupsResponse;
 import org.apache.cloudstack.api.response.ListResponse;
 import org.apache.cloudstack.api.response.VgpuProfileResponse;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.Configurable;
+import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
+import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.collections.MapUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonParser;
+
 import javax.inject.Inject;
 import javax.naming.ConfigurationException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Random;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Component
@@ -115,6 +149,35 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
 
     @Inject
     private ResourceManager resourceManager;
+
+    @Inject
+    private HostGpuGroupRuleDao hostGpuGroupRuleDao;
+
+    @Inject
+    private HostGpuGroupMemberDao hostGpuGroupMemberDao;
+
+    @Inject
+    private ServiceOfferingDetailsDao serviceOfferingDetailsDao;
+
+    @Inject
+    private DiskOfferingDao diskOfferingDao;
+
+    @Inject
+    private PrimaryDataStoreDao primaryDataStoreDao;
+
+    @Inject
+    private StorageManager storageManager;
+
+    private static final Pattern FULL_BUS_ADDRESS = Pattern.compile("([0-9a-f]{1,4}):([0-9a-f]{1,2}):([0-9a-f]{1,2})\\.([0-9a-f])");
+    private static final Pattern SHORT_BUS_ADDRESS = Pattern.compile("([0-9a-f]{1,2}):([0-9a-f]{1,2})\\.([0-9a-f])");
+    private static final Set<Integer> GROUP_SIZES = Set.of(1, 2, 4, 8);
+
+    /**
+     * The resolution of the stored VM update time, which keeps whole seconds.
+     */
+    private static final long REPORT_TIME_RESOLUTION_MS = 1000;
+
+    private final Random random = new Random();
 
     @Override
     public boolean configure(String name, java.util.Map<String, Object> params) throws ConfigurationException {
@@ -146,6 +209,8 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
         cmdList.add(CreateGpuDeviceCmd.class);
         cmdList.add(UpdateGpuDeviceCmd.class);
         cmdList.add(DeleteGpuDeviceCmd.class);
+        cmdList.add(UpdateHostGpuGroupsCmd.class);
+        cmdList.add(ListHostGpuGroupsCmd.class);
 
         return cmdList;
     }
@@ -157,7 +222,7 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
 
     @Override
     public ConfigKey<?>[] getConfigKeys() {
-        return new ConfigKey<?>[]{GpuDetachOnStop};
+        return new ConfigKey<?>[]{GpuDetachOnStop, GpuAllocationAlgorithm};
     }
 
     @Override
@@ -661,6 +726,24 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
         deallocateGpuDevices(devices);
     }
 
+    /**
+     * Frees the VM's devices on hosts other than the given one, each in its own statement, so that no host's device
+     * lock is ever waited for while another host's device rows are held.
+     */
+    private void releaseDevicesOnOtherHosts(long vmId, long hostId) {
+        deallocateGpuDevices(gpuDeviceDao.listByVmId(vmId).stream().filter(device -> device.getHostId() != hostId).collect(Collectors.toList()));
+    }
+
+    @Override
+    public void releaseGpuDevicesOfStoppedVm(long vmId) {
+        for (GpuDeviceVO device : gpuDeviceDao.listByVmId(vmId)) {
+            if (gpuDeviceDao.releaseIfVmHoldsNone(device.getId(), vmId)) {
+                logger.debug("Released GPU device {} of VM {}", device, vmId);
+                checkAndUpdateParentGpuDeviceState(device.getParentGpuDeviceId());
+            }
+        }
+    }
+
     private void deallocateGpuDevices(List<GpuDeviceVO> devices) {
         if (CollectionUtils.isNotEmpty(devices)) {
             for (GpuDeviceVO device : devices) {
@@ -700,11 +783,12 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
 
     @Override
     public void allocateGpuDevicesToVmOnHost(long vmId, long hostId, List<VgpuTypesInfo> gpuDevices) {
+        releaseDevicesOnOtherHosts(vmId, hostId);
         Transaction.execute(new TransactionCallbackNoReturn() {
             @Override
             public void doInTransactionWithoutResult(TransactionStatus status) {
-                // Deallocate existing GPU devices for the VM on the host
-                deallocateAllGpuDevicesForVm(vmId);
+                gpuDeviceDao.lockByHostId(hostId);
+                deallocateGpuDevices(gpuDeviceDao.listByHostAndVm(hostId, vmId));
 
                 // Allocate new GPU devices to the VM on the host
                 for (VgpuTypesInfo gpuDevice : gpuDevices) {
@@ -748,65 +832,68 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
 
     @Override
     public boolean isGPUDeviceAvailable(Host host, Long vmId, VgpuProfile vgpuProfile, int gpuCount) {
-        List<GpuDeviceVO> availableGpuDevices = gpuDeviceDao.listDevicesForAllocation(host.getId(),
-                vgpuProfile.getId());
-        if (availableGpuDevices.size() >= gpuCount) {
-            return true;
-        } else {
-            // Check if there are already GPU devices assigned to the VM and belonging to the same vGPU profile
-            List<GpuDeviceVO> existingGpuDevices = gpuDeviceDao.listByHostAndVm(host.getId(), vmId);
-            existingGpuDevices = existingGpuDevices.stream().filter(
-                    device -> device.getVgpuProfileId() == vgpuProfile.getId()).collect(Collectors.toList());
-            return existingGpuDevices.size() + availableGpuDevices.size() >= gpuCount;
+        HostGpus gpus = loadHostGpus(host.getId(), vgpuProfile.getId(), vmId);
+        return gpus != null && !gpus.selector.candidates(gpus.free, gpuCount).isEmpty();
+    }
+
+    protected <T, E extends Throwable> T inTransaction(TransactionCallbackWithException<T, E> callback) throws E {
+        return Transaction.execute(callback);
+    }
+
+    @Override
+    public GPUDeviceTO getGPUDevice(VirtualMachine vm, long hostId, VgpuProfile vgpuProfile, int gpuCount) {
+        List<GpuDeviceVO> held = gpuDeviceDao.listByHostAndVm(hostId, vm.getId()).stream()
+                .filter(device -> device.getVgpuProfileId() == vgpuProfile.getId())
+                .sorted(Comparator.comparing(device -> normalizeBusAddress(device.getBusAddress())))
+                .collect(Collectors.toList());
+        if (held.size() != gpuCount) {
+            if (VirtualMachine.State.Starting.equals(vm.getState())) {
+                throw new CloudRuntimeException(String.format("VM %s is starting on host %d with %d of its %d GPU devices", vm.getUuid(), hostId,
+                        held.size(), gpuCount));
+            }
+            logger.warn("VM {} holds {} of its {} GPU devices on host {}", vm, held.size(), gpuCount, hostId);
         }
+
+        GpuCardVO gpuCard = gpuCardDao.findById(vgpuProfile.getCardId());
+        ServiceOfferingVO serviceOffering = serviceOfferingDao.findById(vm.getServiceOfferingId());
+        List<VgpuTypesInfo> vgpuInfoList = new ArrayList<>();
+        for (GpuDeviceVO gpuDevice : held) {
+            VgpuTypesInfo vgpuInfo = new VgpuTypesInfo(gpuDevice.getType(), gpuCard.getName(),
+                    vgpuProfile.getName(), gpuDevice.getBusAddress(), gpuCard.getVendorId(),
+                    gpuCard.getVendorName(), gpuCard.getDeviceId(), gpuCard.getDeviceName());
+            vgpuInfo.setDisplay(serviceOffering.getGpuDisplay());
+            if (gpuDevice.getParentGpuDeviceId() != null) {
+                GpuDeviceVO parentGpuDevice = gpuDeviceDao.findById(gpuDevice.getParentGpuDeviceId());
+                if (parentGpuDevice != null) {
+                    vgpuInfo.setParentBusAddress(parentGpuDevice.getBusAddress());
+                }
+            }
+            vgpuInfoList.add(vgpuInfo);
+        }
+
+        HashMap<String, HashMap<String, VgpuTypesInfo>> groupDetails = getGpuGroupDetailsFromGpuDevicesOnHost(hostId);
+        return new GPUDeviceTO(gpuCard.getName(), vgpuProfile.getName(), gpuCount, groupDetails, vgpuInfoList);
     }
 
     @Override
     @DB
-    public GPUDeviceTO getGPUDevice(VirtualMachine vm, long hostId, VgpuProfile vgpuProfile, int gpuCount) {
-        return Transaction.execute(new TransactionCallback<GPUDeviceTO>() {
+    public GpuGroupPick allocateGpuGroup(VirtualMachine vm, long hostId, long vgpuProfileId, int count) throws InsufficientServerCapacityException {
+        releaseDevicesOnOtherHosts(vm.getId(), hostId);
+        return inTransaction(new TransactionCallbackWithException<GpuGroupPick, InsufficientServerCapacityException>() {
             @Override
-            public GPUDeviceTO doInTransaction(TransactionStatus status) {
-                if (vm.getHostId() == hostId) {
-                    deallocateAllGpuDevicesForVm(vm.getId());
+            public GpuGroupPick doInTransaction(TransactionStatus status) throws InsufficientServerCapacityException {
+                gpuDeviceDao.lockByHostId(hostId);
+                deallocateGpuDevices(gpuDeviceDao.listByHostAndVm(hostId, vm.getId()));
+                List<GpuDeviceVO> group = chooseGroup(hostId, vgpuProfileId, count).orElseThrow(() -> new InsufficientServerCapacityException(
+                        String.format("Host %d has no whole free group of %d GPUs for VM %s", hostId, count, vm.getUuid()), Host.class, hostId));
+                for (GpuDeviceVO device : group) {
+                    device.setState(GpuDevice.State.Allocated);
+                    device.setVmId(vm.getId());
+                    gpuDeviceDao.persist(device);
+                    checkAndUpdateParentGpuDeviceState(device.getParentGpuDeviceId());
                 }
-
-                List<GpuDeviceVO> availableGpuDevices = gpuDeviceDao.listDevicesForAllocation(hostId,
-                        vgpuProfile.getId());
-
-                if (availableGpuDevices.size() < gpuCount) {
-                    logger.debug("Not enough GPU devices available for VM {}", vm);
-                    throw new CloudRuntimeException(
-                            String.format("Not enough GPU devices available for VM %s", vm.getUuid()));
-                }
-
-                List<GpuDeviceVO> finalGpuDevices = getGpuDevicesToAllocate(availableGpuDevices, gpuCount);
-
-                GpuCardVO gpuCard = gpuCardDao.findById(vgpuProfile.getCardId());
-
-                ServiceOfferingVO serviceOffering = serviceOfferingDao.findById(vm.getServiceOfferingId());
-                List<VgpuTypesInfo> vgpuInfoList = new ArrayList<>();
-                for (GpuDeviceVO gpuDevice : finalGpuDevices) {
-                    gpuDevice.setState(GpuDevice.State.Allocated);
-                    gpuDevice.setVmId(vm.getId());
-                    gpuDeviceDao.persist(gpuDevice);
-
-                    VgpuTypesInfo vgpuInfo = new VgpuTypesInfo(gpuDevice.getType(), gpuCard.getName(),
-                            vgpuProfile.getName(), gpuDevice.getBusAddress(), gpuCard.getVendorId(),
-                            gpuCard.getVendorName(), gpuCard.getDeviceId(), gpuCard.getDeviceName());
-                    vgpuInfo.setDisplay(serviceOffering.getGpuDisplay());
-                    if (gpuDevice.getParentGpuDeviceId() != null) {
-                        GpuDeviceVO parentGpuDevice = gpuDeviceDao.findById(gpuDevice.getParentGpuDeviceId());
-                        if (parentGpuDevice != null) {
-                            vgpuInfo.setParentBusAddress(parentGpuDevice.getBusAddress());
-                            checkAndUpdateParentGpuDeviceState(parentGpuDevice);
-                        }
-                    }
-                    vgpuInfoList.add(vgpuInfo);
-                }
-
-                HashMap<String, HashMap<String, VgpuTypesInfo>> groupDetails = getGpuGroupDetailsFromGpuDevicesOnHost(hostId);
-                return new GPUDeviceTO(gpuCard.getName(), vgpuProfile.getName(), gpuCount, groupDetails, vgpuInfoList);
+                logger.debug("Allocated GPU group {} of host {} to VM {}", group, hostId, vm);
+                return toPick(hostId, group);
             }
         });
     }
@@ -864,7 +951,33 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
      */
     @Override
     @DB
-    public void addGpuDevicesToHost(final Host host, final List<VgpuTypesInfo> newGpuDevicesInfo) {
+    public void addGpuDevicesToHost(final Host host, final List<VgpuTypesInfo> newGpuDevicesInfo, final Date reportTime) {
+        GlobalLock lock = GlobalLock.getInternLock("add-gpu-devices-to-host-" + host.getId());
+        try {
+            if (lock.lock(30)) {
+                try {
+                    inTransaction(new TransactionCallbackWithException<Void, RuntimeException>() {
+                        @Override
+                        public Void doInTransaction(TransactionStatus status) {
+                            syncGpuDevicesOfHost(host, newGpuDevicesInfo, reportTime);
+                            return null;
+                        }
+                    });
+                } finally {
+                    lock.unlock();
+                }
+            }
+        } finally {
+            lock.releaseRef();
+        }
+    }
+
+    /**
+     * Brings the host's GPU device rows in line with the devices its agent reports. The rows are locked and read in
+     * one transaction, so that no allocation on the host interleaves with the update.
+     */
+    private void syncGpuDevicesOfHost(final Host host, final List<VgpuTypesInfo> newGpuDevicesInfo, final Date reportTime) {
+        gpuDeviceDao.lockByHostId(host.getId());
         List<GpuDeviceVO> existingGpuDevices = gpuDeviceDao.listByHostId(host.getId());
         Map<String, GpuDeviceVO> existingGpuDevicesMap = new HashMap<>();
         Map<String, GpuDeviceVO> gpuDevicesToDisableMap = new HashMap<>();
@@ -873,60 +986,49 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
             gpuDevicesToDisableMap.put(device.getBusAddress(), device);
         }
 
-        GlobalLock lock = GlobalLock.getInternLock("add-gpu-devices-to-host-" + host.getId());
-        try {
-            if (lock.lock(30)) {
-                try {
-                    Map<String, GpuCardVO> cardMap = new HashMap<>();
-                    Map<String, VgpuProfileVO> vgpuProfileMap = new HashMap<>();
+        Map<String, GpuCardVO> cardMap = new HashMap<>();
+        Map<String, VgpuProfileVO> vgpuProfileMap = new HashMap<>();
 
-                    for (final VgpuTypesInfo deviceInfo : newGpuDevicesInfo) {
-                        GpuCardVO card = getGpuCardAndUpdateMap(deviceInfo, cardMap, vgpuProfileMap);
-                        VgpuProfileVO vgpuProfile = getVgpuProfileAndUpdateMap(deviceInfo, card, vgpuProfileMap);
+        for (final VgpuTypesInfo deviceInfo : newGpuDevicesInfo) {
+            GpuCardVO card = getGpuCardAndUpdateMap(deviceInfo, cardMap, vgpuProfileMap);
+            VgpuProfileVO vgpuProfile = getVgpuProfileAndUpdateMap(deviceInfo, card, vgpuProfileMap);
 
-                        GpuDeviceVO existingDevice = existingGpuDevicesMap.get(deviceInfo.getBusAddress());
-                        if (existingDevice == null) {
-                            createAndAddGpuDeviceToHost(deviceInfo, host, card, vgpuProfile);
-                        } else {
-                            // Update the device's info
-                            GpuDeviceVO parentGpuDevice = null;
-                            if (deviceInfo.getParentBusAddress() != null) {
-                                parentGpuDevice = gpuDeviceDao.findByHostIdAndBusAddress(host.getId(),
-                                        deviceInfo.getParentBusAddress());
-                                if (parentGpuDevice != null) {
-                                    existingDevice.setParentGpuDeviceId(parentGpuDevice.getId());
-                                    parentGpuDevice.setType(GpuDevice.DeviceType.VGPUOnly);
-                                    gpuDeviceDao.persist(parentGpuDevice);
-                                }
-                            }
-                            if (deviceInfo.isPassthroughEnabled()) {
-                                existingDevice.setType(deviceInfo.getDeviceType());
-                            } else {
-                                existingDevice.setType(GpuDevice.DeviceType.VGPUOnly);
-                            }
-                            if (existingDevice.getPciRoot() == null) {
-                                existingDevice.setPciRoot(deviceInfo.getPciRoot());
-                            }
-                            setStateAndVmName(deviceInfo, existingDevice, parentGpuDevice);
-                            gpuDeviceDao.update(existingDevice.getId(), existingDevice);
-                            checkAndUpdateParentGpuDeviceState(existingDevice.getParentGpuDeviceId());
-                        }
-                        gpuDevicesToDisableMap.remove(deviceInfo.getBusAddress());
+            GpuDeviceVO existingDevice = existingGpuDevicesMap.get(deviceInfo.getBusAddress());
+            if (existingDevice == null) {
+                createAndAddGpuDeviceToHost(deviceInfo, host, card, vgpuProfile, reportTime);
+            } else {
+                // Update the device's info
+                GpuDeviceVO parentGpuDevice = null;
+                if (deviceInfo.getParentBusAddress() != null) {
+                    parentGpuDevice = gpuDeviceDao.findByHostIdAndBusAddress(host.getId(),
+                            deviceInfo.getParentBusAddress());
+                    if (parentGpuDevice != null) {
+                        existingDevice.setParentGpuDeviceId(parentGpuDevice.getId());
+                        parentGpuDevice.setType(GpuDevice.DeviceType.VGPUOnly);
+                        gpuDeviceDao.persist(parentGpuDevice);
                     }
-
-                    // Disable the devices that are not in the new list
-                    for (final GpuDeviceVO device : gpuDevicesToDisableMap.values()) {
-                        logger.info("Disabling GPU device {} on host {} due to missing address in the new devices on the host.", device, host);
-                        device.setState(GpuDevice.State.Error);
-                        gpuDeviceDao.update(device.getId(), device);
-                        checkAndUpdateParentGpuDeviceState(device.getParentGpuDeviceId());
-                    }
-                } finally {
-                    lock.unlock();
                 }
+                if (deviceInfo.isPassthroughEnabled()) {
+                    existingDevice.setType(deviceInfo.getDeviceType());
+                } else {
+                    existingDevice.setType(GpuDevice.DeviceType.VGPUOnly);
+                }
+                if (existingDevice.getPciRoot() == null) {
+                    existingDevice.setPciRoot(deviceInfo.getPciRoot());
+                }
+                setStateAndVmName(deviceInfo, existingDevice, parentGpuDevice, reportTime);
+                gpuDeviceDao.update(existingDevice.getId(), existingDevice);
+                checkAndUpdateParentGpuDeviceState(existingDevice.getParentGpuDeviceId());
             }
-        } finally {
-            lock.releaseRef();
+            gpuDevicesToDisableMap.remove(deviceInfo.getBusAddress());
+        }
+
+        // Disable the devices that are not in the new list
+        for (final GpuDeviceVO device : gpuDevicesToDisableMap.values()) {
+            logger.info("Disabling GPU device {} on host {} due to missing address in the new devices on the host.", device, host);
+            device.setState(GpuDevice.State.Error);
+            gpuDeviceDao.update(device.getId(), device);
+            checkAndUpdateParentGpuDeviceState(device.getParentGpuDeviceId());
         }
     }
 
@@ -942,15 +1044,29 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
             throw new InvalidParameterValueException("No GPU devices found for the provided IDs");
         }
 
-        for (GpuDeviceVO gpuDevice : gpuDevices) {
-            if (gpuDevice.getVmId() != null) {
-                throw new InvalidParameterValueException(
-                        String.format("Cannot delete GPU device %s as it is currently allocated to VM %d",
-                                gpuDevice.getUuid(), gpuDevice.getVmId()));
+        inTransaction(new TransactionCallbackWithException<Void, RuntimeException>() {
+            @Override
+            public Void doInTransaction(TransactionStatus status) {
+                lockHostsOf(gpuDevices);
+                for (GpuDeviceVO gpuDevice : gpuDeviceDao.listByIds(gpuDeviceIds)) {
+                    if (gpuDevice.getVmId() != null) {
+                        throw new InvalidParameterValueException(
+                                String.format("Cannot delete GPU device %s as it is currently allocated to VM %d",
+                                        gpuDevice.getUuid(), gpuDevice.getVmId()));
+                    }
+                    gpuDeviceDao.remove(gpuDevice.getId());
+                }
+                return null;
             }
-            gpuDeviceDao.remove(gpuDevice.getId());
-        }
+        });
         return true;
+    }
+
+    /**
+     * Locks the GPU device rows of the hosts of the given devices, in host id order.
+     */
+    private void lockHostsOf(List<GpuDeviceVO> devices) {
+        devices.stream().map(GpuDeviceVO::getHostId).distinct().sorted().forEach(gpuDeviceDao::lockByHostId);
     }
 
     private GpuCardVO getGpuCardAndUpdateMap(VgpuTypesInfo deviceInfo, Map<String, GpuCardVO> cardMap,
@@ -1020,7 +1136,7 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
     }
 
     private void createAndAddGpuDeviceToHost(VgpuTypesInfo deviceInfo, Host host, GpuCardVO card,
-            VgpuProfileVO vgpuProfile) {
+            VgpuProfileVO vgpuProfile, Date reportTime) {
         Long parentGpuDeviceId = null;
         GpuDeviceVO parentGpuDevice = null;
         if (deviceInfo.getParentBusAddress() != null) {
@@ -1038,7 +1154,7 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
         gpuDevice.setType(deviceInfo.getDeviceType());
         gpuDevice.setBusAddress(deviceInfo.getBusAddress());
         gpuDevice.setCardId(card.getId());
-        setStateAndVmName(deviceInfo, gpuDevice, parentGpuDevice);
+        setStateAndVmName(deviceInfo, gpuDevice, parentGpuDevice, reportTime);
         if (!deviceInfo.isPassthroughEnabled()) {
             gpuDevice.setType(GpuDevice.DeviceType.VGPUOnly);
         }
@@ -1048,7 +1164,7 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
         logger.info("Added new GPU device {} to host {}", gpuDevice, host);
     }
 
-    private void setStateAndVmName(VgpuTypesInfo deviceInfo, GpuDeviceVO device, GpuDeviceVO parentGpuDevice) {
+    private void setStateAndVmName(VgpuTypesInfo deviceInfo, GpuDeviceVO device, GpuDeviceVO parentGpuDevice, Date reportTime) {
         if (StringUtils.isNotBlank(deviceInfo.getVmName())) {
             VMInstanceVO vm = vmInstanceDao.findVMByInstanceName(deviceInfo.getVmName());
             if (vm != null) {
@@ -1065,16 +1181,32 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
                 device.setState(GpuDevice.State.Free);
             } else {
                 VMInstanceVO vm = vmInstanceDao.findById(device.getVmId());
-                if (vm != null && vm.getState().equals(VirtualMachine.State.Stopped) && !GpuDetachOnStop.valueIn(vm.getDomainId())) {
+                if (vm != null && vmMayHoldDevice(vm, device, reportTime)) {
                     device.setState(GpuDevice.State.Allocated);
                 } else {
-                    logger.warn("VM with ID {} not found for GPU device {}. Allocated to a removed VM. Setting state to Free.",
+                    logger.warn("VM with ID {} not found for GPU device {}, or it no longer holds the device. Setting state to Free.",
                             device.getVmId(), device);
                     device.setState(GpuDevice.State.Free);
                     device.setVmId(null);
                 }
             }
         }
+    }
+
+    /**
+     * The host's report of which domain uses a device is authoritative, except for a VM starting on the device's host,
+     * which holds its devices before its domain exists, and a VM whose state changed after the report was gathered.
+     * A stopped VM keeps its devices only when GPUs are not detached on stop.
+     */
+    private boolean vmMayHoldDevice(VMInstanceVO vm, GpuDeviceVO device, Date reportTime) {
+        if (VirtualMachine.State.Stopped.equals(vm.getState())) {
+            return !GpuDetachOnStop.valueIn(vm.getDomainId());
+        }
+        if (!Objects.equals(vm.getHostId(), device.getHostId())) {
+            return false;
+        }
+        return VirtualMachine.State.Starting.equals(vm.getState())
+                || (vm.getUpdateTime() != null && reportTime != null && vm.getUpdateTime().getTime() >= reportTime.getTime() - REPORT_TIME_RESOLUTION_MS);
     }
 
     private boolean updateGpuDeviceManagedState(List<Long> gpuDeviceIds, GpuDevice.ManagedState managedState) {
@@ -1103,10 +1235,26 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
             hostIds.add(gpuDevice.getHostId());
         }
 
-        for (GpuDeviceVO gpuDevice : gpuDevices) {
-            gpuDevice.setManagedState(managedState);
-            gpuDeviceDao.update(gpuDevice.getId(), gpuDevice);
-        }
+        inTransaction(new TransactionCallbackWithException<Void, RuntimeException>() {
+            @Override
+            public Void doInTransaction(TransactionStatus status) {
+                lockHostsOf(gpuDevices);
+                for (Long gpuDeviceId : gpuDeviceIds) {
+                    GpuDeviceVO gpuDevice = gpuDeviceDao.findById(gpuDeviceId);
+                    if (gpuDevice == null) {
+                        throw new InvalidParameterValueException(String.format("GPU device with ID %d not found", gpuDeviceId));
+                    }
+                    if (gpuDevice.getVmId() != null) {
+                        throw new InvalidParameterValueException(
+                                String.format("Cannot change resource state of GPU device %s as it is in use by VM %d",
+                                        gpuDevice, gpuDevice.getVmId()));
+                    }
+                    gpuDevice.setManagedState(managedState);
+                    gpuDeviceDao.update(gpuDevice.getId(), gpuDevice);
+                }
+                return null;
+            }
+        });
 
         for (Long hostId : hostIds) {
             resourceManager.updateGPUDetails(hostId, getGpuGroupDetailsFromGpuDevicesOnHost(hostId));
@@ -1198,195 +1346,401 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
         return response;
     }
 
-    /**
-     * Allocates optimal GPU devices for KVM performance based on NUMA node alignment and PCI root optimization.
-     * <p>
-     * Performance priority (best to acceptable):
-     * 1. All GPUs from same NUMA node and same PCI root (best memory locality and PCI bandwidth)
-     * 2. All GPUs from same NUMA node across different PCI roots (good memory locality)
-     * 3. GPUs distributed across NUMA nodes with PCI root preference within each node
-     *
-     * @param availableGpuDevices List of available GPU devices
-     * @param gpuCount            Number of GPUs to allocate
-     * @return List of optimally selected GPU devices
-     */
-    public List<GpuDeviceVO> getGpuDevicesToAllocate(List<GpuDeviceVO> availableGpuDevices, int gpuCount) {
-        if (availableGpuDevices.size() < gpuCount) {
-            throw new CloudRuntimeException(
-                    String.format("Insufficient GPU devices available. Required: %d, Available: %d", gpuCount,
-                            availableGpuDevices.size()));
-        }
+    private static final class HostGpus {
+        private final GpuGroupSelector selector;
+        private final Map<String, GpuDeviceVO> usable = new TreeMap<>();
+        private final Map<String, String> free = new TreeMap<>();
+        private final Map<String, String> present = new TreeMap<>();
 
-        // Strategy 1: Try optimal allocation (same NUMA node + same PCI root)
-        List<GpuDeviceVO> optimalSelection = tryOptimalAllocation(availableGpuDevices, gpuCount);
-        if (optimalSelection != null) {
-            logger.info("Allocated {} GPU devices using optimal strategy (same NUMA node and PCI root)", gpuCount);
-            return optimalSelection;
+        private HostGpus(GpuGroupSelector selector) {
+            this.selector = selector;
         }
-
-        // Strategy 2: Try single NUMA node allocation across multiple PCI roots
-        List<GpuDeviceVO> singleNumaSelection = trySingleNumaAllocation(availableGpuDevices, gpuCount);
-        if (singleNumaSelection != null) {
-            logger.info("Allocated {} GPU devices using single NUMA node strategy", gpuCount);
-            return singleNumaSelection;
-        }
-
-        // Strategy 3: Distribute across NUMA nodes with PCI root optimization
-        List<GpuDeviceVO> distributedSelection = tryDistributedAllocation(availableGpuDevices, gpuCount);
-        logger.info("Allocated {} GPU devices using distributed NUMA strategy", gpuCount);
-        return distributedSelection;
     }
 
     /**
-     * Attempts to allocate all GPUs from the same NUMA node and PCI root for optimal performance.
+     * @param releasingVmId a VM whose own devices on the host count as free, or null
+     * @return the host's GPUs of the vGPU profile by bus address: usable ones (managed and free) and present ones (not
+     *         in error), or null when the host has no registered GPU group rule
      */
-    private List<GpuDeviceVO> tryOptimalAllocation(List<GpuDeviceVO> availableDevices, int gpuCount) {
-        Map<String, Map<String, List<GpuDeviceVO>>> topology = buildNumaPciTopology(availableDevices);
+    private HostGpus loadHostGpus(long hostId, long vgpuProfileId, Long releasingVmId) {
+        GroupRule rule = getGpuGroupRule(hostId);
+        if (rule == null) {
+            return null;
+        }
+        HostGpus gpus = new HostGpus(new GpuGroupSelector(rule, registeredGroups(hostId, rule)));
+        for (GpuDeviceVO device : gpuDeviceDao.listByHostId(hostId)) {
+            if (device.getVgpuProfileId() != vgpuProfileId || GpuDevice.DeviceType.VGPUOnly.equals(device.getType())) {
+                continue;
+            }
+            String bus = normalizeBusAddress(device.getBusAddress());
+            String node = StringUtils.defaultString(device.getNumaNode()).trim();
+            if (!GpuDevice.State.Error.equals(device.getState())) {
+                gpus.present.put(bus, node);
+            }
+            boolean releasing = releasingVmId != null && releasingVmId.equals(device.getVmId())
+                    && GpuDevice.State.Allocated.equals(device.getState());
+            if (GpuDevice.ManagedState.Managed.equals(device.getManagedState()) && (GpuDevice.State.Free.equals(device.getState()) || releasing)) {
+                gpus.free.put(bus, node);
+                gpus.usable.put(bus, device);
+            }
+        }
+        return gpus;
+    }
 
-        for (Map<String, List<GpuDeviceVO>> numaNode : topology.values()) {
-            for (List<GpuDeviceVO> pciRootDevices : numaNode.values()) {
-                if (pciRootDevices.size() >= gpuCount) {
-                    return selectDevicesFromGroup(pciRootDevices, gpuCount);
+    /**
+     * @return the address as dddd:bb:ss.f; a short bb:ss.f address, as lspci prints devices in PCI domain 0, is in
+     *         domain 0. An address of neither form is returned trimmed and in lower case.
+     */
+    static String normalizeBusAddress(String busAddress) {
+        String address = StringUtils.defaultString(busAddress).trim().toLowerCase(Locale.ROOT);
+        String canonical = canonicalBusAddress(address);
+        return canonical != null ? canonical : address;
+    }
+
+    /**
+     * @return the address as dddd:bb:ss.f, or null when it is not a PCI address with or without its domain
+     */
+    static String canonicalBusAddress(String address) {
+        Matcher full = FULL_BUS_ADDRESS.matcher(address);
+        Matcher shortForm = SHORT_BUS_ADDRESS.matcher(address);
+        int domain;
+        int bus;
+        int slot;
+        int function;
+        if (full.matches()) {
+            domain = Integer.parseInt(full.group(1), 16);
+            bus = Integer.parseInt(full.group(2), 16);
+            slot = Integer.parseInt(full.group(3), 16);
+            function = Integer.parseInt(full.group(4), 16);
+        } else if (shortForm.matches()) {
+            domain = 0;
+            bus = Integer.parseInt(shortForm.group(1), 16);
+            slot = Integer.parseInt(shortForm.group(2), 16);
+            function = Integer.parseInt(shortForm.group(3), 16);
+        } else {
+            return null;
+        }
+        if (bus > 0xff || slot > 0x1f || function > 7) {
+            return null;
+        }
+        return String.format("%04x:%02x:%02x.%x", domain, bus, slot, function);
+    }
+
+    protected AllocationAlgorithm getAllocationAlgorithm() {
+        String value = GpuAllocationAlgorithm.value();
+        try {
+            return AllocationAlgorithm.valueOf(value);
+        } catch (IllegalArgumentException | NullPointerException e) {
+            logger.warn("Unknown {} value {}; using {}", GpuAllocationAlgorithm.key(), value, AllocationAlgorithm.bestfit);
+            return AllocationAlgorithm.bestfit;
+        }
+    }
+
+    /**
+     * @return the devices of the chosen group in bus address order, or empty when the host has no usable group
+     */
+    private Optional<List<GpuDeviceVO>> chooseGroup(long hostId, long vgpuProfileId, int count) {
+        HostGpus gpus = loadHostGpus(hostId, vgpuProfileId, null);
+        if (gpus == null) {
+            logger.debug("Host {} has no registered GPU group rule and offers no GPU group", hostId);
+            return Optional.empty();
+        }
+        return gpus.selector.choose(gpus.free, count, getAllocationAlgorithm(), random)
+                .map(candidate -> candidate.getBuses().stream().map(gpus.usable::get).collect(Collectors.toList()));
+    }
+
+    @Override
+    public Optional<GpuGroupPick> pickGroup(long hostId, long vgpuProfileId, int count) {
+        return chooseGroup(hostId, vgpuProfileId, count).map(devices -> toPick(hostId, devices));
+    }
+
+    private static GpuGroupPick toPick(long hostId, List<GpuDeviceVO> devices) {
+        return new GpuGroupPick(hostId, devices.stream().map(device -> normalizeBusAddress(device.getBusAddress())).collect(Collectors.toList()),
+                devices.stream().map(GpuDeviceVO::getId).collect(Collectors.toList()));
+    }
+
+    @Override
+    public int bestFitScore(long hostId, long vgpuProfileId, int count) {
+        HostGpus gpus = loadHostGpus(hostId, vgpuProfileId, null);
+        return gpus == null ? Integer.MAX_VALUE : gpus.selector.bestFitScore(gpus.free, count);
+    }
+
+    @Override
+    public SlotCount slotCount(ServiceOffering serviceOffering, Long hostId) {
+        Long vgpuProfileId = serviceOffering.getVgpuProfileId();
+        if (vgpuProfileId == null || vgpuProfileId <= 0) {
+            return new SlotCount(0, 0);
+        }
+        int count = serviceOffering.getGpuCount() != null ? serviceOffering.getGpuCount() : 1;
+        List<Long> hostIds = hostId != null ? List.of(hostId)
+                : hostGpuGroupRuleDao.listAll().stream().map(HostGpuGroupRuleVO::getHostId).collect(Collectors.toList());
+        List<Long> zoneIds = serviceOfferingDetailsDao.findZoneIds(serviceOffering.getId());
+        int available = 0;
+        int total = 0;
+        for (Long id : hostIds) {
+            HostVO host = hostDao.findById(id);
+            if (!offersGpuSlots(host, serviceOffering, zoneIds)) {
+                continue;
+            }
+            HostGpus gpus = loadHostGpus(id, vgpuProfileId, null);
+            if (gpus == null) {
+                continue;
+            }
+            total += gpus.selector.slots(gpus.present, count);
+            int free = gpus.selector.slots(gpus.free, count);
+            if (free > 0 && localStorageClosed(host, serviceOffering)) {
+                logger.debug("The local storage of {} has crossed a disable threshold; its {} free GPU slots are not available", host, free);
+                free = 0;
+            }
+            available += free;
+        }
+        return new SlotCount(available, total);
+    }
+
+    private boolean offersGpuSlots(HostVO host, ServiceOffering serviceOffering, List<Long> zoneIds) {
+        if (host == null || host.getType() != Host.Type.Routing || host.getStatus() != Status.Up
+                || host.getResourceState() != ResourceState.Enabled) {
+            return false;
+        }
+        if (CollectionUtils.isNotEmpty(zoneIds) && !zoneIds.contains(host.getDataCenterId())) {
+            return false;
+        }
+        hostDao.loadHostTags(host);
+        return host.checkHostServiceOfferingTags(serviceOffering);
+    }
+
+    /**
+     * @return true when the offering keeps its disks on local storage and none of the host's local pools for it is
+     *         under both disable thresholds
+     */
+    private boolean localStorageClosed(HostVO host, ServiceOffering serviceOffering) {
+        DiskOfferingVO diskOffering = serviceOffering.getDiskOfferingId() != null ? diskOfferingDao.findById(serviceOffering.getDiskOfferingId()) : null;
+        if (diskOffering == null || !diskOffering.isUseLocalStorage()) {
+            return false;
+        }
+        List<StoragePoolVO> pools = primaryDataStoreDao.findLocalStoragePoolsByHostAndTags(host.getId(), diskOffering.getTagsArray());
+        return pools.stream().allMatch(storageManager::storagePoolCrossedDisableThreshold);
+    }
+
+    @Override
+    public GroupRule getGpuGroupRule(long hostId) {
+        HostGpuGroupRuleVO row = hostGpuGroupRuleDao.findByHostId(hostId);
+        if (row == null) {
+            return null;
+        }
+        try {
+            return GroupRule.valueOf(row.getRule());
+        } catch (IllegalArgumentException | NullPointerException e) {
+            logger.warn("Host {} has the unknown GPU group rule {} and offers no GPU group", hostId, row.getRule());
+            return null;
+        }
+    }
+
+    @Override
+    public List<Set<String>> getGpuGroups(long hostId) {
+        return registeredGroups(hostId, getGpuGroupRule(hostId)).stream().map(TreeSet::new).collect(Collectors.toList());
+    }
+
+    private List<List<String>> registeredGroups(long hostId, GroupRule rule) {
+        if (rule != GroupRule.partitions) {
+            return new ArrayList<>();
+        }
+        Map<Integer, TreeSet<String>> byIndex = new LinkedHashMap<>();
+        for (HostGpuGroupMemberVO member : hostGpuGroupMemberDao.listByHostId(hostId)) {
+            byIndex.computeIfAbsent(member.getGroupIndex(), index -> new TreeSet<>()).add(normalizeBusAddress(member.getBusAddress()));
+        }
+        return byIndex.values().stream().map(ArrayList::new).collect(Collectors.toList());
+    }
+
+    /**
+     * @return the rule and, for rule partitions, its groups: each a list of lowercase bus addresses in ascending order,
+     *         larger groups first
+     * @throws IllegalArgumentException unless the JSON is an object with a known rule, and only rule partitions has
+     *         groups, which are 1, 2, 4 or 8 distinct bus addresses, pairwise disjoint or nested, and not repeated
+     */
+    static Pair<GroupRule, List<List<String>>> parseGpuGroups(String json) {
+        JsonElement root;
+        try {
+            root = JsonParser.parseString(StringUtils.defaultString(json));
+        } catch (JsonParseException e) {
+            throw new IllegalArgumentException("the GPU groups are not valid JSON");
+        }
+        if (root == null || !root.isJsonObject()) {
+            throw new IllegalArgumentException("the GPU groups must be a JSON object with a rule");
+        }
+        JsonObject object = root.getAsJsonObject();
+        JsonElement ruleElement = object.get("rule");
+        GroupRule rule = null;
+        if (ruleElement != null && ruleElement.isJsonPrimitive() && ruleElement.getAsJsonPrimitive().isString()) {
+            rule = Arrays.stream(GroupRule.values()).filter(r -> r.name().equals(ruleElement.getAsString())).findFirst().orElse(null);
+        }
+        if (rule == null) {
+            throw new IllegalArgumentException(String.format("the rule must be one of %s", Arrays.toString(GroupRule.values())));
+        }
+        JsonElement groupsElement = object.get("groups");
+        boolean noGroups = groupsElement == null || groupsElement.isJsonNull()
+                || (groupsElement.isJsonArray() && groupsElement.getAsJsonArray().size() == 0);
+        if (rule != GroupRule.partitions) {
+            if (!noGroups) {
+                throw new IllegalArgumentException(String.format("groups are only for rule partitions, not for rule %s", rule));
+            }
+            return new Pair<>(rule, new ArrayList<>());
+        }
+        if (noGroups || !groupsElement.isJsonArray()) {
+            throw new IllegalArgumentException("rule partitions needs a non-empty array of groups");
+        }
+        List<List<String>> groups = new ArrayList<>();
+        for (JsonElement groupElement : groupsElement.getAsJsonArray()) {
+            groups.add(parseGroup(groupElement, groups));
+        }
+        for (int i = 0; i < groups.size(); i++) {
+            for (int j = i + 1; j < groups.size(); j++) {
+                Set<String> a = new HashSet<>(groups.get(i));
+                Set<String> b = new HashSet<>(groups.get(j));
+                boolean overlap = a.stream().anyMatch(b::contains);
+                if (overlap && !a.containsAll(b) && !b.containsAll(a)) {
+                    throw new IllegalArgumentException(String.format("groups %s and %s overlap without one containing the other; groups must be laminar",
+                            groups.get(i), groups.get(j)));
                 }
             }
         }
-        return null;
+        groups.sort(Comparator.<List<String>>comparingInt(List::size).reversed().thenComparing(group -> group.get(0)));
+        return new Pair<>(rule, groups);
     }
 
-    /**
-     * Attempts to allocate all GPUs from a single NUMA node across multiple PCI roots.
-     */
-    private List<GpuDeviceVO> trySingleNumaAllocation(List<GpuDeviceVO> availableDevices, int gpuCount) {
-        Map<String, List<GpuDeviceVO>> devicesByNuma = groupDevicesByNuma(availableDevices);
-
-        // Prioritize NUMA nodes with balanced device distribution
-        List<Map.Entry<String, List<GpuDeviceVO>>> sortedNumaNodes = new ArrayList<>();
-        for (Map.Entry<String, List<GpuDeviceVO>> entry : devicesByNuma.entrySet()) {
-            if (entry.getValue().size() >= gpuCount) {
-                sortedNumaNodes.add(entry);
+    private static List<String> parseGroup(JsonElement groupElement, List<List<String>> earlier) {
+        if (!groupElement.isJsonArray() || groupElement.getAsJsonArray().size() == 0) {
+            throw new IllegalArgumentException(String.format("group %s is not a non-empty array of PCI bus addresses", groupElement));
+        }
+        TreeSet<String> members = new TreeSet<>();
+        JsonArray array = groupElement.getAsJsonArray();
+        for (JsonElement member : array) {
+            if (!member.isJsonPrimitive() || !member.getAsJsonPrimitive().isString()) {
+                throw new IllegalArgumentException(String.format("group %s holds %s, which is not a PCI bus address", groupElement, member));
+            }
+            String bus = canonicalBusAddress(member.getAsString().trim().toLowerCase(Locale.ROOT));
+            if (bus == null) {
+                throw new IllegalArgumentException(String.format("%s is not a PCI bus address like 0000:07:00.0 or 07:00.0", member.getAsString()));
+            }
+            if (!members.add(bus)) {
+                throw new IllegalArgumentException(String.format("group %s names %s twice", groupElement, bus));
             }
         }
-        sortedNumaNodes.sort(Map.Entry.comparingByValue(Comparator.comparing(List::size)));
+        if (!GROUP_SIZES.contains(members.size())) {
+            throw new IllegalArgumentException(String.format("group %s has %d GPUs; a group has 1, 2, 4 or 8", groupElement, members.size()));
+        }
+        List<String> group = new ArrayList<>(members);
+        if (earlier.contains(group)) {
+            throw new IllegalArgumentException(String.format("group %s is given twice", group));
+        }
+        return group;
+    }
 
-        for (Map.Entry<String, List<GpuDeviceVO>> numaEntry : sortedNumaNodes) {
-            List<GpuDeviceVO> selected = selectDevicesWithPciOptimization(numaEntry.getValue(), gpuCount);
-            if (selected.size() == gpuCount) {
-                return selected;
+    @Override
+    @ActionEvent(eventType = EventTypes.EVENT_HOST_GPU_GROUPS_UPDATE, eventDescription = "updating the GPU groups of a host")
+    public HostGpuGroupsResponse updateHostGpuGroups(UpdateHostGpuGroupsCmd cmd) {
+        HostVO host = hostDao.findById(cmd.getHostId());
+        if (host == null) {
+            throw new InvalidParameterValueException("Unable to find a host with ID " + cmd.getHostId());
+        }
+        if (host.getType() != Host.Type.Routing || !HypervisorType.KVM.equals(host.getHypervisorType())) {
+            throw new InvalidParameterValueException(String.format("%s does not take GPU groups; only KVM hosts do", host));
+        }
+        Pair<GroupRule, List<List<String>>> registration;
+        try {
+            registration = parseGpuGroups(cmd.getGroups());
+        } catch (IllegalArgumentException e) {
+            throw new InvalidParameterValueException("Invalid GPU groups: " + e.getMessage());
+        }
+        GroupRule rule = registration.first();
+        List<List<String>> groups = registration.second();
+        inTransaction(new TransactionCallbackWithException<Void, RuntimeException>() {
+            @Override
+            public Void doInTransaction(TransactionStatus status) {
+                gpuDeviceDao.lockByHostId(host.getId());
+                checkGroupsAreEachOfOneCard(host, groups);
+                hostGpuGroupMemberDao.removeByHostId(host.getId());
+                HostGpuGroupRuleVO row = hostGpuGroupRuleDao.findByHostId(host.getId());
+                if (row == null) {
+                    hostGpuGroupRuleDao.persist(new HostGpuGroupRuleVO(host.getId(), rule.name()));
+                } else {
+                    row.setRule(rule.name());
+                    hostGpuGroupRuleDao.update(row.getId(), row);
+                }
+                for (int index = 0; index < groups.size(); index++) {
+                    for (String bus : groups.get(index)) {
+                        hostGpuGroupMemberDao.persist(new HostGpuGroupMemberVO(host.getId(), index, bus));
+                    }
+                }
+                return null;
+            }
+        });
+        logger.info("Registered GPU group rule {} with {} groups for {}", rule, groups.size(), host);
+        return createHostGpuGroupsResponse(host, rule, groups);
+    }
+
+    /**
+     * A group may name positions the host has no device row for, such as a card under repair; such a group stays
+     * unusable until the device appears. The devices that do exist must all be of one card.
+     */
+    private void checkGroupsAreEachOfOneCard(HostVO host, List<List<String>> groups) {
+        Map<String, GpuDeviceVO> devices = new HashMap<>();
+        for (GpuDeviceVO device : gpuDeviceDao.listByHostId(host.getId())) {
+            devices.put(normalizeBusAddress(device.getBusAddress()), device);
+        }
+        for (List<String> group : groups) {
+            if (group.stream().map(devices::get).filter(Objects::nonNull).map(GpuDeviceVO::getCardId).distinct().count() > 1) {
+                throw new InvalidParameterValueException(String.format("Group %s of %s holds GPUs of more than one card", group, host));
+            }
+            List<String> absent = group.stream().filter(bus -> !devices.containsKey(bus)).collect(Collectors.toList());
+            if (!absent.isEmpty()) {
+                logger.info("{} has no GPU device at {} yet; group {} is unusable until it appears", host, absent, group);
             }
         }
-        return null;
     }
 
-    /**
-     * Distributes GPU allocation across NUMA nodes while optimizing PCI root usage within each node.
-     */
-    private List<GpuDeviceVO> tryDistributedAllocation(List<GpuDeviceVO> availableDevices, int gpuCount) {
-        Map<String, List<GpuDeviceVO>> devicesByNuma = groupDevicesByNuma(availableDevices);
-        List<GpuDeviceVO> selectedDevices = new ArrayList<>();
-
-        // Sort NUMA nodes by device count in order for balanced distribution
-        List<Map.Entry<String, List<GpuDeviceVO>>> sortedNumaNodes = new ArrayList<>(devicesByNuma.entrySet());
-        sortedNumaNodes.sort(Map.Entry.comparingByValue(Comparator.comparing(List::size)));
-
-        int remainingCount = gpuCount;
-        for (Map.Entry<String, List<GpuDeviceVO>> numaEntry : sortedNumaNodes) {
-            if (remainingCount <= 0) break;
-
-            int devicesNeeded = Math.min(remainingCount, numaEntry.getValue().size());
-            List<GpuDeviceVO> selectedFromNuma = selectDevicesWithPciOptimization(numaEntry.getValue(), devicesNeeded);
-
-            selectedDevices.addAll(selectedFromNuma);
-            remainingCount -= selectedFromNuma.size();
-
-            logger.debug("Selected {} devices from NUMA node {}", selectedFromNuma.size(), numaEntry.getKey());
+    @Override
+    public ListResponse<HostGpuGroupsResponse> listHostGpuGroups(ListHostGpuGroupsCmd cmd) {
+        List<HostGpuGroupRuleVO> rules;
+        if (cmd.getHostId() != null) {
+            HostVO host = hostDao.findById(cmd.getHostId());
+            if (host == null) {
+                throw new InvalidParameterValueException("Unable to find a host with ID " + cmd.getHostId());
+            }
+            HostGpuGroupRuleVO rule = hostGpuGroupRuleDao.findByHostId(host.getId());
+            rules = rule != null ? List.of(rule) : new ArrayList<>();
+        } else {
+            rules = hostGpuGroupRuleDao.listAll();
         }
-
-        if (selectedDevices.size() < gpuCount) {
-            throw new CloudRuntimeException(
-                    String.format("Could not allocate required GPU devices. Required: %d, Allocated: %d", gpuCount,
-                            selectedDevices.size()));
+        List<HostGpuGroupsResponse> responses = new ArrayList<>();
+        for (HostGpuGroupRuleVO row : rules) {
+            HostVO host = hostDao.findById(row.getHostId());
+            GroupRule rule = getGpuGroupRule(row.getHostId());
+            if (host != null && rule != null) {
+                responses.add(createHostGpuGroupsResponse(host, rule, registeredGroups(host.getId(), rule)));
+            }
         }
-
-        return selectedDevices;
+        List<HostGpuGroupsResponse> page = com.cloud.utils.StringUtils.applyPagination(responses, cmd.getStartIndex(), cmd.getPageSizeVal());
+        ListResponse<HostGpuGroupsResponse> response = new ListResponse<>();
+        response.setResponses(page != null ? page : responses, responses.size());
+        return response;
     }
 
-    /**
-     * Builds a hierarchical topology map: NUMA node -> PCI root -> devices.
-     */
-    private Map<String, Map<String, List<GpuDeviceVO>>> buildNumaPciTopology(List<GpuDeviceVO> devices) {
-        Map<String, Map<String, List<GpuDeviceVO>>> map = new HashMap<>();
-        for (GpuDeviceVO device : devices) {
-            map.computeIfAbsent(
-                    getNumaNodeKey(device), key -> new HashMap<>()
-            ).computeIfAbsent(
-                    getPciRootKey(device), k -> new ArrayList<>()
-            ).add(device);
+    private HostGpuGroupsResponse createHostGpuGroupsResponse(HostVO host, GroupRule rule, List<List<String>> groups) {
+        HostGpuGroupsResponse response = new HostGpuGroupsResponse();
+        response.setHostId(host.getUuid());
+        response.setHostName(host.getName());
+        response.setRule(rule.name());
+        if (rule == GroupRule.partitions) {
+            response.setGroups(groups);
         }
-        return map;
+        return response;
     }
 
-    /**
-     * Groups devices by NUMA node.
-     */
-    private Map<String, List<GpuDeviceVO>> groupDevicesByNuma(List<GpuDeviceVO> devices) {
-        Map<String, List<GpuDeviceVO>> map = new HashMap<>();
-        for (GpuDeviceVO device : devices) {
-            map.computeIfAbsent(getNumaNodeKey(device), k -> new ArrayList<>()).add(device);
-        }
-        return map;
-    }
-
-    /**
-     * Selects devices from a group with PCI root optimization, prioritizing same PCI roots.
-     */
-    private List<GpuDeviceVO> selectDevicesWithPciOptimization(List<GpuDeviceVO> numaDevices, int count) {
-        Map<String, List<GpuDeviceVO>> devicesByPciRoot = new HashMap<>();
-        for (GpuDeviceVO numaDevice : numaDevices) {
-            devicesByPciRoot.computeIfAbsent(getPciRootKey(numaDevice), k -> new ArrayList<>()).add(numaDevice);
-        }
-
-        List<GpuDeviceVO> selected = new ArrayList<>();
-
-        // Sort PCI roots by device count (descending) to prioritize roots with more devices
-        List<List<GpuDeviceVO>> sortedPciGroups = new ArrayList<>(devicesByPciRoot.values());
-        sortedPciGroups.sort(Comparator.comparing(List<GpuDeviceVO>::size).reversed());
-
-        for (List<GpuDeviceVO> pciGroup : sortedPciGroups) {
-            if (selected.size() >= count) break;
-
-            int devicesNeeded = Math.min(count - selected.size(), pciGroup.size());
-            selected.addAll(selectDevicesFromGroup(pciGroup, devicesNeeded));
-        }
-
-        return selected;
-    }
-
-    /**
-     * Selects devices from a group, sorted by ID for consistency.
-     */
-    private List<GpuDeviceVO> selectDevicesFromGroup(List<GpuDeviceVO> devices, int count) {
-        List<GpuDeviceVO> toSort = new ArrayList<>(devices);
-        toSort.sort(Comparator.comparing(GpuDeviceVO::getId));
-        List<GpuDeviceVO> list = new ArrayList<>();
-        long limit = count;
-        for (GpuDeviceVO device : toSort) {
-            if (limit-- == 0) break;
-            list.add(device);
-        }
-        return list;
-    }
-
-    /**
-     * Gets the NUMA node key, handling null/blank values.
-     */
-    private String getNumaNodeKey(GpuDeviceVO device) {
-        return StringUtils.isNotBlank(device.getNumaNode()) ? device.getNumaNode() : "unknown";
-    }
-
-    /**
-     * Gets the PCI root key, handling null/blank values.
-     */
-    private String getPciRootKey(GpuDeviceVO device) {
-        return StringUtils.isNotBlank(device.getPciRoot()) ? device.getPciRoot() : "unknown";
+    @Override
+    public void removeHostGpuGroups(long hostId) {
+        int members = hostGpuGroupMemberDao.removeByHostId(hostId);
+        int rules = hostGpuGroupRuleDao.removeByHostId(hostId);
+        logger.debug("Removed {} GPU group rule and {} group members of removed host {}", rules, members, hostId);
     }
 }

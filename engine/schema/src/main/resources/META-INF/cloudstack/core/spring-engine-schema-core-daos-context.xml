@@ -316,6 +316,8 @@
   <bean id="guiThemeJoinDaoImpl" class="org.apache.cloudstack.gui.theme.dao.GuiThemeJoinDaoImpl" />
   <bean id="gpuCardDaoImpl" class="com.cloud.gpu.dao.GpuCardDaoImpl" />
   <bean id="gpuDeviceDaoImpl" class="com.cloud.gpu.dao.GpuDeviceDaoImpl" />
+  <bean id="hostGpuGroupRuleDaoImpl" class="com.cloud.gpu.dao.HostGpuGroupRuleDaoImpl" />
+  <bean id="hostGpuGroupMemberDaoImpl" class="com.cloud.gpu.dao.HostGpuGroupMemberDaoImpl" />
   <bean id="vgpuProfileDaoImpl" class="com.cloud.gpu.dao.VgpuProfileDaoImpl" />
   <bean id="importVMTaskDaoImpl" class="com.cloud.vm.dao.ImportVMTaskDaoImpl" />
   <bean id="apiKeyPairDaoImpl" class="org.apache.cloudstack.acl.dao.ApiKeyPairDaoImpl" />

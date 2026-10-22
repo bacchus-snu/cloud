@@ -3623,6 +3623,15 @@ public class StorageManagerImpl extends ManagerBase implements StorageManager, C
     }
 
     @Override
+    public boolean storagePoolCrossedDisableThreshold(StoragePool pool) {
+        if (!checkUsagedSpace(pool)) {
+            return true;
+        }
+        StoragePoolVO poolVO = _storagePoolDao.findById(pool.getId());
+        return !checkPoolforSpace(pool, _capacityMgr.getAllocatedPoolCapacity(poolVO, null), 0);
+    }
+
+    @Override
     public boolean storagePoolHasEnoughSpaceForResize(StoragePool pool, long currentSize, long newSize) {
         if (!checkUsagedSpace(pool)) {
             return false;

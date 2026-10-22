@@ -295,7 +295,7 @@ public abstract class SearchBase<J extends SearchBase<?, T, K>, T, K> {
 
     protected Condition constructCondition(final String joinName, final String conditionName, final String cond, final Attribute attr, final Op op) {
         assert _entity != null : "SearchBuilder cannot be modified once it has been setup";
-        assert op == null || _specifiedAttrs.size() == 1 : "You didn't select the attribute.";
+        assert op == null || StringUtils.isNotEmpty(joinName) || _specifiedAttrs.size() == 1 : "You didn't select the attribute.";
         assert op != Op.SC : "Call join";
 
         final Condition condition = new Condition(conditionName, cond, attr, op);

@@ -33,6 +33,7 @@ import org.apache.cloudstack.api.ApiConstants;
 import org.apache.cloudstack.api.response.ServiceOfferingResponse;
 import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
+import org.apache.cloudstack.gpu.GpuService;
 import org.apache.cloudstack.vm.lease.VMLeaseManager;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
@@ -43,6 +44,8 @@ import com.cloud.dc.VsphereStoragePolicyVO;
 import com.cloud.dc.dao.VsphereStoragePolicyDao;
 import com.cloud.offering.ServiceOffering;
 import com.cloud.server.ResourceTag.ResourceObjectType;
+import com.cloud.service.ServiceOfferingVO;
+import com.cloud.service.dao.ServiceOfferingDao;
 import com.cloud.storage.DiskOfferingVO;
 import com.cloud.user.AccountManager;
 import com.cloud.utils.db.GenericDaoBase;
@@ -64,6 +67,10 @@ public class ServiceOfferingJoinDaoImpl extends GenericDaoBase<ServiceOfferingJo
     private ConfigurationDao configDao;
     @Inject
     private AccountManager accountManager;
+    @Inject
+    private GpuService gpuService;
+    @Inject
+    private ServiceOfferingDao serviceOfferingDao;
 
     private SearchBuilder<ServiceOfferingJoinVO> sofIdSearch;
 
@@ -147,6 +154,7 @@ public class ServiceOfferingJoinDaoImpl extends GenericDaoBase<ServiceOfferingJo
         offeringResponse.setMaxResolutionY(offering.getMaxResolutionY());
         offeringResponse.setGpuCount(offering.getGpuCount());
         offeringResponse.setGpuDisplay(offering.getGpuDisplay());
+        setGpuSlots(offeringResponse, offering);
         offeringResponse.setNetworkRate(offering.getRateMbps());
         offeringResponse.setHostTag(offering.getHostTag());
         offeringResponse.setDeploymentPlanner(offering.getDeploymentPlanner());
@@ -206,6 +214,19 @@ public class ServiceOfferingJoinDaoImpl extends GenericDaoBase<ServiceOfferingJo
                 accountManager.isRootAdmin(CallContext.current().getCallingAccount().getId())));
 
         return offeringResponse;
+    }
+
+    private void setGpuSlots(ServiceOfferingResponse offeringResponse, ServiceOfferingJoinVO offering) {
+        if (offering.getVgpuProfileId() == null || offering.getVgpuProfileId() <= 0) {
+            return;
+        }
+        ServiceOfferingVO serviceOffering = serviceOfferingDao.findByIdIncludingRemoved(offering.getId());
+        if (serviceOffering == null) {
+            return;
+        }
+        GpuService.SlotCount slots = gpuService.slotCount(serviceOffering, null);
+        offeringResponse.setGpuSlotsAvailable(slots.getAvailable());
+        offeringResponse.setGpuSlotsTotal(slots.getTotal());
     }
 
     @Override

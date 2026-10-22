@@ -62,11 +62,13 @@ public interface DeploymentClusterPlanner extends DeploymentPlanner {
             "vm.allocation.algorithm",
             "Advanced",
             "random",
-            "Order in which hosts within a cluster will be considered for VM allocation. The value can be 'random', 'firstfit', 'userdispersing', or 'firstfitleastconsumed'.",
+            "Order in which hosts within a cluster will be considered for VM allocation. The value can be 'random', 'firstfit', 'userdispersing', " +
+                    "'firstfitleastconsumed', or 'firstfitmostconsumed' (the most consumed host first, then the lowest host id). " +
+                    "Instances with a vGPU profile follow gpu.allocation.algorithm instead.",
             true,
             ConfigKey.Scope.Global, null, null, null, null, null,
             ConfigKey.Kind.Select,
-            "random,firstfit,userdispersing,firstfitleastconsumed");
+            "random,firstfit,userdispersing,firstfitleastconsumed,firstfitmostconsumed");
 
     /**
      * This is called to determine list of possible clusters where a virtual

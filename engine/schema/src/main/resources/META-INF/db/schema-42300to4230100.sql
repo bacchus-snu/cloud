@@ -46,3 +46,25 @@ CREATE TABLE IF NOT EXISTS `cloud`.`host_core_assignment` (
   CONSTRAINT `fk_host_core_assignment__host_pool_core` FOREIGN KEY (`host_id`, `core`) REFERENCES `host_pool_core`(`host_id`, `core`) ON DELETE RESTRICT,
   CONSTRAINT `fk_host_core_assignment__vm_id` FOREIGN KEY (`vm_id`) REFERENCES `vm_instance`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- GPU group rule registered per host: partitions, any or single; a host without a rule offers no GPU group
+CREATE TABLE IF NOT EXISTS `cloud`.`host_gpu_group_rule` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `host_id` bigint unsigned NOT NULL COMMENT 'host id',
+  `rule` varchar(16) NOT NULL COMMENT 'partitions, any or single',
+  `created` datetime NOT NULL COMMENT 'date the rule was registered',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_host_gpu_group_rule__host_id` (`host_id`),
+  CONSTRAINT `fk_host_gpu_group_rule__host_id` FOREIGN KEY (`host_id`) REFERENCES `host`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- GPUs of the groups registered for a host with rule partitions, one row per GPU of a group; the GPUs of a group share its index
+CREATE TABLE IF NOT EXISTS `cloud`.`host_gpu_group_member` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `host_id` bigint unsigned NOT NULL COMMENT 'host id',
+  `group_index` int unsigned NOT NULL COMMENT 'index of the group in the host registration',
+  `bus_address` varchar(255) NOT NULL COMMENT 'PCI bus address of the GPU',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_host_gpu_group_member__host_id__group_index__bus_address` (`host_id`, `group_index`, `bus_address`),
+  CONSTRAINT `fk_host_gpu_group_member__host_gpu_group_rule` FOREIGN KEY (`host_id`) REFERENCES `host_gpu_group_rule`(`host_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

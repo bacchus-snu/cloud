@@ -1381,6 +1381,9 @@ public class ApiConstants {
     public static final String NODE = "node";
     public static final String THREADS = "threads";
     public static final String POOL_VCPU_STEP = "poolvcpustep";
+    public static final String GROUPS = "groups";
+    public static final String GPU_SLOTS_AVAILABLE = "gpuslotsavailable";
+    public static final String GPU_SLOTS_TOTAL = "gpuslotstotal";
 
     // Object Storage related
     public static final String BUCKET_AVAILABLE = "bucketavailable";

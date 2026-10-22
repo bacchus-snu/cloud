@@ -598,6 +598,23 @@ public class VolumeOrchestratorTest {
     }
 
     @Test
+    public void startCopiesOnlyAVmAllocationAlgorithmThatVolumesAccept() throws Exception {
+        Mockito.when(configDepot.isNewConfig(VolumeAllocationAlgorithm)).thenReturn(true);
+        String original = DeploymentClusterPlanner.VmAllocationAlgorithm.defaultValue();
+        try {
+            overrideDefaultConfigValue(DeploymentClusterPlanner.VmAllocationAlgorithm, "firstfitmostconsumed");
+            volumeOrchestrator.start();
+            Mockito.verify(configurationDao, Mockito.never()).update(Mockito.eq(VolumeAllocationAlgorithm.key()), Mockito.anyString());
+
+            overrideDefaultConfigValue(DeploymentClusterPlanner.VmAllocationAlgorithm, "firstfitleastconsumed");
+            volumeOrchestrator.start();
+            Mockito.verify(configurationDao).update(VolumeAllocationAlgorithm.key(), "firstfitleastconsumed");
+        } finally {
+            overrideDefaultConfigValue(DeploymentClusterPlanner.VmAllocationAlgorithm, original);
+        }
+    }
+
+    @Test
     public void testConfigKeys() {
         assertTrue(volumeOrchestrator.getConfigKeys().length > 0);
     }

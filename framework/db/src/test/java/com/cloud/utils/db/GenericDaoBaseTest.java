@@ -16,12 +16,15 @@
 // under the License.
 package com.cloud.utils.db;
 
+import java.lang.reflect.Field;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
+import com.cloud.utils.component.ComponentLifecycleBase;
+import org.apache.logging.log4j.LogManager;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -210,9 +213,12 @@ public class GenericDaoBaseTest {
     }
 
     @Test
-    public void checkCountOfRecordsAgainstTheResultSetSizeTestCountSmallerThanResultSetSize() {
+    public void checkCountOfRecordsAgainstTheResultSetSizeTestCountSmallerThanResultSetSize() throws Exception {
         int count = 5;
         int resultSetSize = 10;
+        Field logger = ComponentLifecycleBase.class.getDeclaredField("logger");
+        logger.setAccessible(true);
+        logger.set(genericDaoBaseMock, LogManager.getLogger(GenericDaoBase.class));
 
         int result = genericDaoBaseMock.checkCountOfRecordsAgainstTheResultSetSize(count, resultSetSize);
 
@@ -291,7 +297,7 @@ public class GenericDaoBaseTest {
         Assert.assertNotNull(capturedFilter[0]);
         Assert.assertNotNull(capturedFilter[0].getOrderBy());
         Assert.assertTrue(capturedFilter[0].getOrderBy().contains("ORDER BY RAND()"));
-        Assert.assertTrue(capturedFilter[0].getOrderBy().contains("LIMIT 1"));
+        Assert.assertEquals(Long.valueOf(1), capturedFilter[0].getLimit());
     }
 
     @Test

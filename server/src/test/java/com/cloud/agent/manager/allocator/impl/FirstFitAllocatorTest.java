@@ -18,6 +18,7 @@
 
 package com.cloud.agent.manager.allocator.impl;
 
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -25,6 +26,8 @@ import com.cloud.agent.manager.allocator.HostAllocator;
 import com.cloud.capacity.Capacity;
 import com.cloud.capacity.CapacityManager;
 import com.cloud.capacity.CapacityVO;
+import com.cloud.capacity.dao.CapacityDao;
+import com.cloud.configuration.Config;
 import com.cloud.deploy.DeploymentPlan;
 import com.cloud.deploy.DeploymentPlanner;
 import com.cloud.host.Host;
@@ -43,6 +46,7 @@ import com.cloud.vm.VirtualMachineProfile;
 import com.cloud.vm.dao.VMInstanceDetailsDao;
 import org.apache.cloudstack.api.ApiConstants;
 import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
+import org.apache.cloudstack.gpu.GpuService;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -55,8 +59,10 @@ import org.mockito.junit.MockitoJUnitRunner;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @RunWith(MockitoJUnitRunner.class)
 public class FirstFitAllocatorTest {
@@ -79,6 +85,12 @@ public class FirstFitAllocatorTest {
 
   @Mock
   ConfigurationDao configDao;
+
+  @Mock
+  CapacityDao capacityDao;
+
+  @Mock
+  GpuService gpuService;
 
   @Spy
   @InjectMocks
@@ -668,5 +680,197 @@ public class FirstFitAllocatorTest {
     when(memCapacity2.getUsedCapacity()).thenReturn(1073741824L);
     when(memCapacity1.getCapacityType()).thenReturn(CapacityVO.CAPACITY_TYPE_MEMORY);
     return Arrays.asList(cpuCapacity1, memCapacity1, cpuCapacity2, memCapacity2);
+  }
+
+  private ServiceOffering gpuOffering(int gpuCount) {
+    ServiceOffering gpuOffering = mock(ServiceOffering.class);
+    Mockito.lenient().when(gpuOffering.getVgpuProfileId()).thenReturn(11L);
+    Mockito.lenient().when(gpuOffering.getGpuCount()).thenReturn(gpuCount);
+    return gpuOffering;
+  }
+
+  private ServiceOffering cpuOffering(int vcpus) {
+    ServiceOffering cpuOffering = mock(ServiceOffering.class);
+    Mockito.lenient().when(cpuOffering.getCpu()).thenReturn(vcpus);
+    Mockito.lenient().when(cpuOffering.getVgpuProfileId()).thenReturn(null);
+    return cpuOffering;
+  }
+
+  private HostVO host(long id) {
+    HostVO host = mock(HostVO.class);
+    Mockito.lenient().when(host.getId()).thenReturn(id);
+    return host;
+  }
+
+  private void hostsFit(ServiceOffering offering, Host... hosts) {
+    for (Host host : hosts) {
+      Mockito.lenient().when(avoid.shouldAvoid(host)).thenReturn(false);
+      Mockito.lenient().when(capacityMgr.checkIfHostReachMaxGuestLimit(host)).thenReturn(false);
+      Mockito.lenient().when(resourceManagerMock.isGPUDeviceAvailable(offering, host, virtualMachineProfile.getId())).thenReturn(true);
+      Mockito.lenient().when(capacityMgr.checkIfHostHasCpuCapabilityAndCapacity(host, offering, true)).thenReturn(new Pair<>(true, true));
+    }
+  }
+
+  private List<Host> allocate(ServiceOffering offering, int returnUpTo, Host... hosts) {
+    return firstFitAllocatorSpy.allocateTo(virtualMachineProfile, deploymentPlan, offering, null, avoid, Arrays.asList(hosts), returnUpTo, true, account);
+  }
+
+  @Test
+  public void allocatorOrdersGpuHostsByBestFit() {
+    ServiceOffering oneGpu = gpuOffering(1);
+    HostVO emptyEightGpuHost = host(1L);
+    HostVO oneFreeGpuHost = host(2L);
+    hostsFit(oneGpu, emptyEightGpuHost, oneFreeGpuHost);
+    when(gpuService.bestFitScore(1L, 11L, 1)).thenReturn(7 * 1024 + 1);
+    when(gpuService.bestFitScore(2L, 11L, 1)).thenReturn(0);
+
+    Assert.assertEquals(List.of(oneFreeGpuHost, emptyEightGpuHost), allocate(oneGpu, HostAllocator.RETURN_UPTO_ALL, emptyEightGpuHost, oneFreeGpuHost));
+    Assert.assertEquals(List.of(oneFreeGpuHost), allocate(oneGpu, 1, emptyEightGpuHost, oneFreeGpuHost));
+  }
+
+  @Test
+  public void gpuOrderingIgnoresAllocationAlgorithm() {
+    ServiceOffering twoGpus = gpuOffering(2);
+    HostVO first = host(1L);
+    HostVO second = host(2L);
+    HostVO third = host(3L);
+    hostsFit(twoGpus, first, second, third);
+    when(gpuService.bestFitScore(1L, 11L, 2)).thenReturn(3 * 1024);
+    when(gpuService.bestFitScore(2L, 11L, 2)).thenReturn(0);
+    when(gpuService.bestFitScore(3L, 11L, 2)).thenReturn(3 * 1024);
+
+    for (String algorithm : List.of("firstfit", "firstfitmostconsumed", "firstfitleastconsumed", "userdispersing", "random")) {
+      Mockito.lenient().doReturn(algorithm).when(firstFitAllocatorSpy).getVmAllocationAlgorithm();
+      Assert.assertEquals(algorithm, List.of(second, first, third), allocate(twoGpus, HostAllocator.RETURN_UPTO_ALL, third, first, second));
+    }
+    Mockito.verifyNoInteractions(capacityDao);
+  }
+
+  @Test
+  public void gpuAllocationAlgorithmFirstfitOrdersHostsById() {
+    ServiceOffering oneGpu = gpuOffering(1);
+    HostVO first = host(1L);
+    HostVO second = host(2L);
+    HostVO third = host(3L);
+    hostsFit(oneGpu, first, second, third);
+
+    doReturn("firstfit").when(firstFitAllocatorSpy).getGpuAllocationAlgorithm();
+    Assert.assertEquals(List.of(first, second, third), allocate(oneGpu, HostAllocator.RETURN_UPTO_ALL, third, first, second));
+
+    doReturn("random").when(firstFitAllocatorSpy).getGpuAllocationAlgorithm();
+    List<Host> shuffled = allocate(oneGpu, HostAllocator.RETURN_UPTO_ALL, third, first, second);
+    Assert.assertEquals(3, shuffled.size());
+    Assert.assertEquals(Set.of(first, second, third), new HashSet<>(shuffled));
+    Mockito.verify(gpuService, Mockito.never()).bestFitScore(Mockito.anyLong(), Mockito.anyLong(), Mockito.anyInt());
+  }
+
+  @Test
+  public void allocatorAvoidsHostWithoutUsableGroup() {
+    ServiceOffering twoGpus = gpuOffering(2);
+    HostVO noGroup = host(1L);
+    HostVO withGroup = host(2L);
+    hostsFit(twoGpus, withGroup);
+    when(avoid.shouldAvoid(noGroup)).thenReturn(false);
+    when(capacityMgr.checkIfHostReachMaxGuestLimit(noGroup)).thenReturn(false);
+    when(resourceManagerMock.isGPUDeviceAvailable(twoGpus, noGroup, virtualMachineProfile.getId())).thenReturn(false);
+    when(gpuService.bestFitScore(1L, 11L, 2)).thenReturn(Integer.MAX_VALUE);
+    when(gpuService.bestFitScore(2L, 11L, 2)).thenReturn(5);
+
+    Assert.assertEquals(List.of(withGroup), allocate(twoGpus, HostAllocator.RETURN_UPTO_ALL, noGroup, withGroup));
+    Mockito.verify(avoid).addHost(1L);
+  }
+
+  @Test
+  public void classTagKeepsMultiGpuOfferingOnItsClass() {
+    String nvlinkOfferingTags = "a100-40g,a100-40g-nvlink";
+    HostVO nvlinkHost = host(1L);
+    HostVO nvswitchHost = host(2L);
+    when(resourceManagerMock.listAllUpAndEnabledHosts(type, clusterId, podId, dcId)).thenReturn(new ArrayList<>(List.of(nvlinkHost, nvswitchHost)));
+    when(hostDaoMock.listByHostTag(type, clusterId, podId, dcId, nvlinkOfferingTags)).thenReturn(new ArrayList<>(List.of(nvlinkHost)));
+    Mockito.doNothing().when(firstFitAllocatorSpy).filterHostsBasedOnGuestOsRules(Mockito.any(), Mockito.anyList());
+
+    List<HostVO> candidates = firstFitAllocatorSpy.retrieveHosts(virtualMachineProfile, type, null, vmTemplateVO, clusterId, podId, dcId,
+        nvlinkOfferingTags, null);
+
+    Mockito.verify(hostDaoMock).listByHostTag(type, clusterId, podId, dcId, nvlinkOfferingTags);
+    Assert.assertEquals(List.of(nvlinkHost), candidates);
+  }
+
+  private CapacityVO capacity(long hostId, long used, long total, short capacityType) {
+    return new CapacityVO(hostId, dcId, podId, clusterId, used, total, capacityType);
+  }
+
+  /**
+   * Orders by firstfitmostconsumed over the COMBINED free fraction: host 1 is 82.5 % consumed (CPU 90 %, memory 75 %)
+   * and has one free pool core, host 2 is 25 % consumed and has five. A host fits when ceil(vCPUs / 2) pool cores are free.
+   */
+  private void mostConsumedFixture(Map<Host, Integer> freeCores, CapacityVO... extraCapacities) {
+    doReturn("firstfitmostconsumed").when(firstFitAllocatorSpy).getVmAllocationAlgorithm();
+    when(deploymentPlan.getDataCenterId()).thenReturn(dcId);
+    when(deploymentPlan.getClusterId()).thenReturn(clusterId);
+    when(configDao.getValue(Config.HostCapacityTypeToOrderClusters.key())).thenReturn("COMBINED");
+    List<CapacityVO> capacities = new ArrayList<>(List.of(
+        capacity(1L, 28800L, 32000L, Capacity.CAPACITY_TYPE_CPU), capacity(1L, 48L << 30, 64L << 30, Capacity.CAPACITY_TYPE_MEMORY),
+        capacity(2L, 8000L, 32000L, Capacity.CAPACITY_TYPE_CPU), capacity(2L, 16L << 30, 64L << 30, Capacity.CAPACITY_TYPE_MEMORY)));
+    capacities.addAll(Arrays.asList(extraCapacities));
+    when(capacityDao.listHostCapacityByCapacityTypes(dcId, clusterId, List.of(Capacity.CAPACITY_TYPE_CPU, Capacity.CAPACITY_TYPE_MEMORY)))
+        .thenReturn(capacities);
+    for (Host host : freeCores.keySet()) {
+      Mockito.lenient().when(avoid.shouldAvoid(host)).thenReturn(false);
+      Mockito.lenient().when(capacityMgr.checkIfHostReachMaxGuestLimit(host)).thenReturn(false);
+      Mockito.lenient().when(resourceManagerMock.isGPUDeviceAvailable(Mockito.any(), Mockito.eq(host), Mockito.anyLong())).thenReturn(true);
+    }
+    Mockito.lenient().when(capacityMgr.checkIfHostHasCpuCapabilityAndCapacity(Mockito.any(Host.class), Mockito.any(ServiceOffering.class), Mockito.eq(true)))
+        .thenAnswer(invocation -> {
+          Host host = invocation.getArgument(0);
+          ServiceOffering offering = invocation.getArgument(1);
+          return new Pair<>(true, (offering.getCpu() + 1) / 2 <= freeCores.get(host));
+        });
+  }
+
+  @Test
+  public void cpuOnlyPrefersMostConsumedHostThatFits() {
+    HostVO consumed = host(1L);
+    HostVO roomy = host(2L);
+    mostConsumedFixture(Map.of(consumed, 1, roomy, 5));
+
+    Assert.assertEquals(List.of(consumed, roomy), allocate(cpuOffering(2), HostAllocator.RETURN_UPTO_ALL, roomy, consumed));
+    Assert.assertEquals(List.of(consumed), allocate(cpuOffering(2), 1, roomy, consumed));
+    Mockito.verify(avoid, Mockito.never()).addHost(1L);
+
+    Assert.assertEquals("the 4-vCPU VM skips the most consumed host, whose one free core does not fit it",
+        List.of(roomy), allocate(cpuOffering(4), 1, roomy, consumed));
+    Mockito.verify(avoid).addHost(1L);
+  }
+
+  @Test
+  public void mostConsumedOrderingIgnoresZeroPoolHosts() {
+    HostVO consumed = host(1L);
+    HostVO roomy = host(2L);
+    HostVO zeroPool = host(3L);
+    mostConsumedFixture(Map.of(consumed, 1, roomy, 5, zeroPool, 0),
+        capacity(3L, 0L, 0L, Capacity.CAPACITY_TYPE_CPU), capacity(3L, 0L, 0L, Capacity.CAPACITY_TYPE_MEMORY));
+    when(capacityMgr.hasNoComputeCapacity(zeroPool)).thenReturn(true);
+
+    Assert.assertEquals(List.of(consumed, roomy), allocate(cpuOffering(2), HostAllocator.RETURN_UPTO_ALL, zeroPool, roomy, consumed));
+    Mockito.verify(avoid).addHost(3L);
+  }
+
+  @Test
+  public void cpuOnlyFillsNonGpuHostsBeforeGpuHostPools() {
+    HostVO gpuHost = host(1L);
+    HostVO plainHost = host(2L);
+    mostConsumedFixture(Map.of(gpuHost, 5, plainHost, 5));
+    when(resourceManagerMock.isHostGpuEnabled(1L)).thenReturn(true);
+    when(resourceManagerMock.isHostGpuEnabled(2L)).thenReturn(false);
+    when(gpuHost.getCapabilities()).thenReturn("hvm");
+    when(plainHost.getCapabilities()).thenReturn("hvm");
+    Mockito.doNothing().when(firstFitAllocatorSpy).prioritizeHostsWithMatchingGuestOs(Mockito.any(), Mockito.anyList(), Mockito.anyList(), Mockito.anyList());
+    ServiceOffering cpuOnly = cpuOffering(2);
+
+    List<Host> result = firstFitAllocatorSpy.allocateTo(virtualMachineProfile, deploymentPlan, cpuOnly, vmTemplateVO, avoid,
+        Arrays.asList(gpuHost, plainHost), HostAllocator.RETURN_UPTO_ALL, true, account);
+
+    Assert.assertEquals("the GPU host is more consumed, yet its pool is used last", List.of(plainHost, gpuHost), result);
   }
 }

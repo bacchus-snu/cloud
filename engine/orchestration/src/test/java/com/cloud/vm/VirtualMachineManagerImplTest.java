@@ -135,6 +135,7 @@ import com.cloud.exception.AgentUnavailableException;
 import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.OperationTimedoutException;
 import com.cloud.host.Host;
+import org.apache.cloudstack.gpu.GpuService;
 import com.cloud.host.HostVO;
 import com.cloud.host.dao.HostDao;
 import com.cloud.hypervisor.Hypervisor.HypervisorType;
@@ -2162,6 +2163,11 @@ public class VirtualMachineManagerImplTest {
         return host;
     }
 
+    private final GpuService startGpuService = mock(GpuService.class);
+    private final Map<VirtualMachineProfile.Param, Object> startParams = new HashMap<>();
+    private boolean transitionsSetHost;
+    private HypervisorGuru startHvGuru;
+
     private ServiceOfferingVO startOffering(int cpu, Long vgpuProfileId) {
         ServiceOfferingVO offering = mock(ServiceOfferingVO.class);
         Mockito.lenient().when(offering.getCpu()).thenReturn(cpu);
@@ -2223,7 +2229,13 @@ public class VirtualMachineManagerImplTest {
         }
         Mockito.lenient().when(_dpMgr.planDeployment(any(VirtualMachineProfileImpl.class), any(DataCenterDeployment.class), any(ExcludeList.class),
                 any(DeploymentPlanner.class))).thenReturn(destinations.get(0), destinations.subList(1, destinations.size()).toArray(new DeployDestination[0]));
-        Mockito.lenient().when(_stateMachine.transitTo(any(), any(), any(), any())).thenReturn(true);
+        Mockito.lenient().when(_stateMachine.transitTo(any(), any(), any(), any())).thenAnswer(i -> {
+            if (transitionsSetHost) {
+                Pair<Long, Long> hostIds = i.getArgument(2);
+                ((VMInstanceVO) i.getArgument(0)).setHostId(hostIds.second());
+            }
+            return true;
+        });
         ClusterDetailsVO ratio = mock(ClusterDetailsVO.class);
         Mockito.lenient().when(ratio.getValue()).thenReturn("1.0");
         Mockito.lenient().when(_clusterDetailsDao.findDetail(eq(1L), anyString())).thenReturn(ratio);
@@ -2246,6 +2258,8 @@ public class VirtualMachineManagerImplTest {
         ReflectionTestUtils.setField(virtualMachineManagerImpl, "_networkMgr", mock(NetworkOrchestrationService.class));
         ReflectionTestUtils.setField(virtualMachineManagerImpl, "volumeMgr", mock(VolumeOrchestrationService.class));
         ReflectionTestUtils.setField(virtualMachineManagerImpl, "hostPoolCoreManager", poolCores);
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "gpuService", startGpuService);
+        startHvGuru = hvGuru;
 
         List<Commands> sent = new ArrayList<>();
         Mockito.lenient().when(agentManagerMock.send(anyLong(), any(Commands.class))).thenAnswer(i -> {
@@ -2263,7 +2277,7 @@ public class VirtualMachineManagerImplTest {
         Mockito.lenient().when(callContext.getCallingUser()).thenReturn(user);
         try (MockedStatic<CallContext> ignored = Mockito.mockStatic(CallContext.class)) {
             when(CallContext.current()).thenReturn(callContext);
-            virtualMachineManagerImpl.orchestrateStart("vm-uuid", new HashMap<>(), plan, mock(DeploymentPlanner.class));
+            virtualMachineManagerImpl.orchestrateStart("vm-uuid", startParams, plan, mock(DeploymentPlanner.class));
         }
         ArgumentCaptor<ExcludeList> avoids = ArgumentCaptor.forClass(ExcludeList.class);
         verify(plan).setAvoids(avoids.capture());
@@ -2325,5 +2339,61 @@ public class VirtualMachineManagerImplTest {
         assertEquals(1, sent.size());
         assertNull(coresSentIn(sent.get(0)));
         verify(poolCores, never()).allocatePoolCores(any(), any(), Mockito.anyInt());
+    }
+
+    @Test
+    public void gpuStartAllocatesItsGroupBeforeTheHypervisorDescribesIt() throws Exception {
+        HostVO host = kvmHost(1L);
+        ServiceOfferingVO offering = startOffering(32, 5L);
+        when(offering.getGpuCount()).thenReturn(2);
+
+        List<Commands> sent = startWithPoolCores(offering, mock(HostPoolCoreManager.class), host).first();
+
+        assertEquals(1, sent.size());
+        InOrder order = Mockito.inOrder(startGpuService, startHvGuru, agentManagerMock);
+        order.verify(startGpuService).allocateGpuGroup(any(VirtualMachine.class), eq(1L), eq(5L), eq(2));
+        order.verify(startHvGuru).implement(any());
+        order.verify(agentManagerMock).send(eq(1L), any(Commands.class));
+    }
+
+    @Test
+    public void startMovesToAnotherHostWhenTheGpuGroupWasTaken() throws Exception {
+        HostVO busy = kvmHost(1L);
+        HostVO free = kvmHost(2L);
+        ServiceOfferingVO offering = startOffering(32, 5L);
+        when(offering.getGpuCount()).thenReturn(2);
+        when(startGpuService.allocateGpuGroup(any(VirtualMachine.class), eq(1L), eq(5L), eq(2)))
+                .thenThrow(new InsufficientServerCapacityException("taken", Host.class, 1L));
+
+        Pair<List<Commands>, ExcludeList> result = startWithPoolCores(offering, mock(HostPoolCoreManager.class), busy, free);
+
+        assertEquals(1, result.first().size());
+        assertTrue(result.second().getHostsToAvoid().contains(1L));
+        verify(agentManagerMock, never()).send(eq(1L), any(Commands.class));
+        verify(agentManagerMock).send(eq(2L), any(Commands.class));
+        verify(startGpuService).allocateGpuGroup(any(VirtualMachine.class), eq(2L), eq(5L), eq(2));
+    }
+
+    @Test
+    public void cpuOnlyStartAllocatesNoGpuGroup() throws Exception {
+        HostPoolCoreManager poolCores = mock(HostPoolCoreManager.class);
+        when(poolCores.allocatePoolCores(any(VirtualMachine.class), any(Host.class), eq(2))).thenReturn(List.of(new HostPoolCoreManager.PoolCore(0, 8, 24)));
+
+        startWithPoolCores(startOffering(2, null), poolCores, kvmHost(1L));
+
+        verify(startGpuService, never()).allocateGpuGroup(any(), Mockito.anyLong(), Mockito.anyLong(), Mockito.anyInt());
+    }
+
+    @Test
+    public void startThatOnlyPreparesVolumesAllocatesNoGpuGroup() throws Exception {
+        ServiceOfferingVO offering = startOffering(32, 5L);
+        Mockito.lenient().when(offering.getGpuCount()).thenReturn(2);
+        startParams.put(VirtualMachineProfile.Param.ReturnAfterVolumePrepare, true);
+        transitionsSetHost = true;
+
+        List<Commands> sent = startWithPoolCores(offering, mock(HostPoolCoreManager.class), kvmHost(1L)).first();
+
+        assertTrue(sent.isEmpty());
+        verify(startGpuService, never()).allocateGpuGroup(any(), Mockito.anyLong(), Mockito.anyLong(), Mockito.anyInt());
     }
 }

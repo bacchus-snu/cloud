@@ -25,12 +25,16 @@ import com.cloud.utils.db.GenericDaoBase;
 import com.cloud.utils.db.JoinBuilder;
 import com.cloud.utils.db.SearchBuilder;
 import com.cloud.utils.db.SearchCriteria;
+import com.cloud.utils.db.TransactionLegacy;
+import com.cloud.utils.exception.CloudRuntimeException;
 import org.apache.cloudstack.gpu.GpuDevice;
 import org.apache.commons.collections.CollectionUtils;
 import org.springframework.stereotype.Component;
 
 import javax.inject.Inject;
 import javax.naming.ConfigurationException;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -49,6 +53,16 @@ public class GpuDeviceDaoImpl extends GenericDaoBase<GpuDeviceVO, Long> implemen
     private static final String STATE = "state";
     private static final String MANAGED_STATE = "managedState";
     private static final String TYPE = "type";
+    private static final String CARD_JOIN = "cardJoin";
+    private static final String PROFILE_JOIN = "profileJoin";
+    private static final String KEYWORD_CARD_NAME = "keywordCardName";
+    private static final String KEYWORD_CARD_VENDOR_NAME = "keywordCardVendorName";
+    private static final String KEYWORD_CARD_DEVICE_NAME = "keywordCardDeviceName";
+    private static final String KEYWORD_PROFILE_NAME = "keywordProfileName";
+    private static final String KEYWORD_PROFILE_DESCRIPTION = "keywordProfileDescription";
+    static final String RELEASE_IF_VM_HOLDS_NONE_SQL = "UPDATE `cloud`.`gpu_device` d JOIN `cloud`.`vm_instance` v ON v.id = d.vm_id "
+            + "SET d.state = '" + GpuDevice.State.Free.name() + "', d.vm_id = NULL WHERE d.id = ? AND d.vm_id = ? AND (v.removed IS NOT NULL OR v.state IN ("
+            + STATES_WITHOUT_GPUS.stream().map(state -> "'" + state.name() + "'").sorted().collect(Collectors.joining(", ")) + "))";
     private final SearchBuilder<GpuDeviceVO> allFieldSearch;
     private SearchBuilder<GpuDeviceVO> devicesForAllocationSearch;
     @Inject
@@ -105,6 +119,26 @@ public class GpuDeviceDaoImpl extends GenericDaoBase<GpuDeviceVO, Long> implemen
         SearchCriteria<GpuDeviceVO> sc = allFieldSearch.create();
         sc.setParameters(HOST_ID, hostId);
         return listBy(sc);
+    }
+
+    @Override
+    public boolean releaseIfVmHoldsNone(long deviceId, long vmId) {
+        TransactionLegacy txn = TransactionLegacy.currentTxn();
+        try {
+            PreparedStatement pstmt = txn.prepareAutoCloseStatement(RELEASE_IF_VM_HOLDS_NONE_SQL);
+            pstmt.setLong(1, deviceId);
+            pstmt.setLong(2, vmId);
+            return pstmt.executeUpdate() > 0;
+        } catch (SQLException e) {
+            throw new CloudRuntimeException(String.format("Unable to release GPU device %d of VM %d", deviceId, vmId), e);
+        }
+    }
+
+    @Override
+    public List<GpuDeviceVO> lockByHostId(long hostId) {
+        SearchCriteria<GpuDeviceVO> sc = allFieldSearch.create();
+        sc.setParameters(HOST_ID, hostId);
+        return lockRows(sc, null, true);
     }
 
     @Override
@@ -171,16 +205,15 @@ public class GpuDeviceDaoImpl extends GenericDaoBase<GpuDeviceVO, Long> implemen
         if (keyword != null) {
             SearchBuilder<GpuCardVO> cardSb = gpuCardDao.createSearchBuilder();
             SearchBuilder<VgpuProfileVO> profileSb = vgpuProfileDao.createSearchBuilder();
-            sb.join("cardJoin", cardSb, sb.entity().getCardId(), cardSb.entity().getId(), JoinBuilder.JoinType.INNER);
-            sb.join("profileJoin", profileSb, sb.entity().getCardId(), profileSb.entity().getId(),
+            sb.join(CARD_JOIN, cardSb, sb.entity().getCardId(), cardSb.entity().getId(), JoinBuilder.JoinType.INNER);
+            sb.join(PROFILE_JOIN, profileSb, sb.entity().getVgpuProfileId(), profileSb.entity().getId(),
                     JoinBuilder.JoinType.INNER);
 
-            sb.op("cardNameKeyword", cardSb.entity().getName(), SearchCriteria.Op.LIKE);
-            sb.or("cardNameKeyword", cardSb.entity().getVendorName(), SearchCriteria.Op.LIKE);
-            sb.or("cardNameKeyword", cardSb.entity().getDeviceName(), SearchCriteria.Op.LIKE);
-
-            sb.op("profileNameKeyword", profileSb.entity().getName(), SearchCriteria.Op.LIKE);
-            sb.op("profileDescriptionKeyword", profileSb.entity().getDescription(), SearchCriteria.Op.LIKE);
+            sb.and().op(CARD_JOIN, KEYWORD_CARD_NAME, cardSb.entity().getName(), SearchCriteria.Op.LIKE);
+            sb.or(CARD_JOIN, KEYWORD_CARD_VENDOR_NAME, cardSb.entity().getVendorName(), SearchCriteria.Op.LIKE);
+            sb.or(CARD_JOIN, KEYWORD_CARD_DEVICE_NAME, cardSb.entity().getDeviceName(), SearchCriteria.Op.LIKE);
+            sb.or(PROFILE_JOIN, KEYWORD_PROFILE_NAME, profileSb.entity().getName(), SearchCriteria.Op.LIKE);
+            sb.or(PROFILE_JOIN, KEYWORD_PROFILE_DESCRIPTION, profileSb.entity().getDescription(), SearchCriteria.Op.LIKE);
             sb.cp();
         }
 
@@ -205,11 +238,11 @@ public class GpuDeviceDaoImpl extends GenericDaoBase<GpuDeviceVO, Long> implemen
         }
 
         if (keyword != null) {
-            sc.setJoinParameters("cardJoin", "cardNameKeyword", "%" + keyword + "%");
-            sc.setJoinParameters("cardJoin", "cardNameKeyword", "%" + keyword + "%");
-            sc.setJoinParameters("cardJoin", "cardNameKeyword", "%" + keyword + "%");
-            sc.setJoinParameters("profileJoin", "profileNameKeyword", "%" + keyword + "%");
-            sc.setJoinParameters("profileJoin", "profileDescriptionKeyword", "%" + keyword + "%");
+            String match = "%" + keyword + "%";
+            for (String condition : List.of(KEYWORD_CARD_NAME, KEYWORD_CARD_VENDOR_NAME, KEYWORD_CARD_DEVICE_NAME, KEYWORD_PROFILE_NAME,
+                    KEYWORD_PROFILE_DESCRIPTION)) {
+                sc.setParameters(condition, match);
+            }
         }
 
         return searchAndCount(sc, searchFilter);

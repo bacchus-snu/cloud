@@ -28,6 +28,7 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import org.apache.cloudstack.gpu.GpuService;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -100,6 +101,8 @@ public class CapacityManagerImplTest {
     MessageBus messageBus;
     @Mock
     HostPoolCoreManager hostPoolCoreManager;
+    @Mock
+    GpuService gpuService;
 
     @Spy
     @InjectMocks
@@ -816,5 +819,40 @@ public class CapacityManagerImplTest {
         Mockito.clearInvocations(hostPoolCoreManager);
         capacityManager.updateCapacityForHost(mockHost(8, 2000L, 16 * GIB));
         verify(hostPoolCoreManager, never()).removeStaleAssignments(anyLong());
+    }
+
+    private static void setDetachOnStop(String value) throws Exception {
+        java.lang.reflect.Field field = org.apache.cloudstack.framework.config.ConfigKey.class.getDeclaredField("_defaultValue");
+        field.setAccessible(true);
+        field.set(GpuService.GpuDetachOnStop, value);
+    }
+
+    @Test
+    public void gpuDevicesReleasedOnEveryTransitionIntoAStateWithoutGpus() throws Exception {
+        String original = GpuService.GpuDetachOnStop.defaultValue();
+        try {
+            setDetachOnStop("true");
+            Object[][] transitions = {
+                    {VirtualMachine.State.Stopping, VirtualMachine.Event.OperationSucceeded},
+                    {VirtualMachine.State.Running, VirtualMachine.Event.FollowAgentPowerOffReport},
+                    {VirtualMachine.State.Starting, VirtualMachine.Event.OperationFailed},
+                    {VirtualMachine.State.Starting, VirtualMachine.Event.AgentReportStopped},
+            };
+            for (Object[] transition : transitions) {
+                Mockito.clearInvocations(gpuService);
+                stopCpuOnlyVm(0, (VirtualMachine.State) transition[0], (VirtualMachine.Event) transition[1]);
+                verify(gpuService).releaseGpuDevicesOfStoppedVm(VM_ID);
+            }
+
+            Mockito.clearInvocations(gpuService);
+            transitCpuOnlyVm(0, VirtualMachine.State.Stopped, VirtualMachine.Event.FollowAgentPowerOnReport, VirtualMachine.State.Running, HOST_ID, 0L);
+            verify(gpuService, never()).releaseGpuDevicesOfStoppedVm(anyLong());
+
+            setDetachOnStop("false");
+            stopCpuOnlyVm(0, VirtualMachine.State.Stopping, VirtualMachine.Event.OperationSucceeded);
+            verify(gpuService, never()).releaseGpuDevicesOfStoppedVm(anyLong());
+        } finally {
+            setDetachOnStop(original);
+        }
     }
 }

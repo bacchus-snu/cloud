@@ -26,6 +26,12 @@ public class ValidatedConfigKey<T> extends ConfigKey<T> {
         this.validator = validator;
     }
 
+    public ValidatedConfigKey(Class<T> type, String name, String category, String defaultValue, String description, boolean dynamic, Scope scope,
+            Kind kind, String options, Consumer<T> validator) {
+        super(type, name, category, defaultValue, description, dynamic, scope, null, null, null, null, null, kind, options);
+        this.validator = validator;
+    }
+
     public Consumer<T> getValidator() {
         return validator;
     }

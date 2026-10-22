@@ -1519,6 +1519,9 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
 
                 try {
                     final List<int[]> poolCores = allocatePoolCores(vm, offering, dest.getHost());
+                    if (params == null || !Boolean.TRUE.equals(params.get(VirtualMachineProfile.Param.ReturnAfterVolumePrepare))) {
+                        allocateGpuGroup(vm, offering, dest.getHost());
+                    }
 
                     resetVmNicsDeviceId(vm.getId());
 
@@ -1775,6 +1778,19 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
         return hostPoolCoreManager.allocatePoolCores(vm, host, offering.getCpu()).stream()
                 .map(HostPoolCoreManager.PoolCore::getThreads)
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * Gives a VM with a vGPU profile a whole GPU group of the host it starts on; the hypervisor guru then describes the
+     * devices the VM holds, so every later description of a running VM keeps the same devices.
+     */
+    private void allocateGpuGroup(VMInstanceVO vm, ServiceOffering offering, Host host) throws InsufficientServerCapacityException {
+        Long vgpuProfileId = offering.getVgpuProfileId();
+        if (vgpuProfileId == null || vgpuProfileId <= 0 || HypervisorType.XenServer.equals(host.getHypervisorType())) {
+            return;
+        }
+        int gpuCount = offering.getGpuCount() != null ? offering.getGpuCount() : 1;
+        gpuService.allocateGpuGroup(vm, host.getId(), vgpuProfileId, gpuCount);
     }
 
     private boolean canExposeError(Account account) {

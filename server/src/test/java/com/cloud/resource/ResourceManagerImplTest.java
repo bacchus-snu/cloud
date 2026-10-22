@@ -22,6 +22,7 @@ import com.cloud.agent.api.StartupCommand;
 import com.cloud.capacity.HostPoolCoreManager;
 import com.cloud.dc.dao.DedicatedResourceDao;
 import com.cloud.gpu.dao.HostGpuGroupsDao;
+import org.apache.cloudstack.gpu.GpuService;
 import com.cloud.host.dao.HostDetailsDao;
 import com.cloud.host.dao.HostTagsDao;
 import com.cloud.user.AccountManager;
@@ -1408,9 +1409,11 @@ public class ResourceManagerImplTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    public void deleteHostRemovesItsPoolCoresInTheRemovalTransaction() throws Exception {
+    public void deleteHostRemovesItsPoolCoresAndGpuGroupsInTheRemovalTransaction() throws Exception {
         HostPoolCoreManager poolCores = Mockito.mock(HostPoolCoreManager.class);
         ReflectionTestUtils.setField(resourceManager, "hostPoolCoreManager", poolCores);
+        GpuService gpuGroups = Mockito.mock(GpuService.class);
+        ReflectionTestUtils.setField(resourceManager, "gpuService", gpuGroups);
         ReflectionTestUtils.setField(resourceManager, "_accountMgr", Mockito.mock(AccountManager.class));
         ReflectionTestUtils.setField(resourceManager, "_hostDetailsDao", Mockito.mock(HostDetailsDao.class));
         ReflectionTestUtils.setField(resourceManager, "_hostGpuGroupsDao", Mockito.mock(HostGpuGroupsDao.class));
@@ -1430,6 +1433,10 @@ public class ResourceManagerImplTest {
             Assert.assertTrue("pool cores removed outside the host removal transaction", inTransaction[0]);
             return null;
         }).when(poolCores).removeHostPoolCores(hostId);
+        Mockito.doAnswer(i -> {
+            Assert.assertTrue("GPU groups removed outside the host removal transaction", inTransaction[0]);
+            return null;
+        }).when(gpuGroups).removeHostGpuGroups(hostId);
 
         try (MockedStatic<CallContext> callContext = Mockito.mockStatic(CallContext.class);
              MockedStatic<Transaction> transaction = Mockito.mockStatic(Transaction.class)) {
@@ -1449,5 +1456,6 @@ public class ResourceManagerImplTest {
         }
 
         verify(poolCores).removeHostPoolCores(hostId);
+        verify(gpuGroups).removeHostGpuGroups(hostId);
     }
 }

@@ -17,6 +17,7 @@
 package com.cloud.agent.manager.allocator.impl;
 
 import static com.cloud.deploy.DeploymentPlanner.AllocationAlgorithm.firstfitleastconsumed;
+import static com.cloud.deploy.DeploymentPlanner.AllocationAlgorithm.firstfitmostconsumed;
 import static com.cloud.deploy.DeploymentPlanner.AllocationAlgorithm.random;
 import static com.cloud.deploy.DeploymentPlanner.AllocationAlgorithm.userdispersing;
 
@@ -67,6 +68,7 @@ import javax.naming.ConfigurationException;
 
 import org.apache.cloudstack.api.ApiConstants;
 import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
+import org.apache.cloudstack.gpu.GpuService;
 import org.apache.cloudstack.utils.reflectiontostringbuilderutils.ReflectionToStringBuilderUtils;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.ObjectUtils;
@@ -96,6 +98,8 @@ public class FirstFitAllocator extends BaseAllocator {
     CapacityDao _capacityDao;
     @Inject
     VMInstanceDetailsDao vmInstanceDetailsDao;
+    @Inject
+    GpuService gpuService;
 
     boolean _checkHvm = true;
 
@@ -203,16 +207,20 @@ public class FirstFitAllocator extends BaseAllocator {
 
     protected List<Host> allocateTo(VirtualMachineProfile vmProfile, DeploymentPlan plan, ServiceOffering offering, VMTemplateVO template, ExcludeList avoid, List<? extends Host> hosts, int returnUpTo,
                                     boolean considerReservedCapacity, Account account) {
-        if (!CapacityManager.isHostCapacityExempt(offering)) {
+        if (CapacityManager.isHostCapacityExempt(offering)) {
+            hosts = reorderHostsForGpuGroups(offering, hosts);
+        } else {
             hosts = removeHostsWithNoComputeCapacity(hosts, avoid);
-        }
-        String vmAllocationAlgorithm = DeploymentClusterPlanner.VmAllocationAlgorithm.value();
-        if (random.toString().equals(vmAllocationAlgorithm)) {
-            Collections.shuffle(hosts);
-        } else if (userdispersing.toString().equals(vmAllocationAlgorithm)) {
-            hosts = reorderHostsByNumberOfVms(plan, hosts, account);
-        } else if (firstfitleastconsumed.toString().equals(vmAllocationAlgorithm)) {
-            hosts = reorderHostsByCapacity(plan, hosts);
+            String vmAllocationAlgorithm = getVmAllocationAlgorithm();
+            if (random.toString().equals(vmAllocationAlgorithm)) {
+                Collections.shuffle(hosts);
+            } else if (userdispersing.toString().equals(vmAllocationAlgorithm)) {
+                hosts = reorderHostsByNumberOfVms(plan, hosts, account);
+            } else if (firstfitleastconsumed.toString().equals(vmAllocationAlgorithm)) {
+                hosts = reorderHostsByCapacity(plan, hosts);
+            } else if (firstfitmostconsumed.toString().equals(vmAllocationAlgorithm)) {
+                hosts = reorderHostsByMostConsumed(plan, hosts);
+            }
         }
 
         logger.debug("FirstFitAllocator has {} hosts to check for allocation {}.", hosts.size(), hosts);
@@ -223,6 +231,53 @@ public class FirstFitAllocator extends BaseAllocator {
         logger.debug("Host Allocator returning {} suitable hosts.", suitableHosts.size());
 
         return suitableHosts;
+    }
+
+    protected String getVmAllocationAlgorithm() {
+        return DeploymentClusterPlanner.VmAllocationAlgorithm.value();
+    }
+
+    protected String getGpuAllocationAlgorithm() {
+        return GpuService.GpuAllocationAlgorithm.value();
+    }
+
+    /**
+     * Orders hosts for an offering with a vGPU profile by gpu.allocation.algorithm, whatever vm.allocation.algorithm
+     * is: best fit first, the lowest host id first, or at random. Hosts without a usable group stay in the list and are
+     * avoided when their GPUs are checked.
+     */
+    protected List<? extends Host> reorderHostsForGpuGroups(ServiceOffering offering, List<? extends Host> hosts) {
+        List<Host> ordered = new ArrayList<>(hosts);
+        String algorithm = getGpuAllocationAlgorithm();
+        if (GpuService.AllocationAlgorithm.random.name().equals(algorithm)) {
+            Collections.shuffle(ordered);
+            return ordered;
+        }
+        if (GpuService.AllocationAlgorithm.firstfit.name().equals(algorithm)) {
+            ordered.sort(Comparator.comparingLong(Host::getId));
+            return ordered;
+        }
+        long vgpuProfileId = offering.getVgpuProfileId();
+        int gpuCount = offering.getGpuCount() != null ? offering.getGpuCount() : 1;
+        Map<Long, Integer> scores = new HashMap<>();
+        for (Host host : ordered) {
+            scores.put(host.getId(), gpuService.bestFitScore(host.getId(), vgpuProfileId, gpuCount));
+        }
+        ordered.sort(Comparator.<Host>comparingInt(host -> scores.get(host.getId())).thenComparingLong(Host::getId));
+        logger.debug("Hosts ordered by best fit for {} GPUs of vGPU profile {}: {}", gpuCount, vgpuProfileId, scores);
+        return ordered;
+    }
+
+    /**
+     * Reorders hosts in ascending order of free capacity, so that the most consumed host that fits is taken; ties go
+     * to the lowest host id.
+     */
+    protected List<? extends Host> reorderHostsByMostConsumed(DeploymentPlan plan, List<? extends Host> hosts) {
+        Map<Long, Double> freeByHost = getOrderedHostsByCapacity(plan.getDataCenterId(), plan.getClusterId()).second();
+        List<Host> ordered = hosts.stream().filter(host -> freeByHost.containsKey(host.getId())).collect(Collectors.toList());
+        ordered.sort(Comparator.<Host>comparingDouble(host -> freeByHost.get(host.getId())).thenComparingLong(Host::getId));
+        logger.debug("Hosts in ascending order of free capacity: {}", freeByHost);
+        return ordered;
     }
 
     protected List<Host> removeHostsWithNoComputeCapacity(List<? extends Host> hosts, ExcludeList avoid) {

@@ -568,12 +568,9 @@ public class DeploymentPlanningManagerImplTest {
         setupMocksForPlanDeploymentHostTests(host, vol1);
 
         DataCenterDeployment plan = new DataCenterDeployment(dataCenterId, podId, clusterId, hostId, null, null);
-        try {
-            DeployDestination dest = _dpm.planDeployment(vmProfile, plan, avoids, null);
-            Assert.assertEquals(dest.getHost(), host);
-        } catch (Exception ex) {
-            ex.printStackTrace();
-        }
+        DeployDestination dest = planOnProvidedHost(host, plan);
+        Assert.assertNotNull(dest);
+        Assert.assertEquals(dest.getHost(), host);
     }
 
     /**
@@ -593,11 +590,49 @@ public class DeploymentPlanningManagerImplTest {
         setupMocksForPlanDeploymentHostTests(host, vol1);
 
         DataCenterDeployment plan = new DataCenterDeployment(dataCenterId, podId, clusterId, hostId, null, null);
+        DeployDestination dest = planOnProvidedHost(host, plan);
+        Assert.assertNull("Destination should be null since host doesn't support encryption and root requires it", dest);
+    }
+
+    /**
+     * Plans on the host the plan names, with the host's GPU check passing; the check is reset afterwards because the
+     * resource manager mock is shared by the tests.
+     */
+    private DeployDestination planOnProvidedHost(Host host, DataCenterDeployment plan) {
+        Mockito.when(resourceManager.isGPUDeviceAvailable(ArgumentMatchers.any(), ArgumentMatchers.eq(host), ArgumentMatchers.anyLong())).thenReturn(true);
         try {
+            return _dpm.planDeployment(vmProfile, plan, avoids, null);
+        } catch (InsufficientServerCapacityException | AffinityConflictException e) {
+            throw new AssertionError(e);
+        } finally {
+            Mockito.when(resourceManager.isGPUDeviceAvailable(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.anyLong())).thenReturn(false);
+        }
+    }
+
+    @Test
+    public void specifiedHostWithoutUsableGroupRejected() throws Exception {
+        HostVO host = new HostVO("gpu-host");
+        VolumeVO vol1 = new VolumeVO("vol1", dataCenterId, podId, 1L, 1L, instanceId, "folder", "path", Storage.ProvisioningType.THIN, (long) 10 << 30, Volume.Type.ROOT);
+        setupMocksForPlanDeploymentHostTests(host, vol1);
+        ServiceOfferingVO gpuOffering = Mockito.spy(new ServiceOfferingVO("a100-40g-2", 16, 1024, 2000, 1, 1, false, "vm", false, Type.User, false));
+        Mockito.doReturn(5L).when(gpuOffering).getVgpuProfileId();
+        Mockito.doReturn(2).when(gpuOffering).getGpuCount();
+        Mockito.when(vmProfile.getServiceOffering()).thenReturn(gpuOffering);
+        Mockito.doReturn(new Pair<Host, Map<Volume, StoragePool>>(host, new HashMap<>())).when(_dpm).findPotentialDeploymentResources(ArgumentMatchers.anyList(),
+                ArgumentMatchers.anyMap(), ArgumentMatchers.any(ExcludeList.class), ArgumentMatchers.any(), ArgumentMatchers.anyList(),
+                ArgumentMatchers.any(), ArgumentMatchers.any());
+        DataCenterDeployment plan = new DataCenterDeployment(dataCenterId, podId, clusterId, hostId, null, null);
+
+        try {
+            Mockito.when(resourceManager.isGPUDeviceAvailable(ArgumentMatchers.eq(gpuOffering), ArgumentMatchers.eq(host), ArgumentMatchers.anyLong())).thenReturn(false);
+            Assert.assertNull("an admin-specified host without a usable GPU group is refused", _dpm.planDeployment(vmProfile, plan, avoids, null));
+
+            Mockito.when(resourceManager.isGPUDeviceAvailable(ArgumentMatchers.eq(gpuOffering), ArgumentMatchers.eq(host), ArgumentMatchers.anyLong())).thenReturn(true);
             DeployDestination dest = _dpm.planDeployment(vmProfile, plan, avoids, null);
-            Assert.assertNull("Destination should be null since host doesn't support encryption and root requires it", dest);
-        } catch (Exception ex) {
-            ex.printStackTrace();
+            Assert.assertNotNull(dest);
+            Assert.assertSame(host, dest.getHost());
+        } finally {
+            Mockito.when(resourceManager.isGPUDeviceAvailable(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.anyLong())).thenReturn(false);
         }
     }
 
@@ -617,12 +652,9 @@ public class DeploymentPlanningManagerImplTest {
         setupMocksForPlanDeploymentHostTests(host, vol1);
 
         DataCenterDeployment plan = new DataCenterDeployment(dataCenterId, podId, clusterId, hostId, null, null);
-        try {
-            DeployDestination dest = _dpm.planDeployment(vmProfile, plan, avoids, null);
-            Assert.assertEquals(dest.getHost(), host);
-        } catch (Exception ex) {
-            ex.printStackTrace();
-        }
+        DeployDestination dest = planOnProvidedHost(host, plan);
+        Assert.assertNotNull(dest);
+        Assert.assertEquals(dest.getHost(), host);
     }
 
     /**
@@ -641,12 +673,9 @@ public class DeploymentPlanningManagerImplTest {
         setupMocksForPlanDeploymentHostTests(host, vol1);
 
         DataCenterDeployment plan = new DataCenterDeployment(dataCenterId, podId, clusterId, hostId, null, null);
-        try {
-            DeployDestination dest = _dpm.planDeployment(vmProfile, plan, avoids, null);
-            Assert.assertEquals(dest.getHost(), host);
-        } catch (Exception ex) {
-            ex.printStackTrace();
-        }
+        DeployDestination dest = planOnProvidedHost(host, plan);
+        Assert.assertNotNull(dest);
+        Assert.assertEquals(dest.getHost(), host);
     }
 
     /**
@@ -757,7 +786,7 @@ public class DeploymentPlanningManagerImplTest {
     }
 
     @Test
-    public void passEncRootPlannerHostSupportingEncryptionTest() {
+    public void passEncRootPlannerHostSupportingEncryptionTest() throws Exception {
         HostVO host = Mockito.spy(new HostVO("host"));
         Map<String, String> hostDetails = new HashMap<>() {{
             put(Host.HOST_VOLUME_ENCRYPTION, "true");
@@ -773,16 +802,13 @@ public class DeploymentPlanningManagerImplTest {
         // host id is null here so we pick up last host id
         DataCenterDeployment plan = new DataCenterDeployment(dataCenterId, podId, clusterId, null, null, null);
 
-        try {
-            DeployDestination dest = _dpm.planDeployment(vmProfile, plan, avoids, planner);
-            Assert.assertEquals(host, dest.getHost());
-        } catch (Exception ex) {
-            ex.printStackTrace();
-        }
+        DeployDestination dest = _dpm.planDeployment(vmProfile, plan, avoids, planner);
+        Assert.assertNotNull(dest);
+        Assert.assertEquals(host, dest.getHost());
     }
 
     @Test
-    public void failEncRootPlannerHostSupportingEncryptionTest() {
+    public void failEncRootPlannerHostSupportingEncryptionTest() throws Exception {
         HostVO host = Mockito.spy(new HostVO("host"));
         Map<String, String> hostDetails = new HashMap<>() {{
             put(Host.HOST_VOLUME_ENCRYPTION, "false");
@@ -798,12 +824,8 @@ public class DeploymentPlanningManagerImplTest {
         // host id is null here so we pick up last host id
         DataCenterDeployment plan = new DataCenterDeployment(dataCenterId, podId, clusterId, null, null, null);
 
-        try {
-            DeployDestination dest = _dpm.planDeployment(vmProfile, plan, avoids, planner);
-            Assert.assertNull("Destination should be null since last host doesn't support encryption and root requires it", dest);
-        } catch (Exception ex) {
-            ex.printStackTrace();
-        }
+        DeployDestination dest = _dpm.planDeployment(vmProfile, plan, avoids, planner);
+        Assert.assertNull("Destination should be null since last host doesn't support encryption and root requires it", dest);
     }
 
     @Test
@@ -912,6 +934,9 @@ public class DeploymentPlanningManagerImplTest {
         ServiceOfferingVO svcOffering = new ServiceOfferingVO("test", 1, 256, 1, 1, 1, false, "vm", false, Type.User, false);
         Mockito.when(vmProfile.getServiceOffering()).thenReturn(svcOffering);
         Mockito.when(vmProfile.getHypervisorType()).thenReturn(HypervisorType.KVM);
+        VMTemplateVO vmTemplate = Mockito.mock(VMTemplateVO.class);
+        Mockito.when(vmTemplate.getArch()).thenReturn(CPU.CPUArch.amd64);
+        Mockito.when(vmProfile.getTemplate()).thenReturn(vmTemplate);
         Mockito.when(hostDao.findById(hostId)).thenReturn(host);
         Mockito.doNothing().when(hostDao).loadDetails(host);
         Mockito.doReturn(volumeVOs).when(volDao).findByInstance(ArgumentMatchers.anyLong());

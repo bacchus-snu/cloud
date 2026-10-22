@@ -28,6 +28,7 @@ import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -1063,6 +1064,9 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
 
                 logger.debug("Deleting pool cores from database for host with UUID [{}].", host.getUuid());
                 hostPoolCoreManager.removeHostPoolCores(hostId);
+
+                logger.debug("Deleting GPU group registration from database for host with UUID [{}].", host.getUuid());
+                gpuService.removeHostGpuGroups(hostId);
 
                 // if host is GPU enabled, delete GPU entries
                 logger.debug("Deleting GPU entries from database for host with UUID [{}].", host.getUuid());
@@ -3400,7 +3404,7 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
         if (startup instanceof StartupRoutingCommand &&
             CollectionUtils.isNotEmpty(((StartupRoutingCommand) startup).getGpuDevices())) {
             StartupRoutingCommand ssCmd = ((StartupRoutingCommand) startup);
-            host.setGpuGroups(getGroupDetails(host, ssCmd.getGpuDevices(), ssCmd.getGpuGroupDetails()));
+            host.setGpuGroups(getGroupDetails(host, ssCmd.getGpuDevices(), ssCmd.getGpuGroupDetails(), new Date()));
             _hostDao.update(hostVo.getId(), host);
         }
         return hostVo;
@@ -3818,7 +3822,7 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
         host.setSpeed(ssCmd.getSpeed());
         host.setHypervisorType(hyType);
         host.setHypervisorVersion(ssCmd.getHypervisorVersion());
-        host.setGpuGroups(getGroupDetails(host, ssCmd.getGpuDevices(), ssCmd.getGpuGroupDetails()));
+        host.setGpuGroups(getGroupDetails(host, ssCmd.getGpuDevices(), ssCmd.getGpuGroupDetails(), new Date()));
         return host;
     }
 
@@ -4618,6 +4622,7 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
 
     @Override
     public HashMap<String, HashMap<String, VgpuTypesInfo>> getGPUStatistics(final HostVO host) {
+        final Date reportTime = new Date();
         final Answer answer = _agentMgr.easySend(host.getId(), new GetGPUStatsCommand(host.getGuid(), host.getName()));
         if (answer instanceof UnsupportedAnswer) {
             return null;
@@ -4628,16 +4633,20 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
             return null;
         } else if (answer instanceof GetGPUStatsAnswer) {
             GetGPUStatsAnswer gpuStatsAnswer = (GetGPUStatsAnswer) answer;
-            return getGroupDetails(host, gpuStatsAnswer.getGpuDevices(), gpuStatsAnswer.getGroupDetails());
+            return getGroupDetails(host, gpuStatsAnswer.getGpuDevices(), gpuStatsAnswer.getGroupDetails(), reportTime);
         }
         return null;
     }
 
-    private HashMap<String, HashMap<String, VgpuTypesInfo>> getGroupDetails(HostVO host, List<VgpuTypesInfo> gpuDevices, HashMap<String, HashMap<String, VgpuTypesInfo>> groupDetails) {
+    /**
+     * @param reportTime a time no later than the moment the host gathered the GPU devices
+     */
+    private HashMap<String, HashMap<String, VgpuTypesInfo>> getGroupDetails(HostVO host, List<VgpuTypesInfo> gpuDevices,
+            HashMap<String, HashMap<String, VgpuTypesInfo>> groupDetails, Date reportTime) {
         HashMap<String, HashMap<String, VgpuTypesInfo>> finalGroupDetails;
         if (host.getId() > 0) {
             // The below method needs the host to be persisted in the DB to save the GPU devices for the host
-            gpuService.addGpuDevicesToHost(host, gpuDevices);
+            gpuService.addGpuDevicesToHost(host, gpuDevices, reportTime);
         }
         if (CollectionUtils.isNotEmpty(gpuDevices)) {
             finalGroupDetails = gpuService.getGpuGroupDetailsFromGpuDevicesOnHost(host.getId());

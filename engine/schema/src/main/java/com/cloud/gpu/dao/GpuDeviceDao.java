@@ -19,10 +19,28 @@ package com.cloud.gpu.dao;
 import com.cloud.gpu.GpuDeviceVO;
 import com.cloud.utils.Pair;
 import com.cloud.utils.db.GenericDao;
+import com.cloud.vm.VirtualMachine;
 
+import java.util.Collections;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
 
 public interface GpuDeviceDao extends GenericDao<GpuDeviceVO, Long> {
+
+    /**
+     * The states in which a VM cannot run on a host and so holds no GPU device when GPUs are detached on stop.
+     */
+    Set<VirtualMachine.State> STATES_WITHOUT_GPUS = Collections.unmodifiableSet(EnumSet.of(VirtualMachine.State.Stopped,
+            VirtualMachine.State.Destroyed, VirtualMachine.State.Expunging, VirtualMachine.State.Error));
+
+    /**
+     * Frees the device if the VM holds it and is removed or in one of {@link #STATES_WITHOUT_GPUS}, in one statement
+     * that decides by the VM's committed state, so that a release running late never frees a device of a later start.
+     *
+     * @return true when the device was freed
+     */
+    boolean releaseIfVmHoldsNone(long deviceId, long vmId);
 
     List<GpuDeviceVO> listByIds(List<Long> ids);
 
@@ -42,6 +60,14 @@ public interface GpuDeviceDao extends GenericDao<GpuDeviceVO, Long> {
      * @return a list of GPU devices for the host
      */
     List<GpuDeviceVO> listByHostId(long hostId);
+
+    /**
+     * Locks the host's GPU device rows for update until the current transaction ends, so that decisions made from
+     * reads of the host's devices after it cannot interleave with another such decision.
+     *
+     * @return the locked rows
+     */
+    List<GpuDeviceVO> lockByHostId(long hostId);
 
     /**
      * List GPU devices by VM ID

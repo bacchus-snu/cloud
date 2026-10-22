@@ -81,9 +81,20 @@ public class GenericSearchBuilder<T, K> extends SearchBase<GenericSearchBuilder<
     }
 
     public GenericSearchBuilder<T, K> and(String joinName, String name, Object field, Op op) {
-        SearchBase<?, ?, ?> join = _joins.get(joinName).getT();
-        constructCondition(joinName, name, " AND ", join._specifiedAttrs.get(0), op);
+        constructCondition(joinName, name, " AND ", takeJoinedAttribute(joinName), op);
         return this;
+    }
+
+    /**
+     * Takes the attribute just selected on the joined builder, so that the next condition on that join selects its
+     * own attribute.
+     */
+    private Attribute takeJoinedAttribute(String joinName) {
+        SearchBase<?, ?, ?> join = _joins.get(joinName).getT();
+        assert join._specifiedAttrs.size() == 1 : "You didn't select the attribute of the join " + joinName;
+        Attribute attr = join._specifiedAttrs.get(0);
+        join._specifiedAttrs.clear();
+        return attr;
     }
 
     /**
@@ -141,8 +152,7 @@ public class GenericSearchBuilder<T, K> extends SearchBase<GenericSearchBuilder<
     }
 
     protected GenericSearchBuilder<T, K> left(String joinName, Object field, Op op, String name) {
-        SearchBase<?, ?, ?> joinSb = _joins.get(joinName).getT();
-        constructCondition(joinName, name, " ( ", joinSb._specifiedAttrs.get(0), op);
+        constructCondition(joinName, name, " ( ", takeJoinedAttribute(joinName), op);
         return this;
     }
 
@@ -199,8 +209,7 @@ public class GenericSearchBuilder<T, K> extends SearchBase<GenericSearchBuilder<
     }
 
     public GenericSearchBuilder<T, K> or(String joinName, String name, Object field, Op op) {
-        SearchBase<?, ?, ?> join = _joins.get(joinName).getT();
-        constructCondition(joinName, name, " OR ", join._specifiedAttrs.get(0), op);
+        constructCondition(joinName, name, " OR ", takeJoinedAttribute(joinName), op);
         return this;
     }
 

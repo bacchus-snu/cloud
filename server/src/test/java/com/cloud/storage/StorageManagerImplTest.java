@@ -17,6 +17,7 @@
 package com.cloud.storage;
 
 import java.lang.reflect.Field;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -437,6 +438,27 @@ public class StorageManagerImplTest {
                 Mockito.anyLong(), Mockito.anyLong());
         assertTrue(storageManagerImpl.storagePoolHasEnoughSpace(1000L, pool));
         Assert.assertFalse(storageManagerImpl.storagePoolHasEnoughSpace(2200L, pool));
+    }
+
+    @Test
+    public void storagePoolCrossedDisableThresholdOnEitherThreshold() {
+        StoragePoolVO pool = Mockito.mock(StoragePoolVO.class);
+        Mockito.when(pool.getId()).thenReturn(1L);
+        Mockito.when(pool.getStorageProviderName()).thenReturn("DefaultPrimary");
+        Mockito.when(pool.getPoolType()).thenReturn(Storage.StoragePoolType.Filesystem);
+        Mockito.when(pool.getCapacityBytes()).thenReturn(1000L);
+        Mockito.when(storagePoolDao.findById(1L)).thenReturn(pool);
+        Mockito.doReturn(BigDecimal.ONE).when(storageManagerImpl).getStorageOverProvisioningFactor(1L);
+
+        Mockito.when(pool.getUsedBytes()).thenReturn(500L);
+        Mockito.when(capacityManager.getAllocatedPoolCapacity(pool, null)).thenReturn(850L);
+        Assert.assertFalse("open at the allocated threshold", storageManagerImpl.storagePoolCrossedDisableThreshold(pool));
+
+        Mockito.when(capacityManager.getAllocatedPoolCapacity(pool, null)).thenReturn(851L);
+        assertTrue("closed past the allocated threshold", storageManagerImpl.storagePoolCrossedDisableThreshold(pool));
+
+        Mockito.when(pool.getUsedBytes()).thenReturn(850L);
+        assertTrue("closed at the used threshold", storageManagerImpl.storagePoolCrossedDisableThreshold(pool));
     }
 
     @Test

@@ -274,6 +274,16 @@ public class ServiceOfferingResponse extends BaseResponseWithAnnotations {
     @Param(description = "whether GPU device is used for display or not ", since = "4.21")
     private Boolean gpuDisplay;
 
+    @SerializedName(ApiConstants.GPU_SLOTS_AVAILABLE)
+    @Param(description = "the number of Instances of this offering that could start at once on the GPU groups now free; " +
+            "only for offerings with a vGPU profile", since = "4.23.0.100")
+    private Integer gpuSlotsAvailable;
+
+    @SerializedName(ApiConstants.GPU_SLOTS_TOTAL)
+    @Param(description = "the number of Instances of this offering that the GPU groups present could run if none were in use; " +
+            "only for offerings with a vGPU profile", since = "4.23.0.100")
+    private Integer gpuSlotsTotal;
+
     @SerializedName(ApiConstants.PURGE_RESOURCES)
     @Param(description = "Whether to cleanup VM and its associated resource upon expunge", since = "4.20")
     private Boolean purgeResources;
@@ -706,5 +716,21 @@ public class ServiceOfferingResponse extends BaseResponseWithAnnotations {
 
     public void setPurgeResources(Boolean purgeResources) {
         this.purgeResources = purgeResources;
+    }
+
+    public Integer getGpuSlotsAvailable() {
+        return gpuSlotsAvailable;
+    }
+
+    public void setGpuSlotsAvailable(Integer gpuSlotsAvailable) {
+        this.gpuSlotsAvailable = gpuSlotsAvailable;
+    }
+
+    public Integer getGpuSlotsTotal() {
+        return gpuSlotsTotal;
+    }
+
+    public void setGpuSlotsTotal(Integer gpuSlotsTotal) {
+        this.gpuSlotsTotal = gpuSlotsTotal;
     }
 }

@@ -387,6 +387,12 @@ public interface StorageManager extends StorageService {
 
     boolean storagePoolHasEnoughSpaceForResize(StoragePool pool, long currentSize, long newSize);
 
+    /**
+     * @return true when the pool admits no new allocation even of zero size: its used share has reached
+     *         pool.storage.capacity.disablethreshold or its allocated share exceeds pool.storage.allocated.capacity.disablethreshold
+     */
+    boolean storagePoolCrossedDisableThreshold(StoragePool pool);
+
     boolean storagePoolCompatibleWithVolumePool(StoragePool pool, Volume volume);
 
     boolean isStoragePoolCompliantWithStoragePolicy(List<Pair<Volume, DiskProfile>> volumes, StoragePool pool) throws StorageUnavailableException;

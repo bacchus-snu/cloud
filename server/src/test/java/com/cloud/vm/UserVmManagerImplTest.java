@@ -67,8 +67,13 @@ import org.apache.cloudstack.acl.SecurityChecker;
 import org.apache.cloudstack.api.ApiCommandResourceType;
 import org.apache.cloudstack.api.ApiConstants;
 import org.apache.cloudstack.api.BaseCmd.HTTPMethod;
+import org.apache.cloudstack.api.ResponseGenerator;
+import org.apache.cloudstack.api.command.admin.systemvm.MigrateSystemVMCmd;
 import org.apache.cloudstack.api.command.admin.vm.AssignVMCmd;
 import org.apache.cloudstack.api.command.admin.vm.DeployVMCmdByAdmin;
+import org.apache.cloudstack.api.command.admin.vm.MigrateVMCmd;
+import org.apache.cloudstack.api.command.admin.vm.MigrateVirtualMachineWithVolumeCmd;
+import org.apache.cloudstack.api.command.admin.vm.RecoverVMCmd;
 import org.apache.cloudstack.api.command.user.vm.CreateVMFromBackupCmd;
 import org.apache.cloudstack.api.command.user.vm.DeployVMCmd;
 import org.apache.cloudstack.api.command.user.vm.DeployVnfApplianceCmd;
@@ -80,6 +85,8 @@ import org.apache.cloudstack.api.command.user.vm.StartVMCmd;
 import org.apache.cloudstack.api.command.user.vm.UpdateVMCmd;
 import org.apache.cloudstack.api.command.user.vm.UpdateVmNicCmd;
 import org.apache.cloudstack.api.command.user.volume.ResizeVolumeCmd;
+import org.apache.cloudstack.api.response.SystemVmResponse;
+import org.apache.cloudstack.api.response.UserVmResponse;
 import org.apache.cloudstack.backup.BackupManager;
 import org.apache.cloudstack.backup.BackupProvider;
 import org.apache.cloudstack.backup.Backup;
@@ -98,6 +105,7 @@ import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.impl.ConfigDepotImpl;
 import org.apache.cloudstack.framework.jobs.impl.AsyncJobVO;
 import org.apache.cloudstack.resourcelimit.Reserver;
+import org.apache.cloudstack.snapshot.SnapshotHelper;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
 import org.apache.cloudstack.storage.template.VnfTemplateManager;
@@ -121,8 +129,10 @@ import org.mockito.junit.MockitoJUnitRunner;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import com.cloud.alert.AlertManager;
+import com.cloud.api.ApiDBUtils;
 import com.cloud.api.query.dao.ServiceOfferingJoinDao;
 import com.cloud.api.query.vo.ServiceOfferingJoinVO;
+import com.cloud.capacity.CapacityManager;
 import com.cloud.configuration.Resource;
 import com.cloud.dc.DataCenter;
 import com.cloud.dc.DataCenterVO;
@@ -177,6 +187,8 @@ import com.cloud.offering.ServiceOffering;
 import com.cloud.offerings.NetworkOfferingVO;
 import com.cloud.offerings.dao.NetworkOfferingDao;
 import com.cloud.org.Grouping;
+import com.cloud.resource.ResourceManager;
+import com.cloud.resource.ResourceService;
 import com.cloud.resourcelimit.CheckedReservation;
 import com.cloud.server.ManagementService;
 import com.cloud.service.ServiceOfferingVO;
@@ -188,6 +200,8 @@ import com.cloud.storage.ScopeType;
 import com.cloud.storage.SnapshotVO;
 import com.cloud.storage.Storage;
 import com.cloud.storage.StorageManager;
+import com.cloud.storage.StoragePool;
+import com.cloud.storage.StorageService;
 import com.cloud.storage.VMTemplateVO;
 import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeApiService;
@@ -218,6 +232,7 @@ import com.cloud.utils.Pair;
 import com.cloud.utils.db.EntityManager;
 import com.cloud.utils.db.Transaction;
 import com.cloud.utils.db.TransactionCallback;
+import com.cloud.utils.db.TransactionCallbackWithExceptionNoReturn;
 import com.cloud.utils.db.UUIDManager;
 import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.utils.exception.ExceptionProxyObject;
@@ -5744,5 +5759,304 @@ public class UserVmManagerImplTest {
 
         assertTrue(String.valueOf(outcome), outcome instanceof InvalidParameterValueException);
         assertTrue(((InvalidParameterValueException) outcome).getMessage(), ((InvalidParameterValueException) outcome).getMessage().contains("10"));
+    }
+
+    private static final long MIGRATION_VM_ID = 9201L;
+    private static final long MIGRATION_HOST_ID = 9202L;
+    private static final String LIVE_MIGRATION_DISABLED = "live migration is disabled";
+    private static final String PAST_THE_STATE_CHECK = "the request got past the live-migration state check";
+    private static final List<VirtualMachine.State> MIGRATION_REFUSED_STATES = List.of(VirtualMachine.State.Running, VirtualMachine.State.Migrating);
+
+    private VMInstanceVO vmToMigrate(VirtualMachine.State state, VirtualMachine.Type type) {
+        VMInstanceDao vmInstanceDao = mock(VMInstanceDao.class);
+        ReflectionTestUtils.setField(userVmManagerImpl, "_vmInstanceDao", vmInstanceDao);
+        VMInstanceVO vm = mock(VMInstanceVO.class);
+        lenient().when(vm.getId()).thenReturn(MIGRATION_VM_ID);
+        lenient().when(vm.getUuid()).thenReturn("migration-vm-uuid");
+        lenient().when(vm.getState()).thenReturn(state);
+        lenient().when(vm.getType()).thenReturn(type);
+        lenient().when(vm.getHostId()).thenReturn(MIGRATION_HOST_ID);
+        lenient().when(vm.getHypervisorType()).thenReturn(Hypervisor.HypervisorType.KVM);
+        lenient().when(vmInstanceDao.findById(MIGRATION_VM_ID)).thenReturn(vm);
+        lenient().when(accountManager.isRootAdmin(anyLong())).thenReturn(true);
+        ResourceManager resourceManager = mock(ResourceManager.class);
+        ReflectionTestUtils.setField(userVmManagerImpl, "_resourceMgr", resourceManager);
+        lenient().doThrow(new IllegalStateException(PAST_THE_STATE_CHECK)).when(resourceManager).getHost(MIGRATION_HOST_ID);
+        lenient().doThrow(new IllegalStateException(PAST_THE_STATE_CHECK)).when(hostDao).findById(MIGRATION_HOST_ID);
+        return vm;
+    }
+
+    private static void assertLiveMigrationRefused(org.junit.function.ThrowingRunnable migration) {
+        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, migration);
+        assertEquals(LIVE_MIGRATION_DISABLED, e.getMessage());
+    }
+
+    @Test
+    public void migrateRunningVmRefused() throws Exception {
+        for (VirtualMachine.State state : MIGRATION_REFUSED_STATES) {
+            vmToMigrate(state, VirtualMachine.Type.User);
+
+            assertLiveMigrationRefused(() -> userVmManagerImpl.migrateVirtualMachine(MIGRATION_VM_ID, mock(Host.class)));
+            assertLiveMigrationRefused(() -> userVmManagerImpl.migrateVirtualMachine(MIGRATION_VM_ID, null));
+        }
+
+        verify(virtualMachineManager, never()).migrate(anyString(), anyLong(), any());
+        verify(virtualMachineManager, never()).migrateWithStorage(anyString(), anyLong(), anyLong(), any());
+    }
+
+    @Test
+    public void migrateWithVolumeRunningVmRefused() throws Exception {
+        for (VirtualMachine.State state : MIGRATION_REFUSED_STATES) {
+            vmToMigrate(state, VirtualMachine.Type.User);
+
+            assertLiveMigrationRefused(() -> userVmManagerImpl.migrateVirtualMachineWithVolume(MIGRATION_VM_ID, mock(Host.class), new HashMap<>()));
+            assertLiveMigrationRefused(() -> userVmManagerImpl.migrateVirtualMachineWithVolume(MIGRATION_VM_ID, null, Map.of("volume-uuid", "pool-uuid")));
+        }
+
+        verify(virtualMachineManager, never()).migrate(anyString(), anyLong(), any());
+        verify(virtualMachineManager, never()).migrateWithStorage(anyString(), anyLong(), anyLong(), any());
+    }
+
+    private MigrateSystemVMCmd systemVmMigration(ResourceService resourceService, Long hostId, Boolean autoSelect) {
+        MigrateSystemVMCmd cmd = new MigrateSystemVMCmd();
+        cmd._userVmService = userVmManagerImpl;
+        cmd._resourceService = resourceService;
+        ReflectionTestUtils.setField(cmd, "virtualMachineId", MIGRATION_VM_ID);
+        ReflectionTestUtils.setField(cmd, "hostId", hostId);
+        ReflectionTestUtils.setField(cmd, "autoSelect", autoSelect);
+        return cmd;
+    }
+
+    @Test
+    public void migrateSystemVmRunningRefused() throws Exception {
+        long destinationHostId = MIGRATION_HOST_ID + 1;
+        Host destination = mock(Host.class);
+        lenient().when(destination.getType()).thenReturn(Host.Type.Routing);
+        ResourceService resourceService = mock(ResourceService.class);
+        lenient().when(resourceService.getHost(destinationHostId)).thenReturn(destination);
+
+        for (VirtualMachine.State state : MIGRATION_REFUSED_STATES) {
+            for (VirtualMachine.Type type : List.of(VirtualMachine.Type.SecondaryStorageVm, VirtualMachine.Type.ConsoleProxy, VirtualMachine.Type.DomainRouter)) {
+                vmToMigrate(state, type);
+                MigrateSystemVMCmd toAHost = systemVmMigration(resourceService, destinationHostId, null);
+                MigrateSystemVMCmd anyHost = systemVmMigration(resourceService, null, true);
+
+                assertLiveMigrationRefused(toAHost::execute);
+                assertLiveMigrationRefused(anyHost::execute);
+            }
+        }
+
+        verify(virtualMachineManager, never()).migrate(anyString(), anyLong(), any());
+        verify(virtualMachineManager, never()).migrateWithStorage(anyString(), anyLong(), anyLong(), any());
+    }
+
+    @Test
+    public void liveMigrationRefusalFollowsThePermissionCheck() throws Exception {
+        vmToMigrate(VirtualMachine.State.Running, VirtualMachine.Type.User);
+        when(accountManager.isRootAdmin(anyLong())).thenReturn(false);
+
+        assertThrows(PermissionDeniedException.class, () -> userVmManagerImpl.migrateVirtualMachine(MIGRATION_VM_ID, null));
+        assertThrows(PermissionDeniedException.class, () -> userVmManagerImpl.migrateVirtualMachineWithVolume(MIGRATION_VM_ID, null, new HashMap<>()));
+    }
+
+    @Test
+    public void aVmThatIsNotRunningKeepsTheStockRefusal() throws Exception {
+        vmToMigrate(VirtualMachine.State.Stopped, VirtualMachine.Type.User);
+
+        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> userVmManagerImpl.migrateVirtualMachine(MIGRATION_VM_ID, null));
+        assertTrue(e.getMessage(), e.getMessage().contains("not Running"));
+        CloudRuntimeException withVolume = assertThrows(CloudRuntimeException.class, () -> userVmManagerImpl.migrateVirtualMachineWithVolume(MIGRATION_VM_ID, null, new HashMap<>()));
+        assertTrue(withVolume.getMessage(), withVolume.getMessage().contains("not in Running state"));
+    }
+
+    private StoragePool poolForTheRootOfAStoppedVm() {
+        VolumeVO root = mock(VolumeVO.class);
+        lenient().when(root.getId()).thenReturn(9301L);
+        lenient().when(root.getUuid()).thenReturn("root-uuid");
+        lenient().when(root.getPoolId()).thenReturn(9400L);
+        StoragePoolVO source = mock(StoragePoolVO.class);
+        lenient().when(source.getScope()).thenReturn(ScopeType.HOST);
+        lenient().when(source.getPodId()).thenReturn(1L);
+        lenient().when(primaryDataStoreDao.findById(9400L)).thenReturn(source);
+        when(volumeDaoMock.findByInstance(MIGRATION_VM_ID)).thenReturn(List.of(root));
+        lenient().when(volumeDaoMock.findByUuid("root-uuid")).thenReturn(root);
+        lenient().when(volumeDaoMock.getHypervisorType(9301L)).thenReturn(Hypervisor.HypervisorType.KVM);
+        StoragePool destination = mock(StoragePool.class);
+        lenient().when(destination.getId()).thenReturn(9401L);
+        lenient().when(destination.getHypervisor()).thenReturn(Hypervisor.HypervisorType.KVM);
+        StoragePoolVO destinationVo = mock(StoragePoolVO.class);
+        lenient().when(destinationVo.getId()).thenReturn(9401L);
+        lenient().when(destinationVo.getHypervisor()).thenReturn(Hypervisor.HypervisorType.KVM);
+        lenient().when(destinationVo.getScope()).thenReturn(ScopeType.HOST);
+        lenient().when(destinationVo.getPodId()).thenReturn(1L);
+        when(primaryDataStoreDao.findById(9401L)).thenReturn(destinationVo);
+        lenient().when(primaryDataStoreDao.findPoolByUUID("pool-uuid")).thenReturn(destinationVo);
+        when(storageManager.checkIfReadyVolumeFitsInStoragePoolWithStorageAccessGroups(any(), any())).thenReturn(new Pair<>(true, null));
+        userVmManagerImpl.snapshotHelper = mock(SnapshotHelper.class);
+        return destination;
+    }
+
+    @Test
+    public void stoppedVmStorageMigrationStillAllowed() throws Exception {
+        VMInstanceVO vm = vmToMigrate(VirtualMachine.State.Stopped, VirtualMachine.Type.User);
+        lenient().when(vm.getHostId()).thenReturn(null);
+        StoragePool destination = poolForTheRootOfAStoppedVm();
+
+        userVmManagerImpl.vmStorageMigration(MIGRATION_VM_ID, destination);
+        userVmManagerImpl.vmStorageMigration(MIGRATION_VM_ID, Map.of("root-uuid", "pool-uuid"));
+
+        verify(virtualMachineManager, times(2)).storageMigration("migration-vm-uuid", Map.of(9301L, 9401L));
+        verify(virtualMachineManager, never()).migrate(anyString(), anyLong(), any());
+        verify(virtualMachineManager, never()).migrateWithStorage(anyString(), anyLong(), anyLong(), any());
+
+        when(vm.getState()).thenReturn(VirtualMachine.State.Running);
+        assertThrows(InvalidParameterValueException.class, () -> userVmManagerImpl.vmStorageMigration(MIGRATION_VM_ID, destination));
+        verify(virtualMachineManager, times(2)).storageMigration(anyString(), anyMap());
+    }
+
+    private static final long RECOVER_VM_ID = 9501L;
+
+    private RecoverVMCmd recoveryOfADestroyedVm(boolean rootStillOfTheVm) {
+        UserVmVO vm = mock(UserVmVO.class);
+        lenient().when(vm.getId()).thenReturn(RECOVER_VM_ID);
+        lenient().when(vm.getUuid()).thenReturn("recover-vm-uuid");
+        lenient().when(vm.getState()).thenReturn(VirtualMachine.State.Destroyed);
+        lenient().when(userVmDao.findById(RECOVER_VM_ID)).thenReturn(vm);
+        lenient().when(accountManager.isAdmin(anyLong())).thenReturn(true);
+        VolumeVO root = mock(VolumeVO.class);
+        when(volumeDaoMock.findByInstanceAndType(RECOVER_VM_ID, Volume.Type.ROOT)).thenReturn(rootStillOfTheVm ? List.of(root) : Collections.emptyList());
+        RecoverVMCmd cmd = mock(RecoverVMCmd.class);
+        when(cmd.getId()).thenReturn(RECOVER_VM_ID);
+        return cmd;
+    }
+
+    @Test
+    public void recoverRefusedForAnInstanceWhoseRootIsGone() throws Exception {
+        RecoverVMCmd cmd = recoveryOfADestroyedVm(false);
+
+        try (MockedStatic<Transaction> transaction = mockStatic(Transaction.class)) {
+            InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> userVmManagerImpl.recoverVirtualMachine(cmd));
+
+            assertTrue(e.getMessage(), e.getMessage().contains("ROOT volume"));
+            transaction.verify(() -> Transaction.execute(any(TransactionCallbackWithExceptionNoReturn.class)), never());
+        }
+    }
+
+    @Test
+    public void recoverProceedsForAnInstanceWithItsRoot() throws Exception {
+        RecoverVMCmd cmd = recoveryOfADestroyedVm(true);
+
+        try (MockedStatic<Transaction> transaction = mockStatic(Transaction.class)) {
+            userVmManagerImpl.recoverVirtualMachine(cmd);
+
+            transaction.verify(() -> Transaction.execute(any(TransactionCallbackWithExceptionNoReturn.class)));
+        }
+    }
+
+    @Test
+    public void storageMigrationOfAStoppedVmIsRoutedByTheCommandsToVmStorageMigration() throws Exception {
+        VMInstanceVO vm = vmToMigrate(VirtualMachine.State.Stopped, VirtualMachine.Type.User);
+        lenient().when(vm.getHostId()).thenReturn(null);
+        StoragePool destination = poolForTheRootOfAStoppedVm();
+        UserVmVO userVm = mock(UserVmVO.class);
+        lenient().when(userVm.getHypervisorType()).thenReturn(Hypervisor.HypervisorType.KVM);
+        lenient().when(userVmDao.findById(MIGRATION_VM_ID)).thenReturn(userVm);
+        ResponseGenerator responseGenerator = mock(ResponseGenerator.class);
+        lenient().when(responseGenerator.createUserVmResponse(any(), anyString(), any(UserVm.class))).thenReturn(List.of(new UserVmResponse()));
+        lenient().when(responseGenerator.createSystemVmResponse(any())).thenReturn(new SystemVmResponse());
+        StorageService storageService = mock(StorageService.class);
+        lenient().when(storageService.getStoragePool(9401L)).thenReturn(destination);
+
+        MigrateVMCmd migrate = new MigrateVMCmd();
+        migrate._userVmService = userVmManagerImpl;
+        migrate._storageService = storageService;
+        migrate._responseGenerator = responseGenerator;
+        ReflectionTestUtils.setField(migrate, "virtualMachineId", MIGRATION_VM_ID);
+        ReflectionTestUtils.setField(migrate, "storageId", 9401L);
+        migrate.execute();
+
+        MigrateVirtualMachineWithVolumeCmd migrateWithVolume = new MigrateVirtualMachineWithVolumeCmd();
+        migrateWithVolume._userVmService = userVmManagerImpl;
+        migrateWithVolume._responseGenerator = responseGenerator;
+        ReflectionTestUtils.setField(migrateWithVolume, "virtualMachineId", MIGRATION_VM_ID);
+        ReflectionTestUtils.setField(migrateWithVolume, "migrateVolumeTo", Map.of("0", new HashMap<>(Map.of("volume", "root-uuid", "pool", "pool-uuid"))));
+        migrateWithVolume.execute();
+
+        VMInstanceVO systemVm = vmToMigrate(VirtualMachine.State.Stopped, VirtualMachine.Type.SecondaryStorageVm);
+        lenient().when(systemVm.getHostId()).thenReturn(null);
+        MigrateSystemVMCmd migrateSystemVm = new MigrateSystemVMCmd();
+        migrateSystemVm._userVmService = userVmManagerImpl;
+        migrateSystemVm._storageService = storageService;
+        migrateSystemVm._responseGenerator = responseGenerator;
+        ReflectionTestUtils.setField(migrateSystemVm, "virtualMachineId", MIGRATION_VM_ID);
+        ReflectionTestUtils.setField(migrateSystemVm, "storageId", 9401L);
+        migrateSystemVm.execute();
+
+        verify(virtualMachineManager, times(3)).storageMigration("migration-vm-uuid", Map.of(9301L, 9401L));
+        verify(userVmManagerImpl, never()).migrateVirtualMachine(any(), any());
+        verify(userVmManagerImpl, never()).migrateVirtualMachineWithVolume(any(), any(), any());
+    }
+
+    private static final long SCALE_VM_ID = 9601L;
+    private static final long SCALE_HOST_ID = 9602L;
+
+    private ServiceOfferingVO scaleOffering(long id, int cpu, int ramMb) {
+        ServiceOfferingVO offering = mock(ServiceOfferingVO.class);
+        lenient().when(offering.getId()).thenReturn(id);
+        lenient().when(offering.getCpu()).thenReturn(cpu);
+        lenient().when(offering.getRamSize()).thenReturn(ramMb);
+        lenient().when(offering.getSpeed()).thenReturn(1000);
+        lenient().when(offering.isDynamicScalingEnabled()).thenReturn(true);
+        return offering;
+    }
+
+    @Test
+    public void liveScaleThatNeedsAnotherHostIsRefused() throws Exception {
+        VMInstanceDao vmInstanceDao = mock(VMInstanceDao.class);
+        ReflectionTestUtils.setField(userVmManagerImpl, "_vmInstanceDao", vmInstanceDao);
+        ReflectionTestUtils.setField(userVmManagerImpl, "_scaleRetry", 2);
+        ReflectionTestUtils.setField(userVmManagerImpl, "_capacityMgr", mock(CapacityManager.class));
+        updateDefaultConfigValue(UserVmManager.EnableDynamicallyScaleVm, true, false);
+        updateDefaultConfigValue(UserVmManager.AutoMigrateVmOnLiveScaleInsufficientCapacity, true, false);
+        VMInstanceVO vm = mock(VMInstanceVO.class);
+        lenient().when(vm.getId()).thenReturn(SCALE_VM_ID);
+        lenient().when(vm.getUuid()).thenReturn("scale-vm-uuid");
+        lenient().when(vm.getInstanceName()).thenReturn("i-scale");
+        lenient().when(vm.getState()).thenReturn(VirtualMachine.State.Running);
+        lenient().when(vm.getType()).thenReturn(VirtualMachine.Type.User);
+        lenient().when(vm.getHypervisorType()).thenReturn(Hypervisor.HypervisorType.KVM);
+        lenient().when(vm.getDomainId()).thenReturn(1L);
+        lenient().when(vm.getHostId()).thenReturn(SCALE_HOST_ID);
+        lenient().when(vm.getServiceOfferingId()).thenReturn(10L);
+        lenient().when(vm.getDataCenterId()).thenReturn(1L);
+        lenient().when(vm.isDynamicallyScalable()).thenReturn(true);
+        lenient().when(vmInstanceDao.findById(SCALE_VM_ID)).thenReturn(vm);
+        HostVO host = mock(HostVO.class);
+        lenient().when(host.getId()).thenReturn(SCALE_HOST_ID);
+        lenient().when(host.getClusterId()).thenReturn(3L);
+        lenient().when(host.getName()).thenReturn("scale-host");
+        lenient().when(host.checkHostServiceOfferingAndTemplateTags(any(), any(), any())).thenReturn(true);
+        lenient().when(hostDao.findById(SCALE_HOST_ID)).thenReturn(host);
+        ServiceOfferingVO current = scaleOffering(10L, 2, 2048);
+        ServiceOfferingVO bigger = scaleOffering(11L, 4, 4096);
+        lenient().when(_serviceOfferingDao.findById(11L)).thenReturn(bigger);
+        lenient().when(_serviceOfferingDao.findByIdIncludingRemoved(SCALE_VM_ID, 10L)).thenReturn(current);
+        doNothing().when(userVmManagerImpl).validateDiskOfferingChecks(any(), any());
+        lenient().doThrow(new IllegalStateException("a live migration was attempted")).when(virtualMachineManager).findHostAndMigrate(any(), any(), any(), any());
+
+        try (MockedStatic<ApiDBUtils> apiDbUtils = mockStatic(ApiDBUtils.class)) {
+            apiDbUtils.when(() -> ApiDBUtils.findHostById(SCALE_HOST_ID)).thenReturn(host);
+
+            InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> userVmManagerImpl.upgradeVirtualMachine(SCALE_VM_ID, 11L, new HashMap<>()));
+
+            assertTrue(e.getMessage(), e.getMessage().startsWith("live migration is disabled"));
+            assertTrue(e.getMessage(), e.getMessage().contains("compute capacity"));
+            assertTrue(e.getMessage(), e.getMessage().contains("i-scale"));
+            assertFalse(e.getMessage(), e.getMessage().contains("scale-host"));
+        }
+
+        verify(virtualMachineManager, never()).findHostAndMigrate(any(), any(), any(), any());
+        verify(virtualMachineManager, never()).reConfigureVm(any(), any(), any(), any(), anyBoolean());
+        verify(resourceLimitMgr, times(2)).updateVmResourceCountForServiceOfferingChange(anyLong(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 }

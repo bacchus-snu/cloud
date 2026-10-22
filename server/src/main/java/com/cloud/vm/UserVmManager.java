@@ -31,6 +31,7 @@ import org.apache.cloudstack.resourcelimit.Reserver;
 import com.cloud.agent.api.VolumeStatsEntry;
 import com.cloud.exception.ConcurrentOperationException;
 import com.cloud.exception.InsufficientCapacityException;
+import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.ManagementServerException;
 import com.cloud.exception.ResourceAllocationException;
 import com.cloud.exception.ResourceUnavailableException;
@@ -168,6 +169,15 @@ public interface UserVmManager extends UserVmService {
      */
     static boolean keepRootVolumeByDefault(Long domainId) {
         return !Boolean.TRUE.equals(DestroyRootVolumeOnVmDestruction.valueIn(domainId));
+    }
+
+    /**
+     * Live migration is not implemented: an Instance that may be running is never migrated.
+     */
+    static void refuseLiveMigration(VirtualMachine vm) {
+        if (vm.getState() == VirtualMachine.State.Running || vm.getState() == VirtualMachine.State.Migrating) {
+            throw new InvalidParameterValueException("live migration is disabled");
+        }
     }
 
     static final int MAX_USER_DATA_LENGTH_BYTES = 2048;

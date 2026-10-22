@@ -3620,7 +3620,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
 
     private void validateRootVolumeDetachAttach(VolumeVO volume, UserVmVO vm) {
         checkRootVolumeDetachSupported(volume, vm);
-        if (!(vm.getState() == State.Stopped) || (vm.getState() == State.Destroyed)) {
+        if (vm.getState() != State.Stopped && vm.getState() != State.Destroyed) {
             throw new InvalidParameterValueException("Root volume detach can happen only when vm is in states: " + State.Stopped.toString() + " or " + State.Destroyed.toString());
         }
     }
@@ -3968,9 +3968,8 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
                     StoragePoolVO destinationStoragePoolVo = _storagePoolDao.findById(storagePoolId);
 
                     if (isSourceOrDestNotOnStorPool(srcStoragePoolVO, destinationStoragePoolVo)) {
-                        throw new InvalidParameterValueException("KVM does not support volume live migration due to the limited possibility to refresh VM XML domain. " +
-                                "Therefore, to live migrate a volume between storage pools, one must migrate the VM to a different host as well to force the VM XML domain update. " +
-                                "Use 'migrateVirtualMachineWithVolumes' instead.");
+                        throw new InvalidParameterValueException("KVM does not support volume live migration due to the limited possibility to refresh VM XML domain, " +
+                                "and live migration of the Instance is disabled. Stop the Instance to move its volumes.");
                     }
                     srcAndDestOnStorPool = isSourceAndDestOnStorPool(srcStoragePoolVO, destinationStoragePoolVo);
                 }

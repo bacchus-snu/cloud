@@ -1439,6 +1439,10 @@ public class ManagementServerImpl extends MutualExclusiveIdsManagerBase implemen
         return new Pair<>(true, filteredHosts);
     }
 
+    protected void refuseLiveMigration(VirtualMachine vm) {
+        UserVmManager.refuseLiveMigration(vm);
+    }
+
     private void validateVmForHostMigration(VirtualMachine vm) {
         final Account caller = getCaller();
         if (!_accountMgr.isRootAdmin(caller.getId())) {
@@ -1451,6 +1455,8 @@ public class ManagementServerImpl extends MutualExclusiveIdsManagerBase implemen
         if (vm == null) {
             throw new InvalidParameterValueException("Unable to find the Instance with given ID");
         }
+
+        refuseLiveMigration(vm);
 
         if (vm.getState() != State.Running) {
             if (logger.isDebugEnabled()) {

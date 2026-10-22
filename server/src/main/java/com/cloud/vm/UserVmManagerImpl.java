@@ -2369,6 +2369,13 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                         excludes.addHost(vmInstance.getHostId());
                     }
 
+                    if (!existingHostHasCapacity) {
+                        logger.warn("Unable to scale the Instance [{}] in place: host [{}] lacks the compute capacity and live migration is disabled.",
+                                vmInstance.getInstanceName(), host);
+                        throw new InvalidParameterValueException(String.format("live migration is disabled, and the Instance's current host lacks the compute capacity " +
+                                "to scale Instance %s in place", vmInstance.getInstanceName()));
+                    }
+
                     boolean autoMigrateVmToASuitableHost = AutoMigrateVmOnLiveScaleInsufficientCapacity.valueIn(host.getClusterId());
                     if (!existingHostHasCapacity && !autoMigrateVmToASuitableHost) {
                         logger.error("Unable to scale the VM [{}] because the host [{}] in which it is currently allocated does not " +
@@ -2590,6 +2597,11 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                 logger.debug("vm {} is not in the Destroyed state. current sate: {}", vm, vm.getState());
             }
             throw new InvalidParameterValueException("Vm with id " + vm.getUuid() + " is not in the right state");
+        }
+
+        if (_volsDao.findByInstanceAndType(vmId, Volume.Type.ROOT).isEmpty()) {
+            throw new InvalidParameterValueException(String.format("Unable to recover the Instance %s: it has no ROOT volume, which was detached or expunged. "
+                    + "Deploy a new Instance from the detached volume instead.", vm.getUuid()));
         }
 
         if (logger.isDebugEnabled()) {
@@ -7941,6 +7953,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         if (vm == null) {
             throw new InvalidParameterValueException("Unable to find the VM by id=" + vmId);
         }
+        UserVmManager.refuseLiveMigration(vm);
         // business logic
         if (vm.getState() != State.Running) {
             if (logger.isDebugEnabled()) {
@@ -8556,6 +8569,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         if (vm == null) {
             throw new InvalidParameterValueException("Unable to find the VM by ID " + vmId);
         }
+
+        UserVmManager.refuseLiveMigration(vm);
 
         // OfflineVmwareMigration: this would be it ;) if multiple paths exist: unify
         if (vm.getState() != State.Running) {

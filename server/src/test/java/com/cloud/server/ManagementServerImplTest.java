@@ -291,6 +291,7 @@ public class ManagementServerImplTest {
         spy.userDataManager = userDataManager;
 
         spy.setHostAllocators(List.of(hostAllocator));
+        Mockito.lenient().doNothing().when(spy).refuseLiveMigration(Mockito.any());
 
         // Mock ApiDBUtils static method
         apiDBUtilsMock = Mockito.mockStatic(ApiDBUtils.class);
@@ -1188,6 +1189,56 @@ public class ManagementServerImplTest {
         spy.listHostsForMigrationOfVM(1L, 0L, 20L, null);
     }
 
+    @Test
+    public void findHostsForMigrationRunningVmRefused() {
+        Mockito.doCallRealMethod().when(spy).refuseLiveMigration(Mockito.any());
+        Account caller = mockRootAdminAccount();
+        Mockito.doReturn(caller).when(spy).getCaller();
+
+        for (State state : List.of(State.Running, State.Migrating)) {
+            VMInstanceVO vm = mockVM(1L, HypervisorType.KVM, state);
+            Mockito.when(vmInstanceDao.findById(1L)).thenReturn(vm);
+
+            InvalidParameterValueException e = Assert.assertThrows(InvalidParameterValueException.class, () -> spy.listHostsForMigrationOfVM(1L, 0L, 20L, null));
+            Assert.assertEquals("live migration is disabled", e.getMessage());
+            InvalidParameterValueException ofTheVm = Assert.assertThrows(InvalidParameterValueException.class,
+                    () -> spy.listHostsForMigrationOfVM(vm, 0L, 20L, null, Collections.emptyList()));
+            Assert.assertEquals("live migration is disabled", ofTheVm.getMessage());
+        }
+
+        Mockito.verifyNoInteractions(hostDao, hostAllocator, dpMgr);
+    }
+
+    @Test
+    public void theListingChecksPermissionBeforeItRefusesALiveMigration() {
+        Mockito.lenient().doCallRealMethod().when(spy).refuseLiveMigration(Mockito.any());
+        Account caller = Mockito.mock(Account.class);
+        Mockito.doReturn(caller).when(spy).getCaller();
+        Mockito.when(accountManager.isRootAdmin(caller.getId())).thenReturn(false);
+
+        for (State state : List.of(State.Running, State.Migrating)) {
+            VMInstanceVO vm = mockVM(1L, HypervisorType.KVM, state);
+            Mockito.when(vmInstanceDao.findById(1L)).thenReturn(vm);
+
+            Assert.assertThrows(PermissionDeniedException.class, () -> spy.listHostsForMigrationOfVM(1L, 0L, 20L, null));
+        }
+
+        Mockito.verify(spy, Mockito.never()).refuseLiveMigration(Mockito.any());
+    }
+
+    @Test
+    public void aVmThatIsNotRunningKeepsTheStockListingRefusal() {
+        Mockito.doCallRealMethod().when(spy).refuseLiveMigration(Mockito.any());
+        Account caller = mockRootAdminAccount();
+        Mockito.doReturn(caller).when(spy).getCaller();
+        VMInstanceVO vm = mockVM(1L, HypervisorType.KVM, State.Stopped);
+        Mockito.when(vmInstanceDao.findById(1L)).thenReturn(vm);
+
+        InvalidParameterValueException e = Assert.assertThrows(InvalidParameterValueException.class, () -> spy.listHostsForMigrationOfVM(1L, 0L, 20L, null));
+
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("not Running"));
+    }
+
     @Test(expected = InvalidParameterValueException.class)
     public void testListHostsForMigrationOfVMNotRunning() {
         VMInstanceVO vm = mockVM(1L, HypervisorType.KVM, State.Stopped);
@@ -1899,6 +1950,7 @@ public class ManagementServerImplTest {
                 diskOfferingDao, hypervisorCapabilitiesDao, offeringDao, dpdkHelper,
                 affinityGroupVMMapDao, dpMgr, dcDao, hostAllocator, dataStoreManager);
             Mockito.reset(spy);
+            Mockito.lenient().doNothing().when(spy).refuseLiveMigration(Mockito.any());
         }
     }
 

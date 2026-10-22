@@ -117,6 +117,8 @@ import com.cloud.exception.VolumeMoveRequiredException;
 import com.cloud.host.HostVO;
 import com.cloud.host.dao.HostDao;
 import com.cloud.hypervisor.Hypervisor.HypervisorType;
+import com.cloud.hypervisor.HypervisorCapabilitiesVO;
+import com.cloud.hypervisor.dao.HypervisorCapabilitiesDao;
 import com.cloud.offering.DiskOffering;
 import com.cloud.org.Grouping;
 import com.cloud.projects.Project;
@@ -127,6 +129,7 @@ import com.cloud.server.ManagementService;
 import com.cloud.server.TaggedResourceService;
 import com.cloud.service.ServiceOfferingVO;
 import com.cloud.service.dao.ServiceOfferingDao;
+import com.cloud.service.dao.ServiceOfferingDetailsDao;
 import com.cloud.storage.Storage.ProvisioningType;
 import com.cloud.storage.Volume.Type;
 import com.cloud.storage.clvm.ClvmPoolManager;
@@ -153,6 +156,7 @@ import com.cloud.utils.fsm.NoTransitionException;
 import com.cloud.vm.DiskProfile;
 import com.cloud.vm.UserVmManager;
 import com.cloud.vm.UserVmVO;
+import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.VirtualMachine.State;
 import com.cloud.vm.VirtualMachineManager;
@@ -3110,6 +3114,86 @@ public class VolumeApiServiceImplTest {
         Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.checkRootVolumeDetachSupported(onManagedPool, kvm));
         volumeApiServiceImpl.checkRootVolumeDetachSupported(onUnmanagedPool, kvm);
         volumeApiServiceImpl.checkRootVolumeDetachSupported(notCreated, kvm);
+    }
+
+    private void rootOfAnInstanceIn(long id, State state) {
+        UserVmVO vm = new UserVmVO(id, "vm", "vm", 1, HypervisorType.KVM, 1L, false, false, 1L, 1L, 1, 1L, null, null, null, "vm");
+        vm.setState(state);
+        vm.setDataCenterId(1L);
+        lenient().when(userVmDaoMock.findById(id)).thenReturn(vm);
+        VolumeVO root = new VolumeVO("root", 1L, 1L, 1L, 1L, id, "root", "root", Storage.ProvisioningType.THIN, 1, null, null, "root", Volume.Type.ROOT);
+        root.setPoolId(1L);
+        lenient().when(volumeDaoMock.findById(id)).thenReturn(root);
+    }
+
+    @Test
+    public void detachRootFromDestroyedVmAllowed() {
+        doReturn(null).when(volumeApiServiceImpl).orchestrateDetachVolumeFromVM(anyLong(), anyLong());
+        rootOfAnInstanceIn(11L, State.Destroyed);
+        rootOfAnInstanceIn(12L, State.Stopped);
+
+        volumeApiServiceImpl.detachVolumeViaDestroyVM(11L, 11L);
+        volumeApiServiceImpl.detachVolumeViaDestroyVM(12L, 12L);
+
+        verify(volumeApiServiceImpl).orchestrateDetachVolumeFromVM(11L, 11L);
+        verify(volumeApiServiceImpl).orchestrateDetachVolumeFromVM(12L, 12L);
+    }
+
+    @Test
+    public void rootDetachStaysRefusedWhileTheVmMayRun() {
+        long id = 20L;
+        for (State state : State.values()) {
+            if (state == State.Stopped || state == State.Destroyed) {
+                continue;
+            }
+            long vmId = id++;
+            rootOfAnInstanceIn(vmId, state);
+
+            InvalidParameterValueException e = Assert.assertThrows(state.toString(), InvalidParameterValueException.class,
+                    () -> volumeApiServiceImpl.detachVolumeViaDestroyVM(vmId, vmId));
+
+            Assert.assertTrue(e.getMessage(), e.getMessage().contains("Stopped or Destroyed"));
+        }
+
+        verify(volumeApiServiceImpl, Mockito.never()).orchestrateDetachVolumeFromVM(anyLong(), anyLong());
+    }
+
+    @Test
+    public void liveVolumeMigrationRefusalDoesNotPointAtARefusedApi() {
+        VolumeVO volume = mock(VolumeVO.class);
+        lenient().when(volume.getId()).thenReturn(1L);
+        lenient().when(volume.getState()).thenReturn(Volume.State.Ready);
+        lenient().when(volume.getPoolId()).thenReturn(1L);
+        lenient().when(volume.getInstanceId()).thenReturn(5L);
+        lenient().when(volumeDaoMock.findById(1L)).thenReturn(volume);
+        lenient().when(volumeDaoMock.getHypervisorType(1L)).thenReturn(HypervisorType.KVM);
+        lenient().when(migrateVolumeCmd.getVolumeId()).thenReturn(1L);
+        lenient().when(migrateVolumeCmd.getStoragePoolId()).thenReturn(2L);
+        VMInstanceVO runningVm = mock(VMInstanceVO.class);
+        lenient().when(runningVm.getId()).thenReturn(5L);
+        lenient().when(runningVm.getState()).thenReturn(State.Running);
+        lenient().when(runningVm.getHostId()).thenReturn(7L);
+        lenient().when(_vmInstanceDao.findById(5L)).thenReturn(runningVm);
+        StoragePoolVO source = mock(StoragePoolVO.class);
+        lenient().when(source.getPoolType()).thenReturn(Storage.StoragePoolType.NetworkFilesystem);
+        StoragePoolVO destination = mock(StoragePoolVO.class);
+        lenient().when(destination.getPoolType()).thenReturn(Storage.StoragePoolType.NetworkFilesystem);
+        lenient().when(primaryDataStoreDaoMock.findById(1L)).thenReturn(source);
+        lenient().when(primaryDataStoreDaoMock.findById(2L)).thenReturn(destination);
+        HostVO host = mock(HostVO.class);
+        lenient().when(host.getHypervisorType()).thenReturn(HypervisorType.KVM);
+        lenient().when(_hostDao.findById(7L)).thenReturn(host);
+        HypervisorCapabilitiesDao capabilitiesDao = mock(HypervisorCapabilitiesDao.class);
+        HypervisorCapabilitiesVO capabilities = mock(HypervisorCapabilitiesVO.class);
+        lenient().when(capabilities.isStorageMotionSupported()).thenReturn(true);
+        lenient().when(capabilitiesDao.findByHypervisorTypeAndVersion(any(), any())).thenReturn(capabilities);
+        ReflectionTestUtils.setField(volumeApiServiceImpl, "_hypervisorCapabilitiesDao", capabilitiesDao);
+        ReflectionTestUtils.setField(volumeApiServiceImpl, "_serviceOfferingDetailsDao", mock(ServiceOfferingDetailsDao.class));
+
+        InvalidParameterValueException e = Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.migrateVolume(migrateVolumeCmd));
+
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("KVM does not support volume live migration"));
+        Assert.assertFalse(e.getMessage(), e.getMessage().contains("migrateVirtualMachineWithVolume"));
     }
 
     private VolumeVO readyRootOnPool(long poolId, long diskOfferingId) {

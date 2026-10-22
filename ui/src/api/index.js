@@ -20,7 +20,15 @@ import { axios, sourceToken } from '@/utils/request'
 import { message, notification } from 'ant-design-vue'
 import { vueProps } from '@/vue-app'
 import {
-  ACCESS_TOKEN
+  ACCESS_TOKEN,
+  APIS,
+  CURRENT_PROJECT,
+  DOMAIN_STORE,
+  HEADER_NOTICES,
+  MS_ID,
+  PASSWORD_CHANGE_REQUIRED,
+  SHOW_SECURTIY_GROUPS,
+  ZONES
 } from '@/store/mutation-types'
 
 const getAPICommandsRegex = /^(get|list|query|find)\w+$/i
@@ -33,15 +41,40 @@ const additionalGetAPICommandsList = [
   'quotatarifflist',
   'quotaisenabled',
   'quotastatement',
-  'quotaemailtemplatelist',
-  'verifyoauthcodeandgetuser'
+  'quotaemailtemplatelist'
 ]
+
+// What the UI keeps of one session; none of it may outlive that session.
+const SESSION_STORAGE_KEYS = [ACCESS_TOKEN, APIS, ZONES, CURRENT_PROJECT, HEADER_NOTICES, DOMAIN_STORE, MS_ID, PASSWORD_CHANGE_REQUIRED,
+  SHOW_SECURTIY_GROUPS]
+const SESSION_COOKIE_PATHS = ['/', '/client']
+
+/**
+ * The session key to send. A session the server opened itself (single sign-on) reaches the UI only as the readable
+ * sessionkey cookie; when it differs from the stored key, it is newer than everything stored, so the stored session's
+ * leftovers are dropped and the server's session is kept as the UI's own. A login or logout through the UI removes that
+ * cookie first, so the cookie never stands for a session the UI has replaced or ended.
+ */
+export function sessionKey () {
+  const opened = Cookies.get('sessionkey')
+  const stored = vueProps.$localStorage.get(ACCESS_TOKEN)
+  if (opened && opened !== stored) {
+    SESSION_STORAGE_KEYS.forEach(key => vueProps.$localStorage.remove(key))
+    vueProps.$localStorage.set(ACCESS_TOKEN, opened, 24 * 60 * 60 * 1000)
+    return opened
+  }
+  return stored || opened
+}
+
+export function forgetServerOpenedSession () {
+  SESSION_COOKIE_PATHS.forEach(path => Cookies.remove('sessionkey', { path }))
+}
 
 export function getAPI (command, args = {}) {
   args.command = command
   args.response = 'json'
 
-  const sessionkey = vueProps.$localStorage.get(ACCESS_TOKEN) || Cookies.get('sessionkey')
+  const sessionkey = sessionKey()
   if (sessionkey) {
     args.sessionkey = sessionkey
   }
@@ -67,7 +100,7 @@ export function postAPI (command, data = {}) {
     })
   }
 
-  const sessionkey = vueProps.$localStorage.get(ACCESS_TOKEN) || Cookies.get('sessionkey')
+  const sessionkey = sessionKey()
   if (sessionkey) {
     params.append('sessionkey', sessionkey)
   }
@@ -91,6 +124,7 @@ export function login (arg) {
 
   // Logout before login is called to purge any duplicate sessionkey cookies
   postAPI('logout')
+  forgetServerOpenedSession()
 
   const params = new URLSearchParams()
   params.append('command', 'login')
@@ -115,31 +149,6 @@ export async function logout () {
     notification.destroy()
   })
   return result
-}
-
-export function oauthlogin (arg) {
-  if (!sourceToken.checkExistSource()) {
-    sourceToken.init()
-  }
-
-  // Logout before login is called to purge any duplicate sessionkey cookies
-  postAPI('logout')
-
-  const params = new URLSearchParams()
-  params.append('command', 'oauthlogin')
-  params.append('email', arg.email)
-  params.append('secretcode', arg.secretcode)
-  params.append('provider', arg.provider)
-  params.append('domain', arg.domain)
-  params.append('response', 'json')
-  return axios({
-    url: '/',
-    method: 'post',
-    data: params,
-    headers: {
-      'content-type': 'application/x-www-form-urlencoded'
-    }
-  })
 }
 
 export function getBaseUrl () {

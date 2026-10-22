@@ -40,6 +40,18 @@ Change the image of the logo, login banner, error page, etc.
 - `error.403` change the image of error Forbidden.
 - `error.500` change the image of error Internal Server Error.
 
+## Login page
+Sign-in through OpenID providers is offered as one button per enabled provider (`listOidcProviders`), followed by
+the links that sign out of each provider that has an end-session address.
+```json
+{
+  "foldPasswordLogin": true
+}
+```
+
+- `foldPasswordLogin` keeps the username and password form folded behind a link while at least one provider is
+  offered (default `true`); with `false` the form is always open. Without providers the form is always open.
+
 ## Theme
 Customize themes like colors, border color, etc.
 ```json

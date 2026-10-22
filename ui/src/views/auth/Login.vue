@@ -23,221 +23,177 @@
     :model="form"
     :rules="rules"
     @finish="handleSubmit"
-    v-ctrl-enter="handleSubmit"
   >
-    <a-tabs
-      class="tab-center"
-      :key="$i18n.locale"
-      :activeKey="customActiveKey"
-      size="large"
-      :tabBarStyle="{ textAlign: 'center', borderBottom: 'unset' }"
-      @change="handleTabClick"
-      :animated="false"
-    >
-      <a-tab-pane key="cs">
-        <template #tab>
-          <span>
-            <safety-outlined />
-            {{ $t('label.login.portal') }}
-          </span>
-        </template>
-        <a-form-item v-if="$config.multipleServer" name="server" ref="server">
-          <a-select
-            size="large"
-            :placeholder="$t('server')"
-            v-model:value="form.server"
-            @change="onChangeServer"
-            showSearch
-            optionFilterProp="label"
-            :filterOption="(input, option) => {
-              return option.label.toLowerCase().indexOf(input.toLowerCase()) >= 0
-            }">
-            <a-select-option v-for="item in $config.servers" :key="(item.apiHost || '') + item.apiBase" :label="item.name">
-              <template #prefix>
-                <database-outlined />
-              </template>
-              {{ item.name }}
-            </a-select-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item ref="username" name="username">
-          <a-input
-            size="large"
-            type="text"
-            v-focus="true"
-            :placeholder="$t('label.username')"
-            v-model:value="form.username"
-          >
-            <template #prefix>
-              <user-outlined />
-            </template>
-          </a-input>
-        </a-form-item>
-        <a-form-item ref="password" name="password">
-          <a-input-password
-            size="large"
-            type="password"
-            autocomplete="false"
-            :placeholder="$t('label.password')"
-            v-model:value="form.password"
-          >
-            <template #prefix>
-              <lock-outlined />
-            </template>
-          </a-input-password>
-        </a-form-item>
-        <a-form-item ref="domain" name="domain">
-          <a-input
-            size="large"
-            type="text"
-            :placeholder="$t('label.domain')"
-            v-model:value="form.domain"
-          >
-            <template #prefix>
-              <project-outlined />
-            </template>
-          </a-input>
-        </a-form-item>
-        <a-form-item ref="project" name="project" v-if="$config.displayProjectFieldOnLogin">
-          <a-input
-            size="large"
-            type="text"
-            :placeholder="$t('label.project')"
-            v-model:value="form.project"
-          >
-            <template #prefix>
-              <block-outlined />
-            </template>
-          </a-input>
-        </a-form-item>
-      </a-tab-pane>
-      <a-tab-pane key="saml" :disabled="idps.length === 0">
-        <template #tab>
-          <span>
-            <audit-outlined />
-            {{ $t('label.login.single.signon') }}
-          </span>
-        </template>
-        <a-form-item v-if="$config.multipleServer" name="server" ref="server">
-          <a-select
-            size="large"
-            :placeholder="$t('server')"
-            v-model:value="form.server"
-            @change="onChangeServer"
-            showSearch
-            optionFilterProp="label"
-            :filterOption="(input, option) => {
-              return option.label.toLowerCase().indexOf(input.toLowerCase()) >= 0
-            }" >
-            <a-select-option v-for="item in $config.servers" :key="(item.apiHost || '') + item.apiBase" :label="item.name">
-              <template #prefix>
-                <database-outlined />
-              </template>
-              {{ item.name }}
-            </a-select-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item name="idp" ref="idp">
-          <a-select
-            v-model:value="form.idp"
-            showSearch
-            optionFilterProp="label"
-            :filterOption="(input, option) => {
-              return option.label.toLowerCase().indexOf(input.toLowerCase()) >= 0
-            }" >
-            <a-select-option v-for="(idp, idx) in idps" :key="idx" :value="idp.id" :label="idp.orgName">
-              {{ idp.orgName }}
-            </a-select-option>
-          </a-select>
-        </a-form-item>
-      </a-tab-pane>
-      <a-tab-pane key="oauth" :disabled="!socialLogin">
-        <template #tab>
-          <span style="display: inline-flex; align-items: center; gap: 4px; color: inherit;">
-            <img src="/assets/github.svg" alt="GitHub" class="oauth-tab-icon" :class="{ 'oauth-tab-icon--disabled': !socialLogin }" style="width: 16px; height: 16px; display: block;" />
-            <img src="/assets/google.svg" alt="Google" class="oauth-tab-icon" :class="{ 'oauth-tab-icon--disabled': !socialLogin }" style="width: 16px; height: 16px; display: block;" />
-            <span>{{ $t('label.login.external') }}</span>
-          </span>
-        </template>
-        <a-form-item name="oauthDomain">
-          <a-input
-            size="large"
-            type="text"
-            :placeholder="$t('label.domain')"
-            v-model:value="form.oauthDomain"
-            @pressEnter="handleOauthDomainSubmit"
-            @blur="handleOauthDomainSubmit"
-          >
-            <template #prefix>
-              <project-outlined />
-            </template>
-          </a-input>
-        </a-form-item>
-        <div
-          v-if="(oauthGithubProvider || oauthGoogleProvider || oauthKeycloakProvider) && !form.oauthDomain"
-          style="text-align: center; color: #999; font-size: 12px; margin-bottom: 8px;">
-          Enter your domain to see domain-specific providers
-        </div>
-        <div class="center" v-if="oauthGithubProvider || oauthGoogleProvider || oauthKeycloakProvider">
-          <div class="social-auth" v-if="oauthGithubProvider">
-            <a-button
-              @click="handleGithubProviderAndDomain"
-              tag="a"
-              color="primary"
-              :href="getGitHubUrl(from)"
-              class="auth-btn github-auth"
-              style="height: 38px; width: 185px; padding: 0; margin-bottom: 5px;" >
-              <img src="/assets/github.svg" alt="GitHub" style="width: 32px; padding: 5px" />
-              <a-typography-text>Sign in with GitHub</a-typography-text>
-            </a-button>
-          </div>
-          <div class="social-auth" v-if="oauthGoogleProvider">
-            <a-button
-              @click="handleGoogleProviderAndDomain"
-              tag="a"
-              color="primary"
-              :href="getGoogleUrl(from)"
-              class="auth-btn google-auth"
-              style="height: 38px; width: 185px; padding: 0; margin-bottom: 5px;" >
-              <img src="/assets/google.svg" alt="Google" style="width: 32px; padding: 5px" />
-              <a-typography-text>Sign in with Google</a-typography-text>
-            </a-button>
-          </div>
-          <div class="social-auth" v-if="oauthKeycloakProvider">
-            <a-button
-              @click="handleKeycloakProviderAndDomain"
-              tag="a"
-              color="primary"
-              :href="getKeycloakUrl(from)"
-              class="auth-btn keycloak-auth"
-              style="height: 38px; width: 185px; padding: 0" >
-              <img src="/assets/keycloak.svg" alt="Keycloak" style="width: 32px; padding: 5px" />
-              <a-typography-text>Sign in with Keycloak</a-typography-text>
-            </a-button>
-          </div>
-        </div>
-        <div v-else-if="oauthLoading" style="text-align: center; padding: 20px 0;">
-          <a-spin />
-        </div>
-        <div v-else style="text-align: center; color: #999; padding: 20px 0;">
-          <span v-if="oauthDomainQueried && form.oauthDomain">No OAuth providers configured for this domain</span>
-          <span v-else>Enter your domain to see available providers</span>
-        </div>
-      </a-tab-pane>
-    </a-tabs>
-
-    <a-form-item v-if="customActiveKey !== 'oauth'">
+    <a-alert
+      v-if="oidcError"
+      class="oidc-error"
+      type="error"
+      show-icon
+      :message="oidcErrorMessage">
+      <template v-if="oidcRefusal" #description>
+        <div class="oidc-refusal" v-html="oidcRefusal"></div>
+      </template>
+    </a-alert>
+    <div v-if="oidcProviders.length > 0" class="oidc-providers">
       <a-button
+        v-for="(provider, index) in oidcProviders"
+        :key="provider.name"
+        :type="index === 0 ? 'primary' : 'default'"
         size="large"
-        type="primary"
-        html-type="submit"
-        class="login-button"
-        :loading="state.loginBtn"
-        :disabled="state.loginBtn"
-        ref="submit"
-        @click="handleSubmit"
-      >{{ $t('label.login') }}</a-button>
-    </a-form-item>
+        block
+        class="oidc-login-button"
+        :href="oidcLoginUrl(provider)"
+      >{{ $t('label.login.with.provider', { provider: provider.label }) }}</a-button>
+    </div>
+    <div v-if="passwordFolded" class="password-login-toggle">
+      <a-button type="link" size="small" @click="passwordFormOpen = !passwordFormOpen">{{ $t('label.login.password.form') }}</a-button>
+    </div>
+    <div v-if="showPasswordForm" class="password-login" v-ctrl-enter="handleSubmit">
+      <a-tabs
+        class="tab-center"
+        :key="$i18n.locale"
+        :activeKey="customActiveKey"
+        size="large"
+        :tabBarStyle="{ textAlign: 'center', borderBottom: 'unset' }"
+        @change="handleTabClick"
+        :animated="false"
+      >
+        <a-tab-pane key="cs">
+          <template #tab>
+            <span>
+              <safety-outlined />
+              {{ $t('label.login.portal') }}
+            </span>
+          </template>
+          <a-form-item v-if="$config.multipleServer" name="server" ref="server">
+            <a-select
+              size="large"
+              :placeholder="$t('server')"
+              v-model:value="form.server"
+              @change="onChangeServer"
+              showSearch
+              optionFilterProp="label"
+              :filterOption="(input, option) => {
+                return option.label.toLowerCase().indexOf(input.toLowerCase()) >= 0
+              }">
+              <a-select-option v-for="item in $config.servers" :key="(item.apiHost || '') + item.apiBase" :label="item.name">
+                <template #prefix>
+                  <database-outlined />
+                </template>
+                {{ item.name }}
+              </a-select-option>
+            </a-select>
+          </a-form-item>
+          <a-form-item ref="username" name="username">
+            <a-input
+              size="large"
+              type="text"
+              v-focus="true"
+              :placeholder="$t('label.username')"
+              v-model:value="form.username"
+            >
+              <template #prefix>
+                <user-outlined />
+              </template>
+            </a-input>
+          </a-form-item>
+          <a-form-item ref="password" name="password">
+            <a-input-password
+              size="large"
+              type="password"
+              autocomplete="false"
+              :placeholder="$t('label.password')"
+              v-model:value="form.password"
+            >
+              <template #prefix>
+                <lock-outlined />
+              </template>
+            </a-input-password>
+          </a-form-item>
+          <a-form-item ref="domain" name="domain">
+            <a-input
+              size="large"
+              type="text"
+              :placeholder="$t('label.domain')"
+              v-model:value="form.domain"
+            >
+              <template #prefix>
+                <project-outlined />
+              </template>
+            </a-input>
+          </a-form-item>
+          <a-form-item ref="project" name="project" v-if="$config.displayProjectFieldOnLogin">
+            <a-input
+              size="large"
+              type="text"
+              :placeholder="$t('label.project')"
+              v-model:value="form.project"
+            >
+              <template #prefix>
+                <block-outlined />
+              </template>
+            </a-input>
+          </a-form-item>
+        </a-tab-pane>
+        <a-tab-pane key="saml" :disabled="idps.length === 0">
+          <template #tab>
+            <span>
+              <audit-outlined />
+              {{ $t('label.login.single.signon') }}
+            </span>
+          </template>
+          <a-form-item v-if="$config.multipleServer" name="server" ref="server">
+            <a-select
+              size="large"
+              :placeholder="$t('server')"
+              v-model:value="form.server"
+              @change="onChangeServer"
+              showSearch
+              optionFilterProp="label"
+              :filterOption="(input, option) => {
+                return option.label.toLowerCase().indexOf(input.toLowerCase()) >= 0
+              }" >
+              <a-select-option v-for="item in $config.servers" :key="(item.apiHost || '') + item.apiBase" :label="item.name">
+                <template #prefix>
+                  <database-outlined />
+                </template>
+                {{ item.name }}
+              </a-select-option>
+            </a-select>
+          </a-form-item>
+          <a-form-item name="idp" ref="idp">
+            <a-select
+              v-model:value="form.idp"
+              showSearch
+              optionFilterProp="label"
+              :filterOption="(input, option) => {
+                return option.label.toLowerCase().indexOf(input.toLowerCase()) >= 0
+              }" >
+              <a-select-option v-for="(idp, idx) in idps" :key="idx" :value="idp.id" :label="idp.orgName">
+                {{ idp.orgName }}
+              </a-select-option>
+            </a-select>
+          </a-form-item>
+        </a-tab-pane>
+      </a-tabs>
+
+      <a-form-item>
+        <a-button
+          size="large"
+          type="primary"
+          html-type="submit"
+          class="login-button"
+          :loading="state.loginBtn"
+          :disabled="state.loginBtn"
+          ref="submit"
+          @click="handleSubmit"
+        >{{ $t('label.login') }}</a-button>
+      </a-form-item>
+    </div>
+    <div v-if="endSessionProviders.length > 0" class="oidc-end-session">
+      <div>{{ $t('message.oidc.end.session') }}</div>
+      <a v-for="provider in endSessionProviders" :key="provider.name" :href="provider.endsessionurl">{{ provider.endsessionlabel }}</a>
+    </div>
     <a-row justify="space-between">
       <a-col>
       <translation-menu/>
@@ -260,6 +216,9 @@ import { sourceToken } from '@/utils/request'
 import { SERVER_MANAGER } from '@/store/mutation-types'
 import TranslationMenu from '@/components/header/TranslationMenu'
 
+// Why a sign-in through an OpenID provider ended without a session; the server returns the code as oidcerror.
+const OIDC_ERRORS = ['unavailable', 'expired', 'denied', 'failed', 'identity', 'notadmitted', 'noaccount', 'conflict', 'disabled', 'refused']
+
 export default {
   components: {
     TranslationMenu
@@ -267,35 +226,11 @@ export default {
   data () {
     return {
       idps: [],
+      oidcProviders: [],
+      oidcError: null,
+      passwordFormOpen: false,
       customActiveKey: 'cs',
-      customActiveKeyOauth: false,
       loginBtn: false,
-      email: '',
-      secretcode: '',
-      oauthexclude: '',
-      socialLogin: false,
-      googleprovider: false,
-      githubprovider: false,
-      keycloakprovider: false,
-      googleredirecturi: '',
-      githubredirecturi: '',
-      keycloakredirecturi: '',
-      googleclientid: '',
-      githubclientid: '',
-      keycloakclientid: '',
-      keycloakauthorizeurl: '',
-      oauthGoogleProvider: false,
-      oauthGithubProvider: false,
-      oauthKeycloakProvider: false,
-      oauthGoogleClientId: '',
-      oauthGithubClientId: '',
-      oauthKeycloakClientId: '',
-      oauthGoogleRedirectUri: '',
-      oauthGithubRedirectUri: '',
-      oauthKeycloakRedirectUri: '',
-      oauthKeycloakAuthorizeUrl: '',
-      oauthLoading: false,
-      oauthDomainQueried: false,
       loginType: 0,
       state: {
         time: 60,
@@ -307,11 +242,36 @@ export default {
       project: null
     }
   },
+  computed: {
+    passwordFolded () {
+      return this.oidcProviders.length > 0 && this.$config.foldPasswordLogin !== false
+    },
+    showPasswordForm () {
+      return !this.passwordFolded || this.passwordFormOpen
+    },
+    endSessionProviders () {
+      return this.oidcProviders.filter(provider => provider.endsessionurl && provider.endsessionlabel)
+    },
+    oidcErrorMessage () {
+      if (!this.oidcError) {
+        return ''
+      }
+      return this.$t(OIDC_ERRORS.includes(this.oidcError.code) ? 'message.oidc.error.' + this.oidcError.code : 'message.oidc.error')
+    },
+    oidcRefusal () {
+      if (!this.oidcError || this.oidcError.code !== 'notadmitted') {
+        return ''
+      }
+      const provider = this.oidcProviders.find(provider => provider.name === this.oidcError.provider)
+      return provider?.refusal || ''
+    }
+  },
   created () {
     if (this.$config.multipleServer) {
       this.server = this.$localStorage.get(SERVER_MANAGER) || this.$config.servers[0]
     }
     this.initForm()
+    this.readOidcError()
     if (store.getters.logoutFlag) {
       if (store.getters.readyForShutdownPollingJob !== '' || store.getters.readyForShutdownPollingJob !== undefined) {
         clearInterval(store.getters.readyForShutdownPollingJob)
@@ -323,21 +283,20 @@ export default {
     }
   },
   methods: {
-    ...mapActions(['Login', 'Logout', 'OauthLogin']),
+    ...mapActions(['Login', 'Logout']),
     initForm () {
       this.formRef = ref()
       this.form = reactive({
         server: (this.server.apiHost || '') + this.server.apiBase,
         username: this.$route.query?.username || '',
         domain: this.$route.query?.domain || '',
-        oauthDomain: '',
         project: null
       })
       this.rules = reactive({})
       this.setRules()
     },
     setRules () {
-      if (this.customActiveKey === 'cs' && this.customActiveKeyOauth === false) {
+      if (this.customActiveKey === 'cs') {
         this.rules.username = [
           {
             required: true,
@@ -361,6 +320,18 @@ export default {
         this.rules.password = []
       }
     },
+    // The outcome of a sign-in that ended without a session is read once and removed from the address.
+    readOidcError () {
+      const url = new URL(window.location.href)
+      const code = url.searchParams.get('oidcerror')
+      if (!code) {
+        return
+      }
+      this.oidcError = { code, provider: url.searchParams.get('provider') }
+      url.searchParams.delete('oidcerror')
+      url.searchParams.delete('provider')
+      window.history.replaceState(window.history.state, '', url.toString())
+    },
     fetchData () {
       getAPI('listIdps').then(response => {
         if (response) {
@@ -370,10 +341,15 @@ export default {
             if (a.orgName > b.orgName) { return 1 }
             return 0
           })
-          this.form.idp = this.idps[0].id || ''
+          this.form.idp = this.idps[0]?.id || ''
         }
+      }).catch(() => {})
+      getAPI('listOidcProviders').then(response => {
+        // an administrator's session also lists the disabled ones
+        this.oidcProviders = (response?.listoidcprovidersresponse?.oidcprovider || []).filter(provider => provider.enabled !== false)
+      }).catch(() => {
+        this.oidcProviders = []
       })
-      this.fetchOauthProviders()
       postAPI('forgotPassword', {}).then(response => {
         this.forgotPasswordEnabled = response.forgotpasswordresponse.enabled
       }).catch((err) => {
@@ -384,73 +360,9 @@ export default {
         }
       })
     },
-    fetchOauthProviders (domain) {
-      const params = {}
-      if (domain) {
-        params.domain = domain
-        this.oauthLoading = true
-      }
-      getAPI('listOauthProvider', params).then(response => {
-        if (response) {
-          const oauthproviders = response.listoauthproviderresponse.oauthprovider || []
-          if (!domain) {
-            oauthproviders.forEach(item => {
-              if (item.provider === 'google') {
-                this.googleprovider = item.enabled
-                this.googleclientid = item.clientid
-                this.googleredirecturi = item.redirecturi
-              }
-              if (item.provider === 'github') {
-                this.githubprovider = item.enabled
-                this.githubclientid = item.clientid
-                this.githubredirecturi = item.redirecturi
-              }
-              if (item.provider === 'keycloak') {
-                this.keycloakprovider = item.enabled
-                this.keycloakclientid = item.clientid
-                this.keycloakredirecturi = item.redirecturi
-                this.keycloakauthorizeurl = item.authorizeurl
-              }
-            })
-            const totalCount = response.listoauthproviderresponse.count || 0
-            this.socialLogin = totalCount > 0
-            this.oauthGithubProvider = this.githubprovider
-            this.oauthGoogleProvider = this.googleprovider
-            this.oauthKeycloakProvider = this.keycloakprovider
-            this.oauthGithubClientId = this.githubclientid
-            this.oauthGoogleClientId = this.googleclientid
-            this.oauthKeycloakClientId = this.keycloakclientid
-            this.oauthGithubRedirectUri = this.githubredirecturi
-            this.oauthGoogleRedirectUri = this.googleredirecturi
-            this.oauthKeycloakRedirectUri = this.keycloakredirecturi
-            this.oauthKeycloakAuthorizeUrl = this.keycloakauthorizeurl
-          } else {
-            this.oauthGithubProvider = false
-            this.oauthGoogleProvider = false
-            this.oauthKeycloakProvider = false
-            oauthproviders.forEach(item => {
-              if (item.provider === 'google') {
-                this.oauthGoogleProvider = item.enabled
-                this.oauthGoogleClientId = item.clientid
-                this.oauthGoogleRedirectUri = item.redirecturi
-              }
-              if (item.provider === 'github') {
-                this.oauthGithubProvider = item.enabled
-                this.oauthGithubClientId = item.clientid
-                this.oauthGithubRedirectUri = item.redirecturi
-              }
-              if (item.provider === 'keycloak') {
-                this.oauthKeycloakProvider = item.enabled
-                this.oauthKeycloakClientId = item.clientid
-                this.oauthKeycloakRedirectUri = item.redirecturi
-                this.oauthKeycloakAuthorizeUrl = item.authorizeurl
-              }
-            })
-          }
-        }
-      }).finally(() => {
-        this.oauthLoading = false
-      })
+    oidcLoginUrl (provider) {
+      const apiBase = this.$config.multipleServer ? (this.server.apiHost || '') + this.server.apiBase : this.$config.apiBase
+      return apiBase + '?command=oidcLogin&provider=' + encodeURIComponent(provider.name)
     },
     // handler
     async handleUsernameOrEmail (rule, value) {
@@ -465,55 +377,7 @@ export default {
     },
     handleTabClick (key) {
       this.customActiveKey = key
-      if (key === 'oauth') {
-        this.oauthGithubProvider = this.githubprovider
-        this.oauthGoogleProvider = this.googleprovider
-        this.oauthKeycloakProvider = this.keycloakprovider
-        this.oauthGithubClientId = this.githubclientid
-        this.oauthGoogleClientId = this.googleclientid
-        this.oauthKeycloakClientId = this.keycloakclientid
-        this.oauthGithubRedirectUri = this.githubredirecturi
-        this.oauthGoogleRedirectUri = this.googleredirecturi
-        this.oauthKeycloakRedirectUri = this.keycloakredirecturi
-        this.oauthKeycloakAuthorizeUrl = this.keycloakauthorizeurl
-      }
       this.setRules()
-    },
-    handleOauthDomainSubmit () {
-      const domain = this.form.oauthDomain
-      if (domain) {
-        this.oauthDomainQueried = true
-        this.fetchOauthProviders(domain)
-      } else {
-        this.oauthDomainQueried = false
-        this.oauthGithubProvider = this.githubprovider
-        this.oauthGoogleProvider = this.googleprovider
-        this.oauthKeycloakProvider = this.keycloakprovider
-        this.oauthGithubClientId = this.githubclientid
-        this.oauthGoogleClientId = this.googleclientid
-        this.oauthKeycloakClientId = this.keycloakclientid
-        this.oauthGithubRedirectUri = this.githubredirecturi
-        this.oauthGoogleRedirectUri = this.googleredirecturi
-        this.oauthKeycloakRedirectUri = this.keycloakredirecturi
-        this.oauthKeycloakAuthorizeUrl = this.keycloakauthorizeurl
-      }
-    },
-    handleGithubProviderAndDomain () {
-      this.handleDomain()
-      this.$store.commit('SET_OAUTH_PROVIDER_USED_TO_LOGIN', 'github')
-    },
-    handleGoogleProviderAndDomain () {
-      this.handleDomain()
-      this.$store.commit('SET_OAUTH_PROVIDER_USED_TO_LOGIN', 'google')
-    },
-    handleKeycloakProviderAndDomain () {
-      this.handleDomain()
-      this.$store.commit('SET_OAUTH_PROVIDER_USED_TO_LOGIN', 'keycloak')
-    },
-    handleDomain () {
-      const values = toRaw(this.form)
-      const domain = this.customActiveKey === 'oauth' ? values.oauthDomain : values.domain
-      this.$store.commit('SET_DOMAIN_USED_TO_LOGIN', this.getLoginDomain(domain))
     },
     getLoginDomain (domain) {
       if (this.$config.loginBaseDomain) {
@@ -527,59 +391,9 @@ export default {
       }
       return '/'
     },
-    getGitHubUrl (from) {
-      const rootURl = 'https://github.com/login/oauth/authorize'
-      const clientId = this.customActiveKey === 'oauth' ? this.oauthGithubClientId : this.githubclientid
-      const options = {
-        client_id: clientId,
-        scope: 'user:email',
-        state: 'cloudstack'
-      }
-
-      const qs = new URLSearchParams(options)
-
-      return `${rootURl}?${qs.toString()}`
-    },
-    getGoogleUrl (from) {
-      const rootUrl = 'https://accounts.google.com/o/oauth2/v2/auth'
-      const redirectUri = this.customActiveKey === 'oauth' ? this.oauthGoogleRedirectUri : this.googleredirecturi
-      const clientId = this.customActiveKey === 'oauth' ? this.oauthGoogleClientId : this.googleclientid
-      const options = {
-        redirect_uri: redirectUri,
-        client_id: clientId,
-        access_type: 'offline',
-        response_type: 'code',
-        prompt: 'consent',
-        scope: [
-          'https://www.googleapis.com/auth/userinfo.profile',
-          'https://www.googleapis.com/auth/userinfo.email'
-        ].join(' '),
-        state: from
-      }
-
-      const qs = new URLSearchParams(options)
-
-      return `${rootUrl}?${qs.toString()}`
-    },
-    getKeycloakUrl (from) {
-      const rootURl = this.customActiveKey === 'oauth' ? this.oauthKeycloakAuthorizeUrl : this.keycloakauthorizeurl
-      const redirectUri = this.customActiveKey === 'oauth' ? this.oauthKeycloakRedirectUri : this.keycloakredirecturi
-      const clientId = this.customActiveKey === 'oauth' ? this.oauthKeycloakClientId : this.keycloakclientid
-      const options = {
-        redirect_uri: redirectUri,
-        client_id: clientId,
-        response_type: 'code',
-        scope: 'openid email',
-        state: 'cloudstack'
-      }
-
-      const qs = new URLSearchParams(options)
-
-      return `${rootURl}?${qs.toString()}`
-    },
     handleSubmit (e) {
       e.preventDefault()
-      if (this.state.loginBtn) return
+      if (this.state.loginBtn || !this.showPasswordForm) return
       this.formRef.value.validate().then(() => {
         this.state.loginBtn = true
 
@@ -610,25 +424,6 @@ export default {
         }
       }).catch(error => {
         this.formRef.value.scrollToField(error.errorFields[0].name)
-      })
-    },
-    handleSubmitOauth (provider) {
-      this.customActiveKeyOauth = true
-      this.setRules()
-      this.formRef.value.validate().then(() => {
-        const values = toRaw(this.form)
-        const loginParams = { ...values }
-        delete loginParams.username
-        loginParams.email = this.email
-        loginParams.provider = provider
-        loginParams.secretcode = this.secretcode
-        loginParams.domain = this.getLoginDomain(values.domain)
-        this.OauthLogin(loginParams)
-          .then((res) => this.loginSuccess(res))
-          .catch(err => {
-            this.requestFailed(err)
-            this.state.loginBtn = false
-          })
       })
     },
     async loginSuccess (res) {
@@ -671,9 +466,6 @@ export default {
       if (err && err.response && err.response.data && err.response.data.loginresponse) {
         const error = err.response.data.loginresponse.errorcode + ': ' + err.response.data.loginresponse.errortext
         this.$message.error(`${this.$t('label.error')} ${error}`)
-      } else if (err && err.response && err.response.data && err.response.data.oauthloginresponse) {
-        const error = err.response.data.oauthloginresponse.errorcode + ': ' + err.response.data.oauthloginresponse.errortext
-        this.$message.error(`${this.$t('label.error')} ${error}`)
       } else {
         this.$message.error(this.$t('message.login.failed'))
       }
@@ -697,11 +489,6 @@ export default {
     margin: 0 16px 0 0;
   }
 
-  .oauth-tab-icon--disabled {
-    filter: grayscale(100%);
-    opacity: 0.45;
-  }
-
   .mobile & {
     max-width: 500px;
     width: 98%;
@@ -719,55 +506,32 @@ export default {
     width: 100%;
   }
 
-  .user-login-other {
-    text-align: left;
-    margin-top: 24px;
-    line-height: 22px;
+  .oidc-error {
+    margin-bottom: 16px;
+  }
 
-    .item-icon {
-      font-size: 24px;
-      color: rgba(0, 0, 0, 0.2);
-      margin-left: 16px;
-      vertical-align: middle;
-      cursor: pointer;
-      transition: color 0.3s;
+  .oidc-providers {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
 
-      &:hover {
-        color: #1890ff;
-      }
-    }
+  .password-login-toggle {
+    text-align: center;
+    margin-bottom: 8px;
+  }
 
-    .register {
-      float: right;
-    }
+  .oidc-end-session {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin: 8px 0 16px;
+    font-size: 13px;
 
-    .g-btn-wrapper {
-      background-color: rgb(221, 75, 57);
-      height: 40px;
-      width: 80px;
+    div {
+      flex-basis: 100%;
     }
   }
-    .center {
-     display: flex;
-     flex-direction: column;
-     justify-content: center;
-     align-items: center;
-     height: 100px;
-    }
-
-    .content {
-      margin: 10px auto;
-      width: 300px;
-    }
-
-    .or {
-      text-align: center;
-      font-size: 16px;
-      background:
-        linear-gradient(#CCC 0 0) left,
-        linear-gradient(#CCC 0 0) right;
-      background-size: 40% 1px;
-      background-repeat: no-repeat;
-    }
 }
 </style>

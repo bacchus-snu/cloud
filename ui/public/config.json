@@ -102,6 +102,7 @@
   "multipleServer": false,
   "allowSettingTheme": true,
   "displayProjectFieldOnLogin": false,
+  "foldPasswordLogin": true,
   "imageSelectionInterface": "modern",
   "showUserCategoryForModernImageSelection": true,
   "showAllCategoryForModernImageSelection": false,

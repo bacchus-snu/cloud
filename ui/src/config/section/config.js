@@ -74,66 +74,6 @@ export default {
       ]
     },
     {
-      name: 'oauthsetting',
-      title: 'label.oauth.configuration',
-      icon: 'login-outlined',
-      docHelp: 'adminguide/accounts.html#using-an-ldap-server-for-user-authentication',
-      permission: ['listOauthProvider'],
-      columns: ['provider', 'enabled', 'description', 'clientid', 'redirecturi', 'domainpath'],
-      details: ['provider', 'description', 'enabled', 'clientid', 'secretkey', 'redirecturi', 'authorizeurl', 'tokenurl', 'domainpath'],
-      actions: [
-        {
-          api: 'registerOauthProvider',
-          icon: 'plus-outlined',
-          label: 'label.register.oauth',
-          listView: true,
-          dataView: false,
-          args: [
-            'provider', 'description', 'clientid', 'redirecturi', 'secretkey', 'authorizeurl', 'tokenurl', 'domainid'
-          ],
-          mapping: {
-            provider: {
-              options: ['google', 'github', 'keycloak']
-            }
-          }
-        },
-        {
-          api: 'updateOauthProvider',
-          icon: 'edit-outlined',
-          label: 'label.edit',
-          dataView: true,
-          popup: true,
-          args: ['description', 'clientid', 'redirecturi', 'secretkey', 'authorizeurl', 'tokenurl', 'domainid']
-        },
-        {
-          api: 'updateOauthProvider',
-          icon: 'play-circle-outlined',
-          label: 'label.enable.provider',
-          message: 'message.confirm.enable.provider',
-          dataView: true,
-          defaultArgs: { enabled: true },
-          show: (record) => { return record.enabled === false }
-        },
-        {
-          api: 'updateOauthProvider',
-          icon: 'pause-circle-outlined',
-          label: 'label.disable.provider',
-          message: 'message.confirm.disable.provider',
-          dataView: true,
-          defaultArgs: { enabled: false },
-          show: (record) => { return record.enabled === true }
-        },
-        {
-          api: 'deleteOauthProvider',
-          icon: 'delete-outlined',
-          label: 'label.action.delete.oauth.provider',
-          message: 'message.action.delete.guest.os',
-          dataView: true,
-          popup: true
-        }
-      ]
-    },
-    {
       name: 'hypervisorcapability',
       title: 'label.hypervisor.capabilities',
       icon: 'database-outlined',

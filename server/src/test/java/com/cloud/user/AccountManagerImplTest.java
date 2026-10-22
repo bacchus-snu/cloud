@@ -2423,6 +2423,35 @@ public class AccountManagerImplTest extends AccountManagentImplTestBase {
     }
 
     @Test
+    public void refusedPasswordSignInIsNeverCounted() throws UnknownHostException {
+        UserAccountVO alice = oauth2User(Account.State.ENABLED);
+        alice.setSource(User.Source.UNKNOWN);
+        UserAccountVO bob = oauth2User(Account.State.ENABLED);
+        bob.setId(8L);
+        bob.setAccountId(80L);
+        bob.setUsername("bob");
+        bob.setSource(User.Source.UNKNOWN);
+        Mockito.when(userAccountDao.getUserAccount("alice", 1L)).thenReturn(alice);
+        Mockito.when(userAccountDao.getUserAccount("bob", 1L)).thenReturn(bob);
+        Mockito.lenient().when(userAuthenticator.authenticate(Mockito.anyString(), Mockito.anyString(), Mockito.anyLong(), Mockito.any()))
+                .thenReturn(new Pair<>(false, UserAuthenticator.ActionOnFailedAuthentication.INCREMENT_INCORRECT_LOGIN_ATTEMPT_COUNT));
+        Mockito.doNothing().when(accountManagerImpl).updateLoginAttemptsWhenIncorrectLoginAttemptsEnabled(Mockito.any(), Mockito.anyBoolean(), Mockito.anyInt());
+        accountManagerImpl.addPasswordSignInRefusal(user -> user.getAccountId() == 70L);
+
+        for (int attempt = 0; attempt < 5; attempt++) {
+            Assert.assertNull(accountManagerImpl.authenticateUser("alice", "guess", 1L, InetAddress.getByName("127.0.0.1"), new HashMap<>()));
+        }
+
+        Mockito.verify(userAuthenticator, Mockito.never()).authenticate(Mockito.eq("alice"), Mockito.anyString(), Mockito.anyLong(), Mockito.any());
+        Mockito.verify(accountManagerImpl, Mockito.never()).updateLoginAttempts(Mockito.anyLong(), Mockito.anyInt(), Mockito.anyBoolean());
+        Mockito.verify(accountManagerImpl, Mockito.never()).updateLoginAttemptsWhenIncorrectLoginAttemptsEnabled(Mockito.any(), Mockito.anyBoolean(), Mockito.anyInt());
+        Assert.assertEquals(Account.State.ENABLED.toString(), alice.getState());
+
+        Assert.assertNull(accountManagerImpl.authenticateUser("bob", "guess", 1L, InetAddress.getByName("127.0.0.1"), new HashMap<>()));
+        Mockito.verify(accountManagerImpl).updateLoginAttemptsWhenIncorrectLoginAttemptsEnabled(Mockito.eq(bob), Mockito.eq(true), Mockito.anyInt());
+    }
+
+    @Test
     public void verifiedSignInKeepsThePostAuthenticationChecks() throws UnknownHostException, IllegalAccessException {
         UserAccountVO alice = oauth2User(Account.State.ENABLED);
         Mockito.when(userAccountDao.findById(7L)).thenReturn(alice);

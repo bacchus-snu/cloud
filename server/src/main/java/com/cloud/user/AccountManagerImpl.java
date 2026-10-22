@@ -34,9 +34,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import javax.crypto.KeyGenerator;
@@ -321,6 +323,7 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
     private AccountDetailsDao _accountDetailsDao;
 
     private final Set<String> disableReasonDetails = ConcurrentHashMap.newKeySet();
+    private final List<Predicate<UserAccount>> passwordSignInRefusals = new CopyOnWriteArrayList<>();
     @Inject
     private DomainDao _domainDao;
     @Inject
@@ -931,6 +934,15 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
     @Override
     public void addDisableReasonDetail(String detailName) {
         disableReasonDetails.add(detailName);
+    }
+
+    @Override
+    public void addPasswordSignInRefusal(Predicate<UserAccount> refusal) {
+        passwordSignInRefusals.add(refusal);
+    }
+
+    private boolean isPasswordSignInRefused(UserAccount user) {
+        return passwordSignInRefusals.stream().anyMatch(refusal -> refusal.test(user));
     }
 
     @Override
@@ -3197,6 +3209,10 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
         // a user who signs in through an OpenID provider has no password to match, and so no failed attempts to count
         if (userSource == User.Source.OAUTH2) {
             logger.info("User {} signs in through an identity provider, not with a password", username);
+            return null;
+        }
+        if (userAccount != null && isPasswordSignInRefused(userAccount)) {
+            logger.info("User {} may not sign in with a password", username);
             return null;
         }
         for (UserAuthenticator authenticator : _userAuthenticators) {

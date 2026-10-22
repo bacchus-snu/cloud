@@ -44,10 +44,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import org.apache.cloudstack.acl.RoleType;
@@ -200,6 +202,7 @@ public abstract class OidcTestBase {
     protected final Map<Long, UserVO> users = userTable.rows;
     /** Account details that the account service removes when it enables an account, as modules registered them. */
     protected final Set<String> disableReasons = ConcurrentHashMap.newKeySet();
+    protected final List<Predicate<UserAccount>> passwordSignInRefusals = new CopyOnWriteArrayList<>();
     protected final Map<Long, Map<String, String>> accountDetails = new ConcurrentHashMap<>();
     protected final Map<Long, Map<String, String>> userDetails = new ConcurrentHashMap<>();
     protected final Map<Long, DomainVO> domains = new HashMap<>();
@@ -450,6 +453,7 @@ public abstract class OidcTestBase {
             return account;
         });
         doAnswer(i -> disableReasons.add(i.getArgument(0))).when(accountManager).addDisableReasonDetail(anyString());
+        doAnswer(i -> passwordSignInRefusals.add(i.getArgument(0))).when(accountManager).addPasswordSignInRefusal(any());
         when(accountManager.enableAccount(isNull(), isNull(), anyLong())).thenAnswer(i -> {
             enableAccountRow(i.getArgument(2));
             return accounts.get((Long) i.getArgument(2));

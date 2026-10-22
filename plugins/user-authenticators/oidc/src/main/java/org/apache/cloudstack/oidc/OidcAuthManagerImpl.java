@@ -203,6 +203,7 @@ public class OidcAuthManagerImpl extends ManagerBase implements OidcAuthManager,
     public boolean start() {
         accountManager.addDisableReasonDetail(DISABLED_BY_DETAIL);
         accountManager.addDisableReasonDetail(GATE_DISABLED_BY);
+        accountManager.addPasswordSignInRefusal(this::awaitsAdoption);
         reconcileRunner(executor).start();
         if (ReconcileInterval.value() > 0) {
             executor.schedule(new ReconcileTask(), FIRST_RECONCILE_DELAY_SECONDS, TimeUnit.SECONDS);
@@ -795,6 +796,14 @@ public class OidcAuthManagerImpl extends ManagerBase implements OidcAuthManager,
     private boolean isGateAccount(long accountId) {
         AccountDetailVO mark = accountDetailsDao.findDetail(accountId, GATE_MARK);
         return mark != null && "true".equals(mark.getValue());
+    }
+
+    /**
+     * A marked account is taken over at its owner's first sign-in through a provider. Once this server offers that
+     * sign-in, its password is no way in any more, so a password attempt neither succeeds nor counts towards a lockout.
+     */
+    private boolean awaitsAdoption(UserAccount user) {
+        return OidcAuthManager.clientUri() != null && isGateAccount(user.getAccountId());
     }
 
     /**

@@ -39,6 +39,7 @@ import static org.mockito.Mockito.when;
 
 import java.io.InputStream;
 import java.lang.reflect.Field;
+import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -55,12 +56,18 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Predicate;
 
 import javax.persistence.Column;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
 
+import org.apache.cloudstack.api.ApiServerService;
+import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.ConfigKeyScheduledExecutionWrapper;
 import org.apache.cloudstack.oidc.api.command.CreateOidcProviderCmd;
+import org.apache.cloudstack.oidc.api.command.ListOidcProvidersCmd;
 import org.apache.cloudstack.oidc.api.command.UpdateOidcProviderCmd;
 import org.apache.cloudstack.oidc.api.response.OidcProviderResponse;
 import org.apache.cloudstack.oidc.membership.OidcMembershipSource;
@@ -77,8 +84,10 @@ import com.cloud.event.EventTypes;
 import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.PermissionDeniedException;
 import com.cloud.user.Account;
+import com.cloud.user.AccountService;
 import com.cloud.user.AccountVO;
 import com.cloud.user.User;
+import com.cloud.user.UserAccount;
 import com.cloud.user.UserVO;
 import com.cloud.utils.db.GlobalLock;
 
@@ -356,6 +365,33 @@ public class OidcAuthManagerImplTest extends OidcTestBase {
 
         links.clear();
         assertRefused("adoption happens once: the mark is gone", OidcLoginError.CONFLICT, student("s-3", "alice", "major"));
+    }
+
+    @Test
+    public void markedAccountsSignInOnlyThroughProvidersOnceOffered() throws Exception {
+        assertEquals(1, passwordSignInRefusals.size());
+        Predicate<UserAccount> refusal = passwordSignInRefusals.get(0);
+        students();
+        UserVO alice = markedAccount(STUDENTS, STUDENT_ROLE, "alice", "alice@students.example.org", false);
+        UserVO bob = user(account("bob", STUDENTS, Account.Type.NORMAL, STUDENT_ROLE), "bob", "bob@students.example.org", User.Source.UNKNOWN);
+
+        assertTrue("a marked account is entered through its provider sign-in, never with its password", refusal.test(userAccount(alice)));
+        assertFalse(refusal.test(userAccount(bob)));
+        settings.put(OidcAuthManager.ClientUrl.key(), "");
+        assertFalse("while no provider sign-in is offered, the password stays the way in", refusal.test(userAccount(alice)));
+        settings.put(OidcAuthManager.ClientUrl.key(), CLIENT_URL);
+
+        assertEquals(alice.getId(), login(STUDENTS_PROVIDER, student("s-1", "alice", "major")));
+        assertEquals(User.Source.OAUTH2, users.get(alice.getId()).getSource());
+        assertFalse("adoption ends the mark", refusal.test(userAccount(alice)));
+    }
+
+    private static UserAccount userAccount(UserVO user) {
+        UserAccount view = mock(UserAccount.class);
+        when(view.getId()).thenReturn(user.getId());
+        when(view.getAccountId()).thenReturn(user.getAccountId());
+        when(view.getUsername()).thenReturn(user.getUsername());
+        return view;
     }
 
     private void assertRefused(String message, OidcLoginError error, MockIdp.Person person) {
@@ -1069,6 +1105,83 @@ public class OidcAuthManagerImplTest extends OidcTestBase {
         assertTrue(json, json.contains("\"endsessionlabel\":\"Sign out of Student ID\""));
         assertFalse("a disabled provider is not offered", json.contains("members"));
         assertFalse("no configuration without a session", json.contains("clientid") || json.contains("issuer") || json.contains("admission"));
+    }
+
+    private static Map<String, Object[]> signedListing() {
+        Map<String, Object[]> params = new HashMap<>();
+        params.put("command", new String[] {"listOidcProviders"});
+        params.put("apiKey", new String[] {"the-key"});
+        params.put("signature", new String[] {"the-signature"});
+        return params;
+    }
+
+    private String listAs(Map<String, Object[]> params, ApiServerService apiServer, boolean rootAdmin) throws Exception {
+        ListOidcProvidersCmd cmd = new ListOidcProvidersCmd();
+        cmd.setAuthenticators(List.of(manager));
+        Field field = ListOidcProvidersCmd.class.getDeclaredField("apiServer");
+        field.setAccessible(true);
+        field.set(cmd, apiServer);
+        cmd._accountService = mock(AccountService.class);
+        when(cmd._accountService.isRootAdmin(caller.getId())).thenReturn(rootAdmin);
+        return cmd.authenticate("listOidcProviders", params, null, InetAddress.getLoopbackAddress(), "json", new StringBuilder(),
+                mock(HttpServletRequest.class), mock(HttpServletResponse.class));
+    }
+
+    /** The server's verification of a signed request, which registers the key's user as the caller when it succeeds. */
+    private ApiServerService verifying(Map<String, Object[]> params, boolean verified) {
+        ApiServerService apiServer = mock(ApiServerService.class);
+        when(apiServer.verifyRequest(params, null, InetAddress.getLoopbackAddress())).thenAnswer(invocation -> {
+            if (verified) {
+                CallContext.register(callerUser, caller);
+            }
+            return verified;
+        });
+        return apiServer;
+    }
+
+    @Test
+    public void signedRequestOfARootAdministratorSeesEveryProviderAndItsConfiguration() throws Exception {
+        students();
+        members().setEnabled(false);
+        Map<String, Object[]> params = signedListing();
+        String json;
+        try {
+            json = listAs(params, verifying(params, true), true);
+        } finally {
+            CallContext.unregister();
+        }
+        assertTrue(json, json.contains("\"name\":\"members\""));
+        assertTrue(json, json.contains("\"enabled\":false"));
+        assertTrue(json, json.contains("\"issuer\":\"" + idp.issuer() + "\""));
+        assertTrue(json, json.contains("\"clientid\""));
+        assertTrue(json, json.contains("\"admission\""));
+        assertTrue(json, json.contains("\"domainpath\""));
+        assertFalse("secrets are never listed", json.toLowerCase().contains("secret"));
+    }
+
+    @Test
+    public void signedRequestThatIsNotARootAdministratorsSeesThePublicListing() throws Exception {
+        students();
+        members().setEnabled(false);
+        Map<String, Object[]> params = signedListing();
+        String unverified = listAs(params, verifying(params, false), true);
+        assertFalse(unverified, unverified.contains("members") || unverified.contains("issuer"));
+
+        String notRoot;
+        try {
+            notRoot = listAs(params, verifying(params, true), false);
+        } finally {
+            CallContext.unregister();
+        }
+        assertFalse(notRoot, notRoot.contains("members") || notRoot.contains("issuer"));
+
+        Map<String, Object[]> unsigned = new HashMap<>();
+        unsigned.put("command", new String[] {"listOidcProviders"});
+        ApiServerService apiServer = mock(ApiServerService.class);
+        String anonymous = listAs(unsigned, apiServer, true);
+        assertTrue(anonymous, anonymous.contains("\"name\":\"students\""));
+        assertFalse(anonymous, anonymous.contains("issuer"));
+        verify(apiServer, never()).verifyRequest(any(), any(), any());
     }
 
     @Test

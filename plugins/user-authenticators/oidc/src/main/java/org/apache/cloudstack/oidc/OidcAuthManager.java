@@ -48,7 +48,8 @@ public interface OidcAuthManager extends PluggableAPIAuthenticator, PluggableSer
     ConfigKey<String> ClientUrl = new ValidatedConfigKey<>(ConfigKey.CATEGORY_ADVANCED, String.class, "oidc.client.url", "",
             "External https URL of the web client, for example https://cloud.example.org/client. Providers return the browser to " +
                     "<url>" + CALLBACK_PATH + "<provider>, the address to register at each provider, and a finished sign-in continues at <url>/. " +
-                    "While empty, nobody can sign in through a provider.",
+                    "While empty, nobody can sign in through a provider, and the users of accounts that await adoption sign in with their password " +
+                    "again, failed attempts counting towards incorrect.login.attempts.allowed; keep it set while such accounts remain.",
             true, ConfigKey.Scope.Global, null, OidcAuthManager::validateClientUrl);
 
     ConfigKey<Integer> LoginTimeout = new ConfigKey<>(ConfigKey.CATEGORY_ADVANCED, Integer.class, "oidc.login.timeout", "600",

@@ -20,6 +20,7 @@ package org.apache.cloudstack.network.contrail.management;
 import java.net.InetAddress;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 
 import javax.inject.Inject;
 import javax.naming.ConfigurationException;
@@ -404,6 +405,10 @@ public class MockAccountManager extends ManagerBase implements AccountManager {
 
     @Override
     public void addDisableReasonDetail(String detailName) {
+    }
+
+    @Override
+    public void addPasswordSignInRefusal(Predicate<UserAccount> refusal) {
     }
 
     @Override

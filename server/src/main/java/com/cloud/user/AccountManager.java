@@ -19,6 +19,7 @@ package com.cloud.user;
 import java.net.InetAddress;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 
 import com.cloud.exception.ResourceAllocationException;
 import org.apache.cloudstack.acl.ControlledEntity;
@@ -107,6 +108,12 @@ public interface AccountManager extends AccountService, Configurable {
      * that enables the account, so that a later disable never carries it.
      */
     void addDisableReasonDetail(String detailName);
+
+    /**
+     * Adds a rule under which a user may not sign in with a password. Such a sign-in is refused before any authenticator
+     * runs, so it never counts as a failed attempt and can never lock the user out.
+     */
+    void addPasswordSignInRefusal(Predicate<UserAccount> refusal);
 
     /**
      * Stops the resources of an account that is disabled and still marked for cleanup, as the account cleanup task

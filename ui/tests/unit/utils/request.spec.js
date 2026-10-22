@@ -77,6 +77,13 @@ describe('utils/request', () => {
       expect(store.dispatch).not.toHaveBeenCalledWith('Logout')
       expect(notification.error).not.toHaveBeenCalled()
     })
+
+    it('neither signs out nor reports for the listing of OpenID providers', async () => {
+      await get('listOidcProviders')
+
+      expect(store.dispatch).not.toHaveBeenCalledWith('Logout')
+      expect(notification.error).not.toHaveBeenCalled()
+    })
   })
 
   describe('an unauthorized answer to any other command', () => {

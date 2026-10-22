@@ -111,11 +111,8 @@ export default {
     return {
       idps: [],
       customActiveKey: 'cs',
-      customActiveKeyOauth: false,
       submitBtn: false,
       email: '',
-      secretcode: '',
-      oauthexclude: '',
       server: ''
     }
   },

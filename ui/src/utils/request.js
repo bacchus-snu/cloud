@@ -65,7 +65,7 @@ const err = (error) => {
       })
     }
     if (response.status === 401) {
-      if (['forgotPassword', 'listIdps', 'cloudianIsEnabled'].includes(requestCommand(response.config))) {
+      if (['forgotPassword', 'listIdps', 'listOidcProviders', 'cloudianIsEnabled'].includes(requestCommand(response.config))) {
         return
       }
       const originalPath = router.currentRoute.value.path

@@ -38,6 +38,7 @@ import org.apache.cloudstack.api.auth.APIAuthenticationType;
 import org.apache.cloudstack.api.auth.APIAuthenticator;
 import org.apache.cloudstack.api.auth.PluggableAPIAuthenticator;
 import org.apache.cloudstack.api.response.ListResponse;
+import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.oidc.OidcAuthManager;
 import org.apache.cloudstack.oidc.api.response.OidcProviderResponse;
 import org.apache.cloudstack.oidc.vo.OidcProviderVO;
@@ -49,9 +50,9 @@ import com.cloud.api.response.ApiResponseSerializer;
 import com.cloud.user.Account;
 import com.cloud.utils.HttpUtils;
 
-@APICommand(name = "listOidcProviders", description = "Lists the OpenID providers people sign in with, with their end-session links. Without a session "
-        + "it lists the enabled providers and what the sign-in page shows; administrators whose role allows this API see every provider and its "
-        + "configuration, never its secrets", responseObject = OidcProviderResponse.class, entityType = {},
+@APICommand(name = "listOidcProviders", description = "Lists the OpenID providers people sign in with, with their end-session links. Unauthenticated, "
+        + "it lists the enabled providers and what the sign-in page shows; root administrators whose role allows this API, from a session or "
+        + "with a signed request, see every provider and its configuration, never its secrets", responseObject = OidcProviderResponse.class, entityType = {},
         requestHasSensitiveInfo = false, responseHasSensitiveInfo = false,
         authorized = {RoleType.Admin, RoleType.ResourceAdmin, RoleType.DomainAdmin, RoleType.User}, since = "4.23.0.100")
 public class ListOidcProvidersCmd extends BaseListCmd implements APIAuthenticator {
@@ -101,16 +102,14 @@ public class ListOidcProvidersCmd extends BaseListCmd implements APIAuthenticato
     }
 
     /**
-     * A caller sees the configuration only from a valid session of a root administrator whose role rules allow this API.
+     * A caller sees the configuration only as a root administrator whose role rules allow this API, from a valid session or from a
+     * request signed with its API key.
      */
     protected boolean isAdministrator(Map<String, Object[]> params, HttpSession session, InetAddress remoteAddress, HttpServletRequest req) {
-        if (session == null) {
-            return false;
-        }
-        Long userId = (Long) session.getAttribute("userid");
-        Object accountObj = session.getAttribute("accountobj");
+        Long userId = session == null ? null : (Long) session.getAttribute("userid");
+        Object accountObj = session == null ? null : session.getAttribute("accountobj");
         if (userId == null || !(accountObj instanceof Account)) {
-            return false;
+            return isSignedByAdministrator(params, remoteAddress);
         }
         HttpUtils.ApiSessionKeyCheckOption sessionKeyCheckOption = EnumUtils.getEnumIgnoreCase(HttpUtils.ApiSessionKeyCheckOption.class,
                 ApiServer.ApiSessionKeyCheckLocations.value(), HttpUtils.ApiSessionKeyCheckOption.CookieAndParameter);
@@ -120,6 +119,23 @@ public class ListOidcProvidersCmd extends BaseListCmd implements APIAuthenticato
         try {
             return apiServer.verifyUser(userId) && apiServer.verifyRequest(params, userId, remoteAddress)
                     && _accountService.isRootAdmin(((Account) accountObj).getId());
+        } catch (ServerApiException e) {
+            return false;
+        }
+    }
+
+    /**
+     * A request signed with an API key is verified as any other API call is: the key's user and account, its role rules and the
+     * signature. Unsigned requests are not offered for verification, so the public listing logs nothing.
+     */
+    private boolean isSignedByAdministrator(Map<String, Object[]> params, InetAddress remoteAddress) {
+        boolean signed = params.keySet().stream().anyMatch(ApiConstants.SIGNATURE::equalsIgnoreCase)
+                && params.keySet().stream().anyMatch(ApiConstants.API_KEY::equalsIgnoreCase);
+        if (!signed) {
+            return false;
+        }
+        try {
+            return apiServer.verifyRequest(params, null, remoteAddress) && _accountService.isRootAdmin(CallContext.current().getCallingAccountId());
         } catch (ServerApiException e) {
             return false;
         }

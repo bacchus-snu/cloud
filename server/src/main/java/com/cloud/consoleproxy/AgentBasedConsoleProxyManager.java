@@ -16,6 +16,7 @@
 // under the License.
 package com.cloud.consoleproxy;
 
+import java.util.List;
 import java.util.Map;
 
 import javax.inject.Inject;
@@ -34,6 +35,7 @@ import com.cloud.agent.api.StartupProxyCommand;
 import com.cloud.deploy.DeploymentPlanner;
 import com.cloud.host.HostVO;
 import com.cloud.host.dao.HostDao;
+import com.cloud.host.dao.HostDetailsDao;
 import com.cloud.info.ConsoleProxyInfo;
 import com.cloud.server.ManagementServer;
 import com.cloud.utils.NumbersUtil;
@@ -52,6 +54,8 @@ public class AgentBasedConsoleProxyManager extends ManagerBase implements Consol
     @Inject
     protected HostDao _hostDao;
     @Inject
+    protected HostDetailsDao hostDetailsDao;
+    @Inject
     protected HostPodDao podDao;
     @Inject
     protected UserVmDao _userVmDao;
@@ -59,6 +63,7 @@ public class AgentBasedConsoleProxyManager extends ManagerBase implements Consol
     @Inject
     private VMInstanceDao _instanceDao;
     private ConsoleProxyListener _listener;
+    private AgentHook agentHook;
     protected int _consoleProxyUrlPort = ConsoleProxyManager.DEFAULT_PROXY_URL_PORT;
     protected int _consoleProxyPort = ConsoleProxyManager.DEFAULT_PROXY_VNC_PORT;
     protected boolean _sslEnabled = false;
@@ -82,9 +87,9 @@ public class AgentBasedConsoleProxyManager extends ManagerBase implements Consol
 
     public class AgentBasedAgentHook extends AgentHookBase {
 
-        public AgentBasedAgentHook(VMInstanceDao instanceDao, HostDao hostDao, ConfigurationDao cfgDao, KeystoreManager ksMgr,
+        public AgentBasedAgentHook(VMInstanceDao instanceDao, HostDao hostDao, HostDetailsDao hostDetailsDao, ConfigurationDao cfgDao, KeystoreManager ksMgr,
                                    AgentManager agentMgr, KeysManager keysMgr, ConsoleAccessManager consoleAccessManager) {
-            super(instanceDao, hostDao, cfgDao, ksMgr, agentMgr, keysMgr, consoleAccessManager);
+            super(instanceDao, hostDao, hostDetailsDao, cfgDao, ksMgr, agentMgr, keysMgr, consoleAccessManager);
         }
 
         @Override
@@ -127,8 +132,9 @@ public class AgentBasedConsoleProxyManager extends ManagerBase implements Consol
 
         _consoleProxyUrlDomain = ConsoleProxyUrlDomain.value();
 
-        _listener = new ConsoleProxyListener(new AgentBasedAgentHook(_instanceDao, _hostDao, _configDao, _ksMgr,
-                _agentMgr, _keysMgr, consoleAccessManager));
+        agentHook = new AgentBasedAgentHook(_instanceDao, _hostDao, hostDetailsDao, _configDao, _ksMgr,
+                _agentMgr, _keysMgr, consoleAccessManager);
+        _listener = new ConsoleProxyListener(agentHook);
         _agentMgr.registerForHostEvents(_listener, true, true, false);
 
         if (logger.isInfoEnabled()) {
@@ -216,6 +222,16 @@ public class AgentBasedConsoleProxyManager extends ManagerBase implements Consol
 
     @Override
     public void resumeLastManagementState() {
+    }
+
+    @Override
+    public List<String> propagateServerCertificate() {
+        return agentHook.startAgentHttpHandlers();
+    }
+
+    @Override
+    public String getServerCertificateFingerprint(long dataCenterId) {
+        return AgentHookBase.isServerCertificateSent(dataCenterId) ? _ksMgr.getCertificateFingerprint(ConsoleProxyManager.CERTIFICATE_NAME) : null;
     }
 
     @Override

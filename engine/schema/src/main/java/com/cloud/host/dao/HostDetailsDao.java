@@ -29,6 +29,11 @@ public interface HostDetailsDao extends GenericDao<DetailVO, Long> {
 
     DetailVO findDetail(long hostId, String name);
 
+    /**
+     * Sets the host's detail to the value, or removes it when the value is null.
+     */
+    void setDetail(long hostId, String name, String value);
+
     void deleteDetails(long hostId);
 
     List<DetailVO> findByName(String name);

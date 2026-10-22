@@ -69,4 +69,10 @@ public interface KeystoreManager extends Manager {
     void saveCertificate(String name, String certificate, Integer index, String domainSuffix);
 
     Certificates getCertificates(String name);
+
+    /**
+     * @return the SHA-256 fingerprint of the stored certificate, as colon-separated upper-case hex, or null when none
+     * is stored or it cannot be read
+     */
+    String getCertificateFingerprint(String name);
 }

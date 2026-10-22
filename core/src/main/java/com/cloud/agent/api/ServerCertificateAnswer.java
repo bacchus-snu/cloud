@@ -1,3 +1,4 @@
+//
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -14,18 +15,29 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-package com.cloud.consoleproxy;
+//
 
-import java.io.IOException;
+package com.cloud.agent.api;
 
-import javax.net.ssl.SSLServerSocket;
+/**
+ * Answers a command that loads a system VM's server certificate with the certificate its server presents afterwards.
+ */
+public class ServerCertificateAnswer extends Answer {
+    private String fingerprint;
 
-import com.sun.net.httpserver.HttpServer;
+    protected ServerCertificateAnswer() {
+    }
 
-public interface ConsoleProxyServerFactory {
-    void init(byte[] ksBits, String ksPassword);
+    public ServerCertificateAnswer(Command command, boolean success, String details, String fingerprint) {
+        super(command, success, details);
+        this.fingerprint = fingerprint;
+    }
 
-    HttpServer createHttpServerInstance(int port) throws IOException;
-
-    SSLServerSocket createSSLServerSocket(int port) throws IOException;
+    /**
+     * @return the SHA-256 fingerprint of the certificate the server presents to new connections, as colon-separated
+     * upper-case hex, or null when it presents none or it is not known
+     */
+    public String getFingerprint() {
+        return fingerprint;
+    }
 }

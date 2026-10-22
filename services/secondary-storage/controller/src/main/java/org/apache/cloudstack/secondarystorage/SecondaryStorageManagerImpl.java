@@ -63,11 +63,13 @@ import com.cloud.agent.api.Answer;
 import com.cloud.agent.api.Command;
 import com.cloud.agent.api.RebootCommand;
 import com.cloud.agent.api.SecStorageFirewallCfgCommand;
+import com.cloud.agent.api.SecStorageCertificateCommand;
 import com.cloud.agent.api.SecStorageSetupAnswer;
 import com.cloud.agent.api.SecStorageSetupCommand;
 import com.cloud.agent.api.SecStorageVMSetupCommand;
 import com.cloud.agent.api.StartupCommand;
 import com.cloud.agent.api.StartupSecondaryStorageCommand;
+import com.cloud.agent.api.ServerCertificateAnswer;
 import com.cloud.agent.api.check.CheckSshAnswer;
 import com.cloud.agent.api.check.CheckSshCommand;
 import com.cloud.agent.api.to.NfsTO;
@@ -96,6 +98,7 @@ import com.cloud.host.Host;
 import com.cloud.host.HostVO;
 import com.cloud.host.Status;
 import com.cloud.host.dao.HostDao;
+import com.cloud.host.dao.HostDetailsDao;
 import com.cloud.hypervisor.Hypervisor.HypervisorType;
 import com.cloud.info.RunningHostCountInfo;
 import com.cloud.info.RunningHostInfoAgregator;
@@ -198,6 +201,8 @@ public class SecondaryStorageManagerImpl extends ManagerBase implements Secondar
     private VMTemplateDao _templateDao;
     @Inject
     private HostDao _hostDao;
+    @Inject
+    private HostDetailsDao hostDetailsDao;
     @Inject
     private StoragePoolHostDao _storagePoolHostDao;
     @Inject
@@ -343,6 +348,7 @@ public class SecondaryStorageManagerImpl extends ManagerBase implements Secondar
                 Answer answer = _agentMgr.easySend(ssHostId, setupCmd);
                 if (answer != null && answer.getResult()) {
                     SecStorageSetupAnswer an = (SecStorageSetupAnswer)answer;
+                    hostDetailsDao.setDetail(ssHostId, Host.HOST_SERVER_CERTIFICATE_FINGERPRINT, an.getCertificateFingerprint());
                     if (an.get_dir() != null) {
                         ImageStoreVO svo = _imageStoreDao.findById(ssStore.getId());
                         svo.setParent(an.get_dir());
@@ -1495,6 +1501,33 @@ public class SecondaryStorageManagerImpl extends ManagerBase implements Secondar
     @Override
     public DeleteHostAnswer deleteHost(HostVO host, boolean isForced, boolean isForceDeleteStorage) throws UnableDeleteHostException {
         return null;
+    }
+
+    @Override
+    public List<String> propagateServerCertificate() {
+        List<String> unconfirmed = new ArrayList<>();
+        if (!_useSSlCopy) {
+            return unconfirmed;
+        }
+        KeystoreManager.Certificates certs = _keystoreMgr.getCertificates(ConsoleProxyManager.CERTIFICATE_NAME);
+        String stored = _keystoreMgr.getCertificateFingerprint(ConsoleProxyManager.CERTIFICATE_NAME);
+        for (HostVO ssvmHost : listUpAndConnectingSecondaryStorageVmHost(null)) {
+            Answer answer = _agentMgr.easySend(ssvmHost.getId(), new SecStorageCertificateCommand(certs));
+            String fingerprint = answer instanceof ServerCertificateAnswer ? ((ServerCertificateAnswer) answer).getFingerprint() : null;
+            if (answer != null) {
+                hostDetailsDao.setDetail(ssvmHost.getId(), Host.HOST_SERVER_CERTIFICATE_FINGERPRINT, fingerprint);
+            }
+            if (stored == null || !stored.equals(fingerprint)) {
+                logger.warn("Secondary storage VM {} did not confirm serving the server certificate: {}", ssvmHost, answer == null ? "no answer" : answer.getDetails());
+                unconfirmed.add(ssvmHost.getName());
+            }
+        }
+        return unconfirmed;
+    }
+
+    @Override
+    public String getServerCertificateFingerprint(long dataCenterId) {
+        return _useSSlCopy ? _keystoreMgr.getCertificateFingerprint(ConsoleProxyManager.CERTIFICATE_NAME) : null;
     }
 
     @Override

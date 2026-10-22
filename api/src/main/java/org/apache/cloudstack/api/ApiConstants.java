@@ -589,6 +589,7 @@ public class ApiConstants {
     public static final String COMPRESSION_STATUS = "compressionstatus";
     public static final String VALIDATION_STATUS = "validationstatus";
     public static final String STORAGE_TYPE = "storagetype";
+    public static final String STORED_FINGERPRINT = "storedfingerprint";
     public static final String STORAGE_POLICY = "storagepolicy";
     public static final String STORAGE_MOTION_ENABLED = "storagemotionenabled";
     public static final String STORAGE_CAPABILITIES = "storagecapabilities";

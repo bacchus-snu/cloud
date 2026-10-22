@@ -878,6 +878,17 @@ public class ConfigurationManagerImplTest {
     }
 
     @Test
+    public void theConsoleWebSocketPortIsAPort() {
+        String name = ConsoleProxyManager.NoVncConsoleWebSocketPort.key();
+        Assert.assertNull(configurationManagerImplSpy.validateValueRange(name, "443", Integer.class, null));
+        Assert.assertNull(configurationManagerImplSpy.validateValueRange(name, "65535", Integer.class, null));
+        Assert.assertNotNull(configurationManagerImplSpy.validateValueRange(name, "0", Integer.class, null));
+        Assert.assertNotNull(configurationManagerImplSpy.validateValueRange(name, "65536", Integer.class, null));
+        Assert.assertNotNull(configurationManagerImplSpy.validateValueRange(name, String.valueOf(ConsoleProxyManager.DEFAULT_PROXY_CMD_PORT), Integer.class, null));
+        Assert.assertNotNull(configurationManagerImplSpy.validateValueRange(name, String.valueOf(ConsoleProxyManager.DEFAULT_PROXY_SSH_PORT), Integer.class, null));
+    }
+
+    @Test
     public void validateValueRangeTestReturnsNotNullWhenConfigKeyHasRangeAndValueIsInvalid() {
         Assert.assertNotNull(configurationManagerImplSpy.validateValueRange(NetworkModel.MACIdentifier.key(), "-1", Integer.class, null));
     }
@@ -1081,7 +1092,8 @@ public class ConfigurationManagerImplTest {
             Assert.assertTrue(name, declared.contains(name));
         }
         for (String name : List.of("user.2fa.issuer", "ca.framework.cert.expiry.alert.period", "ca.framework.background.task.delay", "saml2.enabled",
-                "ldap.provider", "oauth2.enabled", "ca.plugin.root.auth.strictness")) {
+                "ldap.provider", "oauth2.enabled", "ca.plugin.root.auth.strictness", ConsoleProxyManager.NoVncConsoleWebSocketPort.key(),
+                ConsoleProxyManager.ConsoleProxyServiceManagementState.key())) {
             Assert.assertFalse(name, declared.contains(name));
         }
     }

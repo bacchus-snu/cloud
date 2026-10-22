@@ -17,9 +17,15 @@
 package org.apache.cloudstack.framework.security.keystore;
 
 import java.io.IOException;
+import java.security.GeneralSecurityException;
+import java.security.Key;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
+import java.security.PrivateKey;
+import java.security.SecureRandom;
+import java.security.Signature;
+import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
 import java.security.spec.InvalidKeySpecException;
 import java.util.ArrayList;
@@ -59,7 +65,13 @@ public class KeystoreManagerImpl extends ManagerBase implements KeystoreManager 
             byte[] ksBits = CertificateHelper.buildAndSaveKeystore(domainSuffix, certificate, getKeyContent(key), ksPassword);
             KeyStore ks = CertificateHelper.loadKeystore(ksBits, ksPassword);
             if (ks != null) {
-                return new Pair<>(true, errMsg);
+                Key privateKey = ks.getKey(domainSuffix, ksPassword.toCharArray());
+                if (privateKey instanceof PrivateKey && keyMatchesCertificate((PrivateKey)privateKey, ks.getCertificate(domainSuffix))) {
+                    return new Pair<>(true, errMsg);
+                }
+                errMsg = String.format("The private key does not belong to the certificate for domain: %s", domainSuffix);
+                logger.error(errMsg);
+                return new Pair<>(false, errMsg);
             }
             errMsg = String.format("Unable to construct keystore for domain: %s", domainSuffix);
             logger.error(errMsg);
@@ -145,6 +157,33 @@ public class KeystoreManagerImpl extends ManagerBase implements KeystoreManager 
         }
         Certificates certs = new Certificates(prvKey, prvCert, certChain, rootCert);
         return certs;
+    }
+
+    @Override
+    public String getCertificateFingerprint(String name) {
+        KeystoreVO ksVo = _ksDao.findByName(name);
+        if (ksVo == null) {
+            return null;
+        }
+        try {
+            return CertificateHelper.generateFingerPrint(CertificateHelper.buildCertificate(ksVo.getCertificate()));
+        } catch (CertificateException e) {
+            logger.warn("Unable to read the stored certificate {} due to {}", name, e.getMessage());
+            return null;
+        }
+    }
+
+    private static boolean keyMatchesCertificate(PrivateKey privateKey, Certificate certificate) throws GeneralSecurityException {
+        byte[] nonce = new byte[32];
+        new SecureRandom().nextBytes(nonce);
+        Signature signer = Signature.getInstance("SHA256withRSA");
+        signer.initSign(privateKey);
+        signer.update(nonce);
+        byte[] signature = signer.sign();
+        Signature verifier = Signature.getInstance("SHA256withRSA");
+        verifier.initVerify(certificate.getPublicKey());
+        verifier.update(nonce);
+        return verifier.verify(signature);
     }
 
     private static String getKeyContent(String key) {

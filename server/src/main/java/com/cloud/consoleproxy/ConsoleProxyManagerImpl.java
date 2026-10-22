@@ -37,6 +37,7 @@ import org.apache.cloudstack.consoleproxy.ConsoleAccessManager;
 import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.engine.orchestration.service.NetworkOrchestrationService;
 import org.apache.cloudstack.framework.ca.Certificate;
+import org.apache.cloudstack.framework.config.ConfigDepot;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.Configurable;
 import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
@@ -50,6 +51,7 @@ import org.apache.cloudstack.storage.datastore.db.TemplateDataStoreDao;
 import org.apache.cloudstack.userdata.UserDataManager;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.BooleanUtils;
+import org.apache.commons.lang3.EnumUtils;
 
 import com.cloud.agent.AgentManager;
 import com.cloud.agent.api.Answer;
@@ -85,6 +87,7 @@ import com.cloud.host.Host.Type;
 import com.cloud.host.HostVO;
 import com.cloud.host.Status;
 import com.cloud.host.dao.HostDao;
+import com.cloud.host.dao.HostDetailsDao;
 import com.cloud.hypervisor.Hypervisor.HypervisorType;
 import com.cloud.info.ConsoleProxyConnectionInfo;
 import com.cloud.info.ConsoleProxyInfo;
@@ -190,6 +193,8 @@ public class ConsoleProxyManagerImpl extends ManagerBase implements ConsoleProxy
     @Inject
     private HostDao hostDao;
     @Inject
+    private HostDetailsDao hostDetailsDao;
+    @Inject
     private ConfigurationDao configurationDao;
     @Inject
     private VMInstanceDao vmInstanceDao;
@@ -233,6 +238,7 @@ public class ConsoleProxyManagerImpl extends ManagerBase implements ConsoleProxy
     private UserDataManager userDataManager;
 
     private ConsoleProxyListener consoleProxyListener;
+    private AgentHook agentHook;
 
     private long capacityScanInterval = DEFAULT_CAPACITY_SCAN_INTERVAL_IN_MILLISECONDS;
 
@@ -254,6 +260,8 @@ public class ConsoleProxyManagerImpl extends ManagerBase implements ConsoleProxy
     protected Set<State> availableVmStateOnAssignProxy = Set.of(State.Starting, State.Running, State.Stopping, State.Migrating, State.BackingUp, State.BackupError);
 
     @Inject
+    private ConfigDepot configDepot;
+    @Inject
     private KeystoreDao _ksDao;
     @Inject
     private KeystoreManager _ksMgr;
@@ -262,9 +270,9 @@ public class ConsoleProxyManagerImpl extends ManagerBase implements ConsoleProxy
 
     public class VmBasedAgentHook extends AgentHookBase {
 
-        public VmBasedAgentHook(VMInstanceDao instanceDao, HostDao hostDao, ConfigurationDao cfgDao, KeystoreManager ksMgr,
+        public VmBasedAgentHook(VMInstanceDao instanceDao, HostDao hostDao, HostDetailsDao hostDetailsDao, ConfigurationDao cfgDao, KeystoreManager ksMgr,
                                 AgentManager agentMgr, KeysManager keysMgr, ConsoleAccessManager consoleAccessManager) {
-            super(instanceDao, hostDao, cfgDao, ksMgr, agentMgr, keysMgr, consoleAccessManager);
+            super(instanceDao, hostDao, hostDetailsDao, cfgDao, ksMgr, agentMgr, keysMgr, consoleAccessManager);
         }
 
         @Override
@@ -993,13 +1001,17 @@ public class ConsoleProxyManagerImpl extends ManagerBase implements ConsoleProxy
             }
 
             if (lastState != state) {
+                final String recordedLastState = ConsoleProxyManager.getManagementLastStateToRecord(lastState.toString(), state.toString());
                 Transaction.execute(new TransactionCallbackNoReturn() {
                     @Override
                     public void doInTransactionWithoutResult(TransactionStatus status) {
-                        configurationDao.update(ConsoleProxyManagementLastState.key(), ConsoleProxyManagementLastState.category(), lastState.toString());
+                        if (recordedLastState != null) {
+                            configurationDao.update(ConsoleProxyManagementLastState.key(), ConsoleProxyManagementLastState.category(), recordedLastState);
+                        }
                         configurationDao.update(ConsoleProxyServiceManagementState.key(), ConsoleProxyServiceManagementState.category(), state.toString());
                     }
                 });
+                invalidateManagementStateCache();
             }
         } catch (Exception e) {
             logger.error(String.format("Unable to set console proxy management state to [%s] due to [%s].", state, e.getMessage()), e);
@@ -1008,19 +1020,22 @@ public class ConsoleProxyManagerImpl extends ManagerBase implements ConsoleProxy
 
     @Override
     public ConsoleProxyManagementState getManagementState() {
-        String configKey = ConsoleProxyServiceManagementState.key();
-        String value = ConsoleProxyServiceManagementState.value();
+        return parseManagementState(ConsoleProxyServiceManagementState);
+    }
 
-        if (value != null) {
-            ConsoleProxyManagementState state = ConsoleProxyManagementState.valueOf(value);
-
-            if (state != null) {
-                return state;
-            }
+    private ConsoleProxyManagementState parseManagementState(ConfigKey<String> configKey) {
+        String value = configKey.value();
+        if (EnumUtils.isValidEnum(ConsoleProxyManagementState.class, value)) {
+            return ConsoleProxyManagementState.valueOf(value);
         }
 
-        logger.error(String.format("Value [%s] set in global configuration [%s] is not a valid console proxy management state.", value, configKey));
+        logger.error(String.format("Value [%s] set in global configuration [%s] is not a valid console proxy management state.", value, configKey.key()));
         return null;
+    }
+
+    private void invalidateManagementStateCache() {
+        configDepot.invalidateConfigCache(ConsoleProxyServiceManagementState.key(), ConfigKey.Scope.Global, null);
+        configDepot.invalidateConfigCache(ConsoleProxyManagementLastState.key(), ConfigKey.Scope.Global, null);
     }
 
     @Override
@@ -1029,12 +1044,13 @@ public class ConsoleProxyManagerImpl extends ManagerBase implements ConsoleProxy
         try {
             ConsoleProxyManagementState state = getManagementState();
             ConsoleProxyManagementState lastState = getLastManagementState();
-            if (lastState == null) {
-                return;
+            if (lastState == null || lastState == ConsoleProxyManagementState.ResetSuspending) {
+                lastState = ConsoleProxyManagementState.valueOf(ConsoleProxyManagementLastState.defaultValue());
             }
 
             if (lastState != state) {
                 configurationDao.update(ConsoleProxyServiceManagementState.key(), ConsoleProxyServiceManagementState.category(), lastState.toString());
+                invalidateManagementStateCache();
             }
         } catch (Exception e) {
             logger.error(String.format("Unable to resume last management state due to [%s].", e.getMessage()), e);
@@ -1042,19 +1058,17 @@ public class ConsoleProxyManagerImpl extends ManagerBase implements ConsoleProxy
     }
 
     private ConsoleProxyManagementState getLastManagementState() {
-        String configKey = ConsoleProxyManagementLastState.key();
-        String value = ConsoleProxyManagementLastState.value();
+        return parseManagementState(ConsoleProxyManagementLastState);
+    }
 
-        if (value != null) {
-            ConsoleProxyManagementState state = ConsoleProxyManagementState.valueOf(value);
+    @Override
+    public List<String> propagateServerCertificate() {
+        return agentHook.startAgentHttpHandlers();
+    }
 
-            if (state != null) {
-                return state;
-            }
-        }
-
-        logger.error(String.format("Value [%s] set in global configuration [%s] is not a valid console proxy management state.", value, configKey));
-        return null;
+    @Override
+    public String getServerCertificateFingerprint(long dataCenterId) {
+        return AgentHookBase.isServerCertificateSent(dataCenterId) ? _ksMgr.getCertificateFingerprint(ConsoleProxyManager.CERTIFICATE_NAME) : null;
     }
 
     @Override
@@ -1117,7 +1131,7 @@ public class ConsoleProxyManagerImpl extends ManagerBase implements ConsoleProxy
 
     @Override
     public int getVncPort(Long dataCenterId) {
-        return isSslEnabled(dataCenterId) && _ksDao.findByName(ConsoleProxyManager.CERTIFICATE_NAME) != null ? 8443 : 8080;
+        return isSslEnabled(dataCenterId) && _ksDao.findByName(ConsoleProxyManager.CERTIFICATE_NAME) != null ? NoVncConsoleWebSocketPort.valueIn(dataCenterId) : 8080;
     }
 
     private String getAllocProxyLockName() {
@@ -1155,8 +1169,9 @@ public class ConsoleProxyManagerImpl extends ManagerBase implements ConsoleProxy
         value = agentMgrConfigs.get("port");
         managementPort = NumbersUtil.parseInt(value, 8250);
 
-        consoleProxyListener = new ConsoleProxyListener(new VmBasedAgentHook(vmInstanceDao, hostDao, configurationDao,
-                _ksMgr, agentManager, keysManager, consoleAccessManager));
+        agentHook = new VmBasedAgentHook(vmInstanceDao, hostDao, hostDetailsDao, configurationDao,
+                _ksMgr, agentManager, keysManager, consoleAccessManager);
+        consoleProxyListener = new ConsoleProxyListener(agentHook);
         agentManager.registerForHostEvents(consoleProxyListener, true, true, false);
 
         virtualMachineManager.registerGuru(VirtualMachine.Type.ConsoleProxy, this);
@@ -1335,7 +1350,7 @@ public class ConsoleProxyManagerImpl extends ManagerBase implements ConsoleProxy
         if(profile.getHypervisorType() == HypervisorType.Hyperv) {
             controlNic = managementNic;
         }
-        CheckSshCommand check = new CheckSshCommand(profile.getInstanceName(), controlNic.getIPv4Address(), 3922);
+        CheckSshCommand check = new CheckSshCommand(profile.getInstanceName(), controlNic.getIPv4Address(), DEFAULT_PROXY_SSH_PORT);
         cmds.addCommand("checkSsh", check);
 
         return true;
@@ -1585,7 +1600,7 @@ public class ConsoleProxyManagerImpl extends ManagerBase implements ConsoleProxy
         return new ConfigKey<?>[] {ConsoleProxySslEnabled, NoVncConsoleDefault, NoVncConsoleSourceIpCheckEnabled, ConsoleProxyServiceOffering,
                                    ConsoleProxyCapacityStandby, ConsoleProxyCapacityScanInterval, ConsoleProxyRestart, ConsoleProxyUrlDomain, ConsoleProxySessionMax, ConsoleProxySessionTimeout, ConsoleProxyDisableRpFilter, ConsoleProxyLaunchMax,
                                    ConsoleProxyManagementLastState, ConsoleProxyServiceManagementState, NoVncConsoleShowDot,
-                                   ConsoleProxyVmUserData};
+                                   ConsoleProxyVmUserData, NoVncConsoleWebSocketPort};
     }
 
     protected ConsoleProxyStatus parseJsonToConsoleProxyStatus(String json) throws JsonParseException {

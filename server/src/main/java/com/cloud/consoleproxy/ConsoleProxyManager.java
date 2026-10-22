@@ -17,6 +17,7 @@
 package com.cloud.consoleproxy;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -40,6 +41,7 @@ public interface ConsoleProxyManager extends Manager, ConsoleProxyService {
     int DEFAULT_PROXY_VM_CPUMHZ = 500;                // 500 MHz
 
     int DEFAULT_PROXY_CMD_PORT = 8001;
+    int DEFAULT_PROXY_SSH_PORT = 3922;
     int DEFAULT_PROXY_VNC_PORT = 0;
     int DEFAULT_PROXY_URL_PORT = 80;
     int DEFAULT_PROXY_SESSION_TIMEOUT = 300000;        // 5 minutes
@@ -55,6 +57,13 @@ public interface ConsoleProxyManager extends Manager, ConsoleProxyService {
 
     ConfigKey<Boolean> NoVncConsoleSourceIpCheckEnabled = new ConfigKey<>(ConfigKey.CATEGORY_ADVANCED, Boolean.class, "novnc.console.sourceip.check.enabled", "false",
         "If true, The source IP to access novnc console must be same as the IP in request to management server for console URL. Needs to reconnect CPVM to management server when this changes (via restart CPVM, or management server, or cloud service in CPVM)", false);
+
+    ConfigKey<Integer> NoVncConsoleWebSocketPort = new ConfigKey<>(Integer.class, "novnc.console.websocket.port", ConfigKey.CATEGORY_ADVANCED, "8443",
+            "Port of the noVNC console WebSocket when console proxy SSL is enabled (consoleproxy.sslEnabled), a console proxy URL domain is set "
+                    + "(consoleproxy.url.domain) and a custom certificate is stored (uploadCustomCertificate); otherwise the WebSocket is plain HTTP on 8080. "
+                    + "The console page port (443) serves the page and the WebSocket on one port. A console proxy listens on the port it started with, "
+                    + "so restart the console proxies to apply a change.",
+            true, ConfigKey.Scope.Zone, null);
 
     ConfigKey<Boolean> NoVncConsoleShowDot = new ConfigKey<>(Boolean.class, "novnc.console.show.dot", ConfigKey.CATEGORY_ADVANCED, "true",
             "If true, in noVNC console a dot cursor will be shown when the remote server provides no local cursor, or provides a fully-transparent (invisible) cursor.",
@@ -89,10 +98,11 @@ public interface ConsoleProxyManager extends Manager, ConsoleProxyService {
 
     String consoleProxyManagementStates = Arrays.stream(com.cloud.consoleproxy.ConsoleProxyManagementState.values()).map(Enum::name).collect(Collectors.joining(","));
     ConfigKey<String> ConsoleProxyServiceManagementState = new ConfigKey<String>(ConfigKey.CATEGORY_ADVANCED, String.class, "consoleproxy.management.state", com.cloud.consoleproxy.ConsoleProxyManagementState.Auto.toString(),
-            "console proxy service management state", false, ConfigKey.Kind.Select, consoleProxyManagementStates);
+            "console proxy service management state. ResetSuspending is transient: the running console proxies are stopped, then the state returns to consoleproxy.management.state.last",
+            true, ConfigKey.Kind.Select, consoleProxyManagementStates);
 
     ConfigKey<String> ConsoleProxyManagementLastState = new ConfigKey<String>(ConfigKey.CATEGORY_ADVANCED, String.class, "consoleproxy.management.state.last", com.cloud.consoleproxy.ConsoleProxyManagementState.Auto.toString(),
-            "last console proxy service management state", false, ConfigKey.Kind.Select, consoleProxyManagementStates);
+            "last console proxy service management state", true, ConfigKey.Kind.Select, consoleProxyManagementStates);
 
     ConfigKey<String> ConsoleProxyVmUserData = new ConfigKey<>(String.class, "console.proxy.vm.userdata",
             ConfigKey.CATEGORY_ADVANCED, "",
@@ -105,6 +115,31 @@ public interface ConsoleProxyManager extends Manager, ConsoleProxyService {
     ConsoleProxyManagementState getManagementState();
 
     void resumeLastManagementState();
+
+    /**
+     * Sends the stored server certificate to every connected console proxy that serves it, which presents it to new
+     * connections without a restart; established sessions keep the certificate they began with.
+     *
+     * @return the names of the console proxies that did not confirm serving it
+     */
+    List<String> propagateServerCertificate();
+
+    /**
+     * @return the SHA-256 fingerprint of the stored server certificate that the console proxies of the zone serve, or
+     * null when they serve none
+     */
+    String getServerCertificateFingerprint(long dataCenterId);
+
+    /**
+     * A reset returns to the state it replaced, so the replaced state is recorded as the last one when a reset begins; a
+     * reset itself is never the state to return to.
+     *
+     * @return the state to record as the last one when the management state changes from replaced to state, or null
+     */
+    static String getManagementLastStateToRecord(String replaced, String state) {
+        String reset = ConsoleProxyManagementState.ResetSuspending.name();
+        return reset.equals(state) && replaced != null && !reset.equals(replaced) ? replaced : null;
+    }
 
     ConsoleProxyVO startProxy(long proxyVmId, boolean ignoreRestartSetting);
 

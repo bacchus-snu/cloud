@@ -62,6 +62,18 @@ public class HostDetailsDaoImpl extends GenericDaoBase<DetailVO, Long> implement
     }
 
     @Override
+    public void setDetail(long hostId, String name, String value) {
+        if (value != null) {
+            persist(hostId, Map.of(name, value));
+            return;
+        }
+        DetailVO detail = findDetail(hostId, name);
+        if (detail != null) {
+            remove(detail.getId());
+        }
+    }
+
+    @Override
     public DetailVO findDetail(long hostId, String name) {
         SearchCriteria<DetailVO> sc = DetailSearch.create();
         sc.setParameters("hostId", hostId);

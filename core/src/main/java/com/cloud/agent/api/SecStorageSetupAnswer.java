@@ -21,6 +21,7 @@ package com.cloud.agent.api;
 
 public class SecStorageSetupAnswer extends Answer {
     private String _dir;
+    private String certificateFingerprint;
 
     protected SecStorageSetupAnswer() {
     }
@@ -32,6 +33,17 @@ public class SecStorageSetupAnswer extends Answer {
 
     public String get_dir() {
         return _dir;
+    }
+
+    /**
+     * @see ServerCertificateAnswer#getFingerprint()
+     */
+    public String getCertificateFingerprint() {
+        return certificateFingerprint;
+    }
+
+    public void setCertificateFingerprint(String certificateFingerprint) {
+        this.certificateFingerprint = certificateFingerprint;
     }
 
 }

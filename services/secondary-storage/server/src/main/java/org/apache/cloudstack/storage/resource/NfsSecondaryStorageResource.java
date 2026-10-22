@@ -44,6 +44,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.NoSuchAlgorithmException;
+import java.security.cert.CertificateException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -121,12 +122,14 @@ import com.cloud.agent.api.PingCommand;
 import com.cloud.agent.api.PingStorageCommand;
 import com.cloud.agent.api.ReadyAnswer;
 import com.cloud.agent.api.ReadyCommand;
+import com.cloud.agent.api.SecStorageCertificateCommand;
 import com.cloud.agent.api.SecStorageFirewallCfgCommand;
 import com.cloud.agent.api.SecStorageFirewallCfgCommand.PortConfig;
 import com.cloud.agent.api.SecStorageSetupAnswer;
 import com.cloud.agent.api.SecStorageSetupCommand;
 import com.cloud.agent.api.UnmountImageStoreCommand;
 import com.cloud.agent.api.SecStorageVMSetupCommand;
+import com.cloud.agent.api.ServerCertificateAnswer;
 import com.cloud.agent.api.StartupCommand;
 import com.cloud.agent.api.StartupSecondaryStorageCommand;
 import com.cloud.agent.api.storage.CreateDatadiskTemplateAnswer;
@@ -184,6 +187,7 @@ import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.utils.net.NetUtils;
 import com.cloud.utils.script.OutputInterpreter;
 import com.cloud.utils.script.Script;
+import com.cloud.utils.security.CertificateHelper;
 import com.cloud.utils.storage.S3.S3Utils;
 import com.cloud.vm.SecondaryStorageVm;
 import com.google.common.collect.Maps;
@@ -248,6 +252,8 @@ public class NfsSecondaryStorageResource extends ServerResourceBase implements S
     protected DownloadManager _dlMgr;
     protected UploadManager _upldMgr;
     private String _configSslScr;
+    /** The certificate file the web server is configured with by config_ssl.sh. */
+    protected String webServerCertificatePath = "/etc/ssl/certs/cert_apache.crt";
     private String _configAuthScr;
     private String _configIpFirewallScr;
     private String _publicIp;
@@ -318,6 +324,8 @@ public class NfsSecondaryStorageResource extends ServerResourceBase implements S
             return execute((SecStorageVMSetupCommand)cmd);
         } else if (cmd instanceof SecStorageSetupCommand) {
             return execute((SecStorageSetupCommand)cmd);
+        } else if (cmd instanceof SecStorageCertificateCommand) {
+            return execute((SecStorageCertificateCommand)cmd);
         } else if (cmd instanceof UnmountImageStoreCommand) {
             return execute((UnmountImageStoreCommand)cmd);
         } else if (cmd instanceof ComputeChecksumCommand) {
@@ -1911,9 +1919,12 @@ public class NfsSecondaryStorageResource extends ServerResourceBase implements S
         return new Answer(cmd, true, checksum);
     }
 
-    private void configCerts(KeystoreManager.Certificates certs) {
+    /**
+     * @return null when the web server serves the certificates, else what went wrong
+     */
+    private String configCerts(KeystoreManager.Certificates certs) {
         if (certs == null) {
-            configureSSL();
+            return configureSSL();
         } else {
             String prvKey = certs.getPrivKey();
             String pubCert = certs.getPrivCert();
@@ -1960,7 +1971,7 @@ public class NfsSecondaryStorageResource extends ServerResourceBase implements S
                     }
                 }
 
-                configureSSL(prvkeyPath, pubCertFilePath, certChainFilePath, rootCACertFilePath);
+                String result = configureSSL(prvkeyPath, pubCertFilePath, certChainFilePath, rootCACertFilePath);
 
                 prvKeyFile.delete();
                 pubCertFile.delete();
@@ -1970,10 +1981,32 @@ public class NfsSecondaryStorageResource extends ServerResourceBase implements S
                 if (rootCACertFile != null) {
                     rootCACertFile.delete();
                 }
-
+                return result;
             } catch (IOException e) {
                 logger.debug("Failed to config ssl: " + e.toString());
+                return e.toString();
             }
+        }
+    }
+
+    protected Answer execute(SecStorageCertificateCommand cmd) {
+        if (!_inSystemVM) {
+            return new ServerCertificateAnswer(cmd, true, null, null);
+        }
+        String result = configCerts(cmd.getCerts());
+        if (result != null) {
+            return new ServerCertificateAnswer(cmd, false, "Unable to configure the web server with the certificate: " + result, null);
+        }
+        return new ServerCertificateAnswer(cmd, true, null, getWebServerCertificateFingerprint());
+    }
+
+    protected String getWebServerCertificateFingerprint() {
+        try {
+            String certificate = new String(Files.readAllBytes(Paths.get(webServerCertificatePath)), StringUtils.getPreferredCharset());
+            return CertificateHelper.generateFingerPrint(CertificateHelper.buildCertificate(certificate));
+        } catch (IOException | CertificateException e) {
+            logger.warn("Unable to read the web server certificate " + webServerCertificatePath + " due to " + e.getMessage());
+            return null;
         }
     }
 
@@ -1993,10 +2026,12 @@ public class NfsSecondaryStorageResource extends ServerResourceBase implements S
 
                 String dir = mountUri(uri, cmd.getNfsVersion());
 
-                configCerts(cmd.getCerts());
+                String sslResult = configCerts(cmd.getCerts());
 
                 nfsIps.add(nfsHostIp);
-                answer = new SecStorageSetupAnswer(dir);
+                SecStorageSetupAnswer setupAnswer = new SecStorageSetupAnswer(dir);
+                setupAnswer.setCertificateFingerprint(sslResult == null ? getWebServerCertificateFingerprint() : null);
+                answer = setupAnswer;
             } catch (Exception e) {
                 String msg = "GetRootDir for " + secUrl + " failed due to " + e.toString();
                 logger.error(msg);
@@ -3049,9 +3084,9 @@ public class NfsSecondaryStorageResource extends ServerResourceBase implements S
         }
     }
 
-    private void configureSSL() {
+    private String configureSSL() {
         if (!_inSystemVM) {
-            return;
+            return null;
         }
         Script command = new Script(_configSslScr);
         command.add("-i", _publicIp);
@@ -3060,11 +3095,12 @@ public class NfsSecondaryStorageResource extends ServerResourceBase implements S
         if (result != null) {
             logger.warn("Unable to configure httpd to use ssl");
         }
+        return result;
     }
 
-    private void configureSSL(String prvkeyPath, String prvCertPath, String certChainPath, String rootCACert) {
+    protected String configureSSL(String prvkeyPath, String prvCertPath, String certChainPath, String rootCACert) {
         if (!_inSystemVM) {
-            return;
+            return null;
         }
         Script command = new Script(_configSslScr);
         command.add("-i", _publicIp);
@@ -3081,6 +3117,7 @@ public class NfsSecondaryStorageResource extends ServerResourceBase implements S
         if (result != null) {
             logger.warn("Unable to configure httpd to use ssl");
         }
+        return result;
     }
 
     private String configureAuth(String user, String passwd) {

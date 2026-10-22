@@ -24,6 +24,10 @@ import com.cloud.agent.api.LogLevel;
 import com.cloud.agent.api.LogLevel.Log4jLevel;
 
 public class StartConsoleProxyAgentHttpHandlerCommand extends Command {
+    /** How long an agent waits for a first start of the console proxy before it answers. */
+    public static final int START_WAIT_SECONDS = 60;
+    public static final int WAIT_SECONDS = 2 * START_WAIT_SECONDS;
+
     @LogLevel(Log4jLevel.Off)
     private byte[] keystoreBits;
     @LogLevel(Log4jLevel.Off)

@@ -140,4 +140,5 @@ then
 fi
 
 config_apache2_conf $publicIp $hostName
-systemctl restart apache2
+# a graceful reload: connections in progress finish on the certificate they began with
+systemctl reload-or-restart apache2

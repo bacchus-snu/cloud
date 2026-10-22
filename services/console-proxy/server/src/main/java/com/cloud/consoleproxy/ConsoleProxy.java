@@ -26,8 +26,10 @@ import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.security.KeyStore;
 import java.util.HashSet;
 import java.util.Hashtable;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -42,6 +44,7 @@ import org.apache.logging.log4j.core.config.Configurator;
 import org.eclipse.jetty.websocket.api.Session;
 
 import com.cloud.utils.PropertiesUtil;
+import com.cloud.utils.security.CertificateHelper;
 import com.google.gson.Gson;
 import com.sun.net.httpserver.HttpServer;
 
@@ -77,8 +80,9 @@ public class ConsoleProxy {
     static int readTimeoutSeconds = 90;
     public static int defaultBufferSize = 64 * 1024;
     static int keyboardType = KEYBOARD_RAW;
-    static String factoryClzName;
+    static boolean secure = false;
     static boolean standaloneStart = false;
+    static ConsoleProxyNoVNCServer noVNCServer;
 
     static String encryptorPassword = "Dummy";
     static final String[] skipProperties = new String[]{"certificate", "cacertificate", "keystore_password", "privatekey"};
@@ -137,9 +141,9 @@ public class ConsoleProxy {
         if (s != null && s.equalsIgnoreCase("true")) {
             LOGGER.info("Premium setting will override settings from consoleproxy.properties, listen at port 443");
             httpListenPort = 443;
-            factoryClzName = "com.cloud.consoleproxy.ConsoleProxySecureServerFactoryImpl";
+            secure = true;
         } else {
-            factoryClzName = ConsoleProxyBaseServerFactoryImpl.class.getName();
+            secure = false;
         }
 
         s = conf.getProperty("consoleproxy.httpCmdListenPort");
@@ -164,26 +168,6 @@ public class ConsoleProxy {
         if (s != null) {
             defaultBufferSize = Integer.parseInt(s);
             LOGGER.info("Setting defaultBufferSize=" + defaultBufferSize);
-        }
-    }
-
-    public static ConsoleProxyServerFactory getHttpServerFactory() {
-        try {
-            Class<?> clz = Class.forName(factoryClzName);
-            try {
-                ConsoleProxyServerFactory factory = (ConsoleProxyServerFactory)clz.newInstance();
-                factory.init(ConsoleProxy.ksBits, ConsoleProxy.ksPassword);
-                return factory;
-            } catch (InstantiationException e) {
-                LOGGER.error(e.getMessage(), e);
-                return null;
-            } catch (IllegalAccessException e) {
-                LOGGER.error(e.getMessage(), e);
-                return null;
-            }
-        } catch (ClassNotFoundException e) {
-            LOGGER.warn("Unable to find http server factory class: " + factoryClzName);
-            return new ConsoleProxyBaseServerFactoryImpl();
         }
     }
 
@@ -360,12 +344,6 @@ public class ConsoleProxy {
 
         configProxy(conf);
 
-        ConsoleProxyServerFactory factory = getHttpServerFactory();
-        if (factory == null) {
-            LOGGER.error("Unable to load console proxy server factory");
-            System.exit(1);
-        }
-
         if (httpListenPort != 0) {
             startupHttpMain();
         } else {
@@ -386,34 +364,47 @@ public class ConsoleProxy {
 
     private static void startupHttpMain() {
         try {
-            ConsoleProxyServerFactory factory = getHttpServerFactory();
-            if (factory == null) {
-                LOGGER.error("Unable to load HTTP server factory");
-                System.exit(1);
+            ConsoleProxyHttpHandlerAdapter pages = new ConsoleProxyHttpHandlerAdapter();
+            pages.createContext("/getscreen", new ConsoleProxyThumbnailHandler());
+            pages.createContext("/resource/", new ConsoleProxyResourceHandler());
+            pages.createContext("/ajax", new ConsoleProxyAjaxHandler());
+            pages.createContext("/ajaximg", new ConsoleProxyAjaxImageHandler());
+            List<Integer> ports = List.of(httpListenPort, ConsoleProxyNoVNCServer.getVNCPort());
+            synchronized (ConsoleProxy.class) {
+                if (secure && ksBits == null) {
+                    throw new IllegalStateException("No certificates passed, recheck global configuration and certificates");
+                }
+                KeyStore keyStore = secure ? CertificateHelper.loadKeystore(ksBits, ksPassword) : null;
+                LOGGER.info("Serving the console pages and the noVNC WebSocket on ports " + ports + (secure ? " over TLS" : ""));
+                noVNCServer = new ConsoleProxyNoVNCServer(ports, pages, keyStore, ksPassword);
+                noVNCServer.start();
             }
-
-            HttpServer server = factory.createHttpServerInstance(httpListenPort);
-            server.createContext("/getscreen", new ConsoleProxyThumbnailHandler());
-            server.createContext("/resource/", new ConsoleProxyResourceHandler());
-            server.createContext("/ajax", new ConsoleProxyAjaxHandler());
-            server.createContext("/ajaximg", new ConsoleProxyAjaxImageHandler());
-            server.setExecutor(new ThreadExecutor()); // creates a default executor
-            server.start();
-
-            ConsoleProxyNoVNCServer noVNCServer = getNoVNCServer();
-            noVNCServer.start();
-
         } catch (Exception e) {
             LOGGER.error(e.getMessage(), e);
             System.exit(1);
         }
     }
 
-    private static ConsoleProxyNoVNCServer getNoVNCServer() {
-        int vncPort = ConsoleProxyNoVNCServer.getVNCPort();
-        return vncPort == ConsoleProxyNoVNCServer.WSS_PORT ?
-                new ConsoleProxyNoVNCServer(ksBits, ksPassword) :
-                new ConsoleProxyNoVNCServer();
+    /**
+     * Gives the running server the certificate of the key store the management server sent; it presents it to new
+     * connections while established ones keep the certificate they began with. A server that serves plain HTTP, or no
+     * key store, leaves the server as it is.
+     */
+    public static synchronized void loadServerCertificate(byte[] ksBits, String ksPassword) throws Exception {
+        if (ksBits == null || noVNCServer == null || !noVNCServer.isSecure()) {
+            return;
+        }
+        noVNCServer.loadKeyStore(CertificateHelper.loadKeystore(ksBits, ksPassword), ksPassword);
+        ConsoleProxy.ksBits = ksBits;
+        ConsoleProxy.ksPassword = ksPassword;
+    }
+
+    /**
+     * @return the SHA-256 fingerprint of the certificate the server presents to new connections, or null when it serves
+     * none
+     */
+    public static synchronized String getServerCertificateFingerprint() {
+        return noVNCServer == null ? null : noVNCServer.getCertificateFingerprint();
     }
 
     private static void startupHttpCmdPort() {

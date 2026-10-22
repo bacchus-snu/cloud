@@ -46,6 +46,7 @@ import org.apache.cloudstack.api.command.admin.resource.ListCapacityCmd;
 import org.apache.cloudstack.api.command.admin.resource.UploadCustomCertificateCmd;
 import org.apache.cloudstack.api.command.admin.systemvm.DestroySystemVmCmd;
 import org.apache.cloudstack.api.command.admin.systemvm.ListSystemVMsCmd;
+import org.apache.cloudstack.api.command.admin.systemvm.ListSystemVmCertificatesCmd;
 import org.apache.cloudstack.api.command.admin.systemvm.PatchSystemVMCmd;
 import org.apache.cloudstack.api.command.admin.systemvm.RebootSystemVmCmd;
 import org.apache.cloudstack.api.command.admin.systemvm.ScaleSystemVMCmd;
@@ -69,6 +70,8 @@ import org.apache.cloudstack.api.command.user.userdata.RegisterCniConfigurationC
 import org.apache.cloudstack.api.command.user.userdata.RegisterUserDataCmd;
 import org.apache.cloudstack.api.command.user.vm.GetVMPasswordCmd;
 import org.apache.cloudstack.api.command.user.vmgroup.UpdateVMGroupCmd;
+import org.apache.cloudstack.api.response.ListResponse;
+import org.apache.cloudstack.api.response.SystemVmCertificateResponse;
 import org.apache.cloudstack.config.Configuration;
 import org.apache.cloudstack.config.ConfigurationGroup;
 
@@ -522,6 +525,8 @@ public interface ManagementService {
     void cleanupVMReservations();
 
     Pair<Boolean, String> patchSystemVM(PatchSystemVMCmd cmd);
+
+    ListResponse<SystemVmCertificateResponse> listSystemVmCertificates(ListSystemVmCertificatesCmd cmd);
 
     boolean removeManagementServer(RemoveManagementServerCmd cmd);
 

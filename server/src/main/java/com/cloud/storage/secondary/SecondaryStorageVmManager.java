@@ -87,4 +87,18 @@ public interface SecondaryStorageVmManager extends Manager {
     public HostVO pickSsvmHost(HostVO ssHost);
 
     void allocCapacity(long dataCenterId, SecondaryStorageVm.Role role);
+
+    /**
+     * Sends the stored server certificate to every connected secondary storage VM that serves it; its web server
+     * presents it to new connections without a restart, while transfers in progress finish on the old one.
+     *
+     * @return the names of the secondary storage VMs that did not confirm serving it
+     */
+    List<String> propagateServerCertificate();
+
+    /**
+     * @return the SHA-256 fingerprint of the stored server certificate that the secondary storage VMs of the zone
+     * serve, or null when they serve none
+     */
+    String getServerCertificateFingerprint(long dataCenterId);
 }

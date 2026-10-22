@@ -1043,6 +1043,12 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
             }
         } else if (HypervisorGuru.HypervisorCustomDisplayName.key().equals(name)) {
             updateCustomDisplayNameOnHypervisorsList(previousValue, value);
+        } else if (ConsoleProxyManager.ConsoleProxyServiceManagementState.key().equals(name)) {
+            String lastState = ConsoleProxyManager.getManagementLastStateToRecord(previousValue, value);
+            if (lastState != null) {
+                _configDao.update(ConsoleProxyManager.ConsoleProxyManagementLastState.key(), ConsoleProxyManager.ConsoleProxyManagementLastState.category(), lastState);
+                _configDepot.invalidateConfigCache(ConsoleProxyManager.ConsoleProxyManagementLastState.key(), ConfigKey.Scope.Global, null);
+            }
         }
 
         txn.commit();
@@ -1565,6 +1571,15 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
             if (KMSManager.KMSDekSizeBits.key().equalsIgnoreCase(name)) {
                 if (val != 128 && val != 192 && val != 256) {
                     return String.format("Please enter a valid value for configuration parameter [%s]. Supported values are 128, 192, or 256.", name);
+                }
+            }
+            if (ConsoleProxyManager.NoVncConsoleWebSocketPort.key().equalsIgnoreCase(name)) {
+                if (val < 1 || val > NetUtils.PORT_RANGE_MAX) {
+                    return String.format("Please enter a port between 1 and 65535 for the configuration parameter: [%s].", name);
+                }
+                if (val == ConsoleProxyManager.DEFAULT_PROXY_CMD_PORT || val == ConsoleProxyManager.DEFAULT_PROXY_SSH_PORT) {
+                    return String.format("Port [%d] of the configuration parameter [%s] is taken by the console proxy's command port (%d) or SSH (%d).",
+                            val, name, ConsoleProxyManager.DEFAULT_PROXY_CMD_PORT, ConsoleProxyManager.DEFAULT_PROXY_SSH_PORT);
                 }
             }
             if (NetworkModel.MACIdentifier.key().equalsIgnoreCase(name)) {

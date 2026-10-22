@@ -254,6 +254,7 @@ import org.apache.cloudstack.api.command.admin.swift.AddSwiftCmd;
 import org.apache.cloudstack.api.command.admin.swift.ListSwiftsCmd;
 import org.apache.cloudstack.api.command.admin.systemvm.DestroySystemVmCmd;
 import org.apache.cloudstack.api.command.admin.systemvm.ListSystemVMsCmd;
+import org.apache.cloudstack.api.command.admin.systemvm.ListSystemVmCertificatesCmd;
 import org.apache.cloudstack.api.command.admin.systemvm.MigrateSystemVMCmd;
 import org.apache.cloudstack.api.command.admin.systemvm.PatchSystemVMCmd;
 import org.apache.cloudstack.api.command.admin.systemvm.RebootSystemVmCmd;
@@ -629,6 +630,8 @@ import org.apache.cloudstack.api.command.user.vpn.UpdateVpnConnectionCmd;
 import org.apache.cloudstack.api.command.user.vpn.UpdateVpnCustomerGatewayCmd;
 import org.apache.cloudstack.api.command.user.vpn.UpdateVpnGatewayCmd;
 import org.apache.cloudstack.api.command.user.zone.ListZonesCmd;
+import org.apache.cloudstack.api.response.ListResponse;
+import org.apache.cloudstack.api.response.SystemVmCertificateResponse;
 import org.apache.cloudstack.auth.UserAuthenticator;
 import org.apache.cloudstack.auth.UserTwoFactorAuthenticator;
 import org.apache.cloudstack.backup.BackupManager;
@@ -705,7 +708,6 @@ import com.cloud.cluster.ManagementServerHostVO;
 import com.cloud.cluster.dao.ManagementServerHostDao;
 import com.cloud.configuration.Config;
 import com.cloud.configuration.ConfigurationManagerImpl;
-import com.cloud.consoleproxy.ConsoleProxyManagementState;
 import com.cloud.consoleproxy.ConsoleProxyManager;
 import com.cloud.cpu.CPU;
 import com.cloud.dc.AccountVlanMapVO;
@@ -4391,6 +4393,7 @@ public class ManagementServerImpl extends MutualExclusiveIdsManagerBase implemen
         cmdList.add(DeleteResourceIconCmd.class);
         cmdList.add(ListResourceIconCmd.class);
         cmdList.add(PatchSystemVMCmd.class);
+        cmdList.add(ListSystemVmCertificatesCmd.class);
         cmdList.add(ListGuestVlansCmd.class);
         cmdList.add(AssignVolumeCmd.class);
         cmdList.add(ListSecondaryStorageSelectorsCmd.class);
@@ -5071,22 +5074,69 @@ public class ManagementServerImpl extends MutualExclusiveIdsManagerBase implemen
 
         validateCertificate(certificate, key, domainSuffix);
 
-        if (cmd.getPrivateKey() != null) {
-            _ksMgr.saveCertificate(ConsoleProxyManager.CERTIFICATE_NAME, certificate, key, domainSuffix);
-
-            // Reboot ssvm here since private key is present - meaning server cert being passed
-            final List<SecondaryStorageVmVO> alreadyRunning = _secStorageVmDao.getSecStorageVmListInStates(null, State.Running, State.Migrating, State.Starting);
-            for (final SecondaryStorageVmVO ssVmVm : alreadyRunning) {
-                _secStorageVmMgr.rebootSecStorageVm(ssVmVm.getId());
-            }
-        } else {
+        if (cmd.getPrivateKey() == null) {
             _ksMgr.saveCertificate(cmd.getAlias(), certificate, cmd.getCertIndex(), cmd.getDomainSuffix());
+            return "Certificate has been successfully stored; it is served from the next server certificate upload or system VM connection";
         }
 
-        _consoleProxyMgr.setManagementState(ConsoleProxyManagementState.ResetSuspending);
-        return "Certificate has been successfully updated, if its the server certificate we would reboot all "
-        + "running console proxy VMs and secondary storage VMs to propagate the new certificate, "
-        + "please give a few minutes for console access and storage services service to be up and working again";
+        // the server certificate completes an upload of a chain, so only then do the system VMs load the stored set
+        _ksMgr.saveCertificate(ConsoleProxyManager.CERTIFICATE_NAME, certificate, key, domainSuffix);
+        List<String> unconfirmed = new ArrayList<>(_consoleProxyMgr.propagateServerCertificate());
+        unconfirmed.addAll(_secStorageVmMgr.propagateServerCertificate());
+        String result = "Certificate has been successfully updated; running console proxy VMs and secondary storage VMs that serve it present it to new "
+                + "connections without a restart";
+        if (!unconfirmed.isEmpty()) {
+            result += ", except these, which did not confirm it (see listSystemVmCertificates): " + String.join(", ", unconfirmed);
+        }
+        return result;
+    }
+
+    @Override
+    public ListResponse<SystemVmCertificateResponse> listSystemVmCertificates(ListSystemVmCertificatesCmd cmd) {
+        String systemVmType = cmd.getSystemVmType();
+        if (systemVmType != null && !"consoleproxy".equalsIgnoreCase(systemVmType) && !"secondarystoragevm".equalsIgnoreCase(systemVmType)) {
+            throw new InvalidParameterValueException("The system VM type must be consoleproxy or secondarystoragevm");
+        }
+        Long zoneId = cmd.getZoneId();
+        List<SystemVmCertificateResponse> responses = new ArrayList<>();
+        if (systemVmType == null || "consoleproxy".equalsIgnoreCase(systemVmType)) {
+            List<ConsoleProxyVO> proxies = zoneId == null ? _consoleProxyDao.getProxyListInStates(State.Running)
+                    : _consoleProxyDao.getProxyListInStates(zoneId, State.Running);
+            for (ConsoleProxyVO proxy : proxies) {
+                responses.add(createSystemVmCertificateResponse(proxy, "consoleproxy", Host.Type.ConsoleProxy,
+                        _consoleProxyMgr.getServerCertificateFingerprint(proxy.getDataCenterId())));
+            }
+        }
+        if (systemVmType == null || "secondarystoragevm".equalsIgnoreCase(systemVmType)) {
+            List<SecondaryStorageVmVO> ssvms = zoneId == null ? _secStorageVmDao.getSecStorageVmListInStates(null, State.Running)
+                    : _secStorageVmDao.getSecStorageVmListInStates(null, zoneId, State.Running);
+            for (SecondaryStorageVmVO ssvm : ssvms) {
+                responses.add(createSystemVmCertificateResponse(ssvm, "secondarystoragevm", Host.Type.SecondaryStorageVM,
+                        _secStorageVmMgr.getServerCertificateFingerprint(ssvm.getDataCenterId())));
+            }
+        }
+        ListResponse<SystemVmCertificateResponse> response = new ListResponse<>();
+        response.setResponses(responses, responses.size());
+        return response;
+    }
+
+    private SystemVmCertificateResponse createSystemVmCertificateResponse(VMInstanceVO systemVm, String systemVmType, Host.Type agentType, String storedFingerprint) {
+        SystemVmCertificateResponse response = new SystemVmCertificateResponse();
+        response.setId(systemVm.getUuid());
+        response.setName(systemVm.getHostName());
+        response.setSystemVmType(systemVmType);
+        DataCenterVO zone = _dcDao.findById(systemVm.getDataCenterId());
+        if (zone != null) {
+            response.setZoneId(zone.getUuid());
+        }
+        HostVO agent = _hostDao.findByTypeNameAndZoneId(systemVm.getDataCenterId(), systemVm.getHostName(), agentType);
+        if (agent != null) {
+            response.setAgentState(agent.getStatus().toString());
+            DetailVO fingerprint = _detailsDao.findDetail(agent.getId(), Host.HOST_SERVER_CERTIFICATE_FINGERPRINT);
+            response.setFingerprint(fingerprint == null ? null : fingerprint.getValue());
+        }
+        response.setStoredFingerprint(storedFingerprint);
+        return response;
     }
 
     private void validateCertificate(String certificate, String key, String domainSuffix) {

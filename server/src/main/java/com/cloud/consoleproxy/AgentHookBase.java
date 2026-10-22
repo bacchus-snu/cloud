@@ -19,7 +19,9 @@ package com.cloud.consoleproxy;
 
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Objects;
 
 import org.apache.cloudstack.consoleproxy.ConsoleAccessManager;
@@ -39,6 +41,7 @@ import com.cloud.agent.api.ConsoleAccessAuthenticationCommand;
 import com.cloud.agent.api.ConsoleProxyLoadReportCommand;
 import com.cloud.agent.api.GetVncPortAnswer;
 import com.cloud.agent.api.GetVncPortCommand;
+import com.cloud.agent.api.ServerCertificateAnswer;
 import com.cloud.agent.api.StartupCommand;
 import com.cloud.agent.api.StartupProxyCommand;
 import com.cloud.agent.api.proxy.StartConsoleProxyAgentHttpHandlerCommand;
@@ -48,6 +51,7 @@ import com.cloud.host.Host;
 import com.cloud.host.HostVO;
 import com.cloud.host.Status;
 import com.cloud.host.dao.HostDao;
+import com.cloud.host.dao.HostDetailsDao;
 import com.cloud.hypervisor.Hypervisor;
 import com.cloud.servlet.ConsoleProxyPasswordBasedEncryptor;
 import com.cloud.servlet.ConsoleProxyServlet;
@@ -67,16 +71,18 @@ public abstract class AgentHookBase implements AgentHook {
 
     VMInstanceDao _instanceDao;
     HostDao _hostDao;
+    HostDetailsDao hostDetailsDao;
     ConfigurationDao _configDao;
     AgentManager _agentMgr;
     KeystoreManager _ksMgr;
     KeysManager _keysMgr;
     ConsoleAccessManager consoleAccessManager;
 
-    protected AgentHookBase(VMInstanceDao instanceDao, HostDao hostDao, ConfigurationDao cfgDao, KeystoreManager ksMgr,
+    protected AgentHookBase(VMInstanceDao instanceDao, HostDao hostDao, HostDetailsDao hostDetailsDao, ConfigurationDao cfgDao, KeystoreManager ksMgr,
                          AgentManager agentMgr, KeysManager keysMgr, ConsoleAccessManager consoleAccessMgr) {
         _instanceDao = instanceDao;
         _hostDao = hostDao;
+        this.hostDetailsDao = hostDetailsDao;
         _agentMgr = agentMgr;
         _configDao = cfgDao;
         _ksMgr = ksMgr;
@@ -207,7 +213,60 @@ public abstract class AgentHookBase implements AgentHook {
 
     @Override
     public void startAgentHttpHandlerInVM(StartupProxyCommand startupCmd) {
+        HostVO consoleProxyHost;
+        try {
+            consoleProxyHost = findConsoleProxyHost(startupCmd);
+        } catch (Exception e) {
+            logger.error("Unable to find the console proxy host for proxy:" + startupCmd.getProxyVmId(), e);
+            return;
+        }
+        if (Objects.isNull(consoleProxyHost)) {
+            logger.error("Unable to send http handling startup command to the console proxy resource for proxy:" + startupCmd.getProxyVmId() + ", its host is not found");
+            return;
+        }
+        String served = startAgentHttpHandler(consoleProxyHost);
+        if (isServerCertificateSent(consoleProxyHost.getDataCenterId())) {
+            // a certificate stored while this proxy connected can miss both its connect and the upload's push
+            String stored = _ksMgr.getCertificateFingerprint(ConsoleProxyManager.CERTIFICATE_NAME);
+            if (stored != null && !stored.equals(served)) {
+                startAgentHttpHandler(consoleProxyHost);
+            }
+        }
+    }
+
+    /**
+     * @return whether the console proxies of the zone serve TLS with the stored server certificate
+     */
+    public static boolean isServerCertificateSent(long dataCenterId) {
+        return !StringUtils.isEmpty(ConsoleProxyManager.ConsoleProxyUrlDomain.valueIn(dataCenterId))
+                && Boolean.TRUE.equals(ConsoleProxyManager.ConsoleProxySslEnabled.valueIn(dataCenterId));
+    }
+
+    @Override
+    public List<String> startAgentHttpHandlers() {
+        String stored = _ksMgr.getCertificateFingerprint(ConsoleProxyManager.CERTIFICATE_NAME);
+        List<String> unconfirmed = new ArrayList<>();
+        for (HostVO host : _hostDao.listByType(Host.Type.ConsoleProxy)) {
+            if ((host.getStatus() == Status.Up || host.getStatus() == Status.Connecting) && isServerCertificateSent(host.getDataCenterId())) {
+                String served = startAgentHttpHandler(host);
+                if (stored == null || !stored.equals(served)) {
+                    unconfirmed.add(host.getName());
+                }
+            }
+        }
+        return unconfirmed;
+    }
+
+    /**
+     * Sends the console proxy agent its HTTP handler settings. The certificate the agent answers that it serves is
+     * recorded as the host's {@link Host#HOST_SERVER_CERTIFICATE_FINGERPRINT} detail, which an answer without one
+     * removes; without an answer the detail keeps the last report.
+     *
+     * @return the fingerprint of the certificate the agent answered that it serves, or null
+     */
+    public String startAgentHttpHandler(HostVO consoleProxyHost) {
         StartConsoleProxyAgentHttpHandlerCommand cmd = null;
+        Answer answer = null;
 
         try {
             SecureRandom random = SecureRandom.getInstance("SHA1PRNG");
@@ -218,16 +277,7 @@ public abstract class AgentHookBase implements AgentHook {
 
             byte[] ksBits = null;
 
-            HostVO consoleProxyHost = findConsoleProxyHost(startupCmd);
-
-            if (Objects.isNull(consoleProxyHost)) {
-                throw new IllegalStateException("Console proxy host is null");
-            }
-
-            Long datacenterId = consoleProxyHost.getDataCenterId();
-            String consoleProxyUrlDomain = ConsoleProxyManager.ConsoleProxyUrlDomain.valueIn(datacenterId);
-            Boolean consoleProxySslEnabled = ConsoleProxyManager.ConsoleProxySslEnabled.valueIn(datacenterId);
-            if (!StringUtils.isEmpty(consoleProxyUrlDomain) && Boolean.TRUE.equals(consoleProxySslEnabled)) {
+            if (isServerCertificateSent(consoleProxyHost.getDataCenterId())) {
                 ksBits = _ksMgr.getKeystoreBits(ConsoleProxyManager.CERTIFICATE_NAME, ConsoleProxyManager.CERTIFICATE_NAME, storePassword);
                 //ks manager raises exception if ksBits are null, hence no need to explicltly handle the condition
             } else {
@@ -237,28 +287,34 @@ public abstract class AgentHookBase implements AgentHook {
             cmd = new StartConsoleProxyAgentHttpHandlerCommand(ksBits, storePassword);
             cmd.setEncryptorPassword(getEncryptorPassword());
             cmd.setIsSourceIpCheckEnabled(Boolean.parseBoolean(_configDao.getValue(ConsoleProxyManager.NoVncConsoleSourceIpCheckEnabled.key())));
+            cmd.setWait(StartConsoleProxyAgentHttpHandlerCommand.WAIT_SECONDS);
 
-            if (consoleProxyHost != null) {
-                Answer answer = _agentMgr.send(consoleProxyHost.getId(), cmd);
-                if (answer == null || !answer.getResult()) {
-                    logger.error("Console proxy agent reported that it failed to execute http handling startup command");
-                } else {
-                    logger.info("Successfully sent out command to start HTTP handling in console proxy agent");
-                }
+            answer = _agentMgr.send(consoleProxyHost.getId(), cmd);
+            if (answer == null || !answer.getResult()) {
+                logger.error("Console proxy agent reported that it failed to execute http handling startup command: " + (answer == null ? "no answer" : answer.getDetails()));
+            } else {
+                logger.info("Successfully sent out command to start HTTP handling in console proxy agent");
             }
         }catch (NoSuchAlgorithmException e) {
             logger.error("Unexpected exception in SecureRandom Algorithm selection ", e);
         } catch (AgentUnavailableException e) {
-            logger.error("Unable to send http handling startup command to the console proxy resource for proxy:" + startupCmd.getProxyVmId(), e);
+            logger.error("Unable to send http handling startup command to the console proxy resource for proxy: " + consoleProxyHost, e);
         } catch (OperationTimedoutException e) {
-            logger.error("Unable to send http handling startup command(time out) to the console proxy resource for proxy:" + startupCmd.getProxyVmId(), e);
+            logger.error("Unable to send http handling startup command(time out) to the console proxy resource for proxy: " + consoleProxyHost, e);
         } catch (OutOfMemoryError e) {
             logger.error("Unrecoverable OutOfMemory Error, exit and let it be re-launched");
             System.exit(1);
         } catch (Exception e) {
             logger.error(
-                "Unexpected exception when sending http handling startup command(time out) to the console proxy resource for proxy:" + startupCmd.getProxyVmId(), e);
+                "Unexpected exception when sending http handling startup command(time out) to the console proxy resource for proxy: " + consoleProxyHost, e);
         }
+
+        if (answer == null) {
+            return null;
+        }
+        String fingerprint = answer instanceof ServerCertificateAnswer ? ((ServerCertificateAnswer) answer).getFingerprint() : null;
+        hostDetailsDao.setDetail(consoleProxyHost.getId(), Host.HOST_SERVER_CERTIFICATE_FINGERPRINT, fingerprint);
+        return fingerprint;
     }
 
     private String getEncryptorPassword() {

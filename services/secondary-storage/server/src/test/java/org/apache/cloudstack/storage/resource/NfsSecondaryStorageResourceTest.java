@@ -31,14 +31,19 @@ import static org.mockito.Mockito.verify;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyPair;
+import java.security.cert.X509Certificate;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
 import com.cloud.agent.api.Answer;
+import com.cloud.agent.api.SecStorageCertificateCommand;
+import com.cloud.agent.api.ServerCertificateAnswer;
 import com.cloud.agent.api.UnmountImageStoreCommand;
 import com.cloud.agent.api.to.NfsTO;
+import org.apache.cloudstack.framework.security.keystore.KeystoreManager;
 import org.apache.cloudstack.storage.command.BackupDeleteAnswer;
 import org.apache.cloudstack.storage.command.DeleteCommand;
 import org.apache.cloudstack.storage.command.QuerySnapshotZoneCopyAnswer;
@@ -46,6 +51,7 @@ import org.apache.cloudstack.storage.command.QuerySnapshotZoneCopyCommand;
 import org.apache.cloudstack.storage.to.BackupDeltaTO;
 import org.apache.cloudstack.storage.to.SnapshotObjectTO;
 import org.apache.cloudstack.storage.to.TemplateObjectTO;
+import org.apache.cloudstack.utils.security.CertUtils;
 import org.apache.logging.log4j.Logger;
 import org.junit.Assert;
 import org.junit.Test;
@@ -65,6 +71,7 @@ import com.cloud.utils.EncryptionUtil;
 import com.cloud.utils.UuidUtils;
 import com.cloud.utils.net.NetUtils;
 import com.cloud.utils.script.Script;
+import com.cloud.utils.security.CertificateHelper;
 
 @RunWith(MockitoJUnitRunner.class)
 public class NfsSecondaryStorageResourceTest {
@@ -437,6 +444,31 @@ public class NfsSecondaryStorageResourceTest {
             InOrder order = Mockito.inOrder(script);
             order.verify(script).add("-l");
             order.verify(script).add("/mnt/SecStorage/store");
+        }
+    }
+
+    @Test
+    public void aCertificateCommandReconfiguresTheWebServerAndReportsTheCertificateItServes() throws Exception {
+        Path certificateFile = Files.createTempFile("cert_apache", ".crt");
+        try {
+            KeyPair keyPair = CertUtils.generateRandomKeyPair(2048);
+            X509Certificate certificate = CertUtils.generateV1Certificate(keyPair, "CN=ssvm.example.org", "CN=ssvm.example.org", 1, "SHA256WithRSA");
+            Files.writeString(certificateFile, CertUtils.x509CertificateToPem(certificate));
+            ReflectionTestUtils.setField(resource, "_inSystemVM", true);
+            ReflectionTestUtils.setField(resource, "webServerCertificatePath", certificateFile.toString());
+            doReturn(null, "reload failed").when(resource).configureSSL(any(), any(), Mockito.isNull(), Mockito.isNull());
+            SecStorageCertificateCommand command = new SecStorageCertificateCommand(new KeystoreManager.Certificates("key", "certificate", null, null));
+
+            Answer answer = resource.executeRequest(command);
+            assertTrue(answer.getDetails(), answer.getResult());
+            Assert.assertEquals(CertificateHelper.generateFingerPrint(certificate), ((ServerCertificateAnswer)answer).getFingerprint());
+
+            answer = resource.executeRequest(command);
+            assertFalse(answer.getResult());
+            assertNull(((ServerCertificateAnswer)answer).getFingerprint());
+            verify(resource, times(2)).configureSSL(any(), any(), Mockito.isNull(), Mockito.isNull());
+        } finally {
+            Files.deleteIfExists(certificateFile);
         }
     }
 }

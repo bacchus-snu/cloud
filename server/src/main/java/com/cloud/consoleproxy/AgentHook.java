@@ -16,6 +16,8 @@
 // under the License.
 package com.cloud.consoleproxy;
 
+import java.util.List;
+
 import com.cloud.agent.api.AgentControlAnswer;
 import com.cloud.agent.api.ConsoleAccessAuthenticationCommand;
 import com.cloud.agent.api.ConsoleProxyLoadReportCommand;
@@ -34,4 +36,12 @@ public interface AgentHook {
     public void onAgentDisconnect(long agentId, Status state);
 
     public void startAgentHttpHandlerInVM(StartupProxyCommand startupCmd);
+
+    /**
+     * Sends every connected console proxy agent of a zone that serves the stored server certificate its HTTP handler
+     * settings with that certificate, as on connect; a proxy that is already serving loads it for new connections.
+     *
+     * @return the names of the console proxies that did not confirm serving the stored certificate
+     */
+    List<String> startAgentHttpHandlers();
 }

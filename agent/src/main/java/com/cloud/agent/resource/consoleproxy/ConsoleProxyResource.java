@@ -47,6 +47,7 @@ import com.cloud.agent.api.ConsoleProxyLoadReportCommand;
 import com.cloud.agent.api.PingCommand;
 import com.cloud.agent.api.ReadyAnswer;
 import com.cloud.agent.api.ReadyCommand;
+import com.cloud.agent.api.ServerCertificateAnswer;
 import com.cloud.agent.api.StartupCommand;
 import com.cloud.agent.api.StartupProxyCommand;
 import com.cloud.agent.api.proxy.CheckConsoleProxyLoadCommand;
@@ -128,8 +129,18 @@ public class ConsoleProxyResource extends ServerResourceBase implements ServerRe
 
     private Answer execute(StartConsoleProxyAgentHttpHandlerCommand cmd) {
         logger.info("Invoke launchConsoleProxy() in responding to StartConsoleProxyAgentHttpHandlerCommand");
-        launchConsoleProxy(cmd.getKeystoreBits(), cmd.getKeystorePassword(), cmd.getEncryptorPassword(), cmd.isSourceIpCheckEnabled());
-        return new Answer(cmd);
+        String error = launchConsoleProxy(cmd.getKeystoreBits(), cmd.getKeystorePassword(), cmd.getEncryptorPassword(), cmd.isSourceIpCheckEnabled());
+        return new ServerCertificateAnswer(cmd, error == null, error, getServerCertificateFingerprint());
+    }
+
+    private String getServerCertificateFingerprint() {
+        try {
+            Class<?> consoleProxyClazz = Class.forName("com.cloud.consoleproxy.ConsoleProxy");
+            return (String)consoleProxyClazz.getMethod("getServerCertificateFingerprint").invoke(null);
+        } catch (ReflectiveOperationException | SecurityException e) {
+            logger.error("Unable to find the certificate the console proxy serves due to {}", e.toString(), e);
+            return null;
+        }
     }
 
     private void disableRpFilter() {
@@ -327,7 +338,13 @@ public class ConsoleProxyResource extends ServerResourceBase implements ServerRe
         return name;
     }
 
-    private void launchConsoleProxy(final byte[] ksBits, final String ksPassword, final String encryptorPassword, final Boolean isSourceIpCheckEnabled) {
+    /**
+     * Starts the console proxy, or gives the running one the settings and the server certificate it serves to new
+     * connections. A start returns once the proxy serves.
+     *
+     * @return null, or why the running proxy could not load the server certificate
+     */
+    private String launchConsoleProxy(final byte[] ksBits, final String ksPassword, final String encryptorPassword, final Boolean isSourceIpCheckEnabled) {
         final Object resource = this;
         logger.info("Building class loader for com.cloud.consoleproxy.ConsoleProxy");
         if (consoleProxyMain == null) {
@@ -365,6 +382,11 @@ public class ConsoleProxyResource extends ServerResourceBase implements ServerRe
             }, "Console-Proxy-Main");
             consoleProxyMain.setDaemon(true);
             consoleProxyMain.start();
+            try {
+                consoleProxyMain.join(StartConsoleProxyAgentHttpHandlerCommand.START_WAIT_SECONDS * 1000L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         } else {
             logger.info("com.cloud.consoleproxy.ConsoleProxy is already running");
 
@@ -374,6 +396,13 @@ public class ConsoleProxyResource extends ServerResourceBase implements ServerRe
                 methodSetup.invoke(null, encryptorPassword);
                 methodSetup = consoleProxyClazz.getMethod("setIsSourceIpCheckEnabled", Boolean.class);
                 methodSetup.invoke(null, isSourceIpCheckEnabled);
+                methodSetup = consoleProxyClazz.getMethod("loadServerCertificate", byte[].class, String.class);
+                try {
+                    methodSetup.invoke(null, ksBits, ksPassword);
+                } catch (InvocationTargetException e) {
+                    logger.error("Unable to load the server certificate due to {}", e.getTargetException().toString(), e);
+                    return "Unable to load the server certificate due to " + e.getTargetException().getMessage();
+                }
             } catch (SecurityException e) {
                 logger.error("Unable to launch console proxy due to SecurityException", e);
                 System.exit(ExitStatus.Error.value());
@@ -394,6 +423,7 @@ public class ConsoleProxyResource extends ServerResourceBase implements ServerRe
                 System.exit(ExitStatus.Error.value());
             }
         }
+        return null;
     }
 
     public String authenticateConsoleAccess(String host, String port, String vmId, String sid, String ticket,

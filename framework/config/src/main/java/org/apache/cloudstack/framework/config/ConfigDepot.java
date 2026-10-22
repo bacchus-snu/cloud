@@ -37,4 +37,9 @@ public interface ConfigDepot {
     String getConfigStringValue(String key, ConfigKey.Scope scope, Long scopeId);
     void invalidateConfigCache(String key, ConfigKey.Scope scope, Long scopeId);
     Pair<ConfigKey.Scope, Long> getParentScope(ConfigKey.Scope scope, Long id);
+
+    /**
+     * @return whether a gathered Configurable names the setting in {@link Configurable#getAccessControlConfigKeyNames()}
+     */
+    boolean isAccessControlConfigKey(String name);
 }

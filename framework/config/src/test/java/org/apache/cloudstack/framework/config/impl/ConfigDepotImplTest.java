@@ -175,6 +175,23 @@ public class ConfigDepotImplTest {
     }
 
     @Test
+    public void accessControlConfigKeysAreGatheredFromEveryConfigurable() {
+        Configurable core = Mockito.mock(Configurable.class);
+        Mockito.when(core.getConfigKeys()).thenReturn(new ConfigKey<?>[0]);
+        Mockito.when(core.getAccessControlConfigKeyNames()).thenReturn(new String[] {"core.checker.enabled"});
+        Configurable module = Mockito.mock(Configurable.class);
+        Mockito.when(module.getConfigKeys()).thenReturn(new ConfigKey<?>[0]);
+        Mockito.when(module.getAccessControlConfigKeyNames()).thenReturn(new String[] {"module.signin.enabled"});
+        configDepotImpl.setConfigurables(List.of(core));
+        configDepotImpl.populateConfigurations();
+        configDepotImpl.populateConfiguration(module);
+
+        Assert.assertTrue(configDepotImpl.isAccessControlConfigKey("core.checker.enabled"));
+        Assert.assertTrue(configDepotImpl.isAccessControlConfigKey("module.signin.enabled"));
+        Assert.assertFalse(configDepotImpl.isAccessControlConfigKey("other.setting"));
+    }
+
+    @Test
     public void getParentScopeWithValidScope() {
         ConfigKey.Scope scope = ConfigKey.Scope.Cluster;
         ScopedConfigStorage scopedConfigStorage = Mockito.mock(ScopedConfigStorage.class);

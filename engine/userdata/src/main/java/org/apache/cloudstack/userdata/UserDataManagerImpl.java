@@ -98,6 +98,15 @@ public class UserDataManagerImpl extends ManagerBase implements UserDataManager 
 
     @Override
     public String validateUserData(String userData, BaseCmd.HTTPMethod httpmethod) {
+        return validateUserData(userData, httpmethod, true);
+    }
+
+    @Override
+    public String validateFinalizedUserData(String userData) {
+        return validateUserData(userData, null, false);
+    }
+
+    private String validateUserData(String userData, BaseCmd.HTTPMethod httpmethod, boolean carriedByRequest) {
         logger.trace(String.format("Validating base64 encoded user data: [%s].", userData));
         if (StringUtils.isBlank(userData)) {
             logger.debug("Null/empty base64 encoded user data set");
@@ -119,7 +128,9 @@ public class UserDataManagerImpl extends ManagerBase implements UserDataManager 
         byte[] decodedUserData = null;
 
         // If GET, use 4K. If POST, support up to 1M.
-        if (BaseCmd.HTTPMethod.POST.equals(httpmethod)) {
+        if (!carriedByRequest) {
+            decodedUserData = validateAndDecodeByHTTPMethod(userData, null, null);
+        } else if (BaseCmd.HTTPMethod.POST.equals(httpmethod)) {
             decodedUserData = validateAndDecodeByHTTPMethod(userData, MAX_HTTP_POST_LENGTH, BaseCmd.HTTPMethod.POST);
         } else {
             decodedUserData = validateAndDecodeByHTTPMethod(userData, MAX_HTTP_GET_LENGTH, BaseCmd.HTTPMethod.GET);
@@ -148,7 +159,7 @@ public class UserDataManagerImpl extends ManagerBase implements UserDataManager 
         throw new CloudRuntimeException("User data can only be used by system VMs if it belongs to the ROOT domain and ADMIN account.");
     }
 
-    private byte[] validateAndDecodeByHTTPMethod(String userData, int maxHTTPLength, BaseCmd.HTTPMethod httpMethod) {
+    private byte[] validateAndDecodeByHTTPMethod(String userData, Integer maxHTTPLength, BaseCmd.HTTPMethod httpMethod) {
         byte[] decodedUserData = Base64.decodeBase64(userData.getBytes());
         if (decodedUserData == null || decodedUserData.length < 1) {
             throw new InvalidParameterValueException("User data is too short.");
@@ -159,7 +170,7 @@ public class UserDataManagerImpl extends ManagerBase implements UserDataManager 
         int decodedUserDataLength = decodedUserData.length;
         logger.info(String.format("Configured base64 encoded user data size: %d bytes, actual user data size: %d bytes", userDataLength, decodedUserDataLength));
 
-        if (userDataLength > maxHTTPLength) {
+        if (maxHTTPLength != null && userDataLength > maxHTTPLength) {
             logger.warn(String.format("Base64 encoded user data (size: %d bytes) too long for http %s request (accepted size: %d bytes)", userDataLength, httpMethod.toString(), maxHTTPLength));
             throw new InvalidParameterValueException(String.format("User data is too long for http %s request", httpMethod.toString()));
         }

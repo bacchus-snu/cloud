@@ -53,6 +53,7 @@ public class ExtensionRegistry implements Registry<Object>, Configurable, BeanNa
     ConfigKey<String> excludeKeyObj;
 
     String configComponentName;
+    boolean accessControl;
     List<Object> preRegistered;
     List<Object> registered = new CopyOnWriteArrayList<Object>();
     List<Object> readOnly = Collections.unmodifiableList(registered);
@@ -154,6 +155,21 @@ public class ExtensionRegistry implements Registry<Object>, Configurable, BeanNa
         return result.toArray(new ConfigKey[result.size()]);
     }
 
+    @Override
+    public String[] getAccessControlConfigKeyNames() {
+        if (!accessControl) {
+            return new String[0];
+        }
+        List<String> names = new ArrayList<>();
+        if (orderConfigKey != null) {
+            names.add(orderConfigKey);
+        }
+        if (excludeKey != null) {
+            names.add(excludeKey);
+        }
+        return names.toArray(new String[0]);
+    }
+
     @PostConstruct
     public void init() {
         if (name == null) {
@@ -181,6 +197,14 @@ public class ExtensionRegistry implements Registry<Object>, Configurable, BeanNa
 
     public void setConfigComponentName(String configComponentName) {
         this.configComponentName = configComponentName;
+    }
+
+    /**
+     * @param accessControl whether the registered extensions enforce access control (API access checkers,
+     * authenticators, password encoders), so that ordering or excluding them changes who may do what
+     */
+    public void setAccessControl(boolean accessControl) {
+        this.accessControl = accessControl;
     }
 
     public String getOrderConfigDefault() {

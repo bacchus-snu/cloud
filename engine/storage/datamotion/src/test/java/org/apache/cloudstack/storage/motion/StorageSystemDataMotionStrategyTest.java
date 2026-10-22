@@ -28,11 +28,15 @@ import static org.mockito.MockitoAnnotations.initMocks;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.apache.cloudstack.engine.subsystem.api.storage.CopyCommandResult;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataObject;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
+import org.apache.cloudstack.engine.subsystem.api.storage.ObjectInDataStoreStateMachine.Event;
 import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStore;
 import org.apache.cloudstack.engine.subsystem.api.storage.StrategyPriority;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeInfo;
+import org.apache.cloudstack.engine.subsystem.api.storage.VolumeService;
+import org.apache.cloudstack.framework.async.AsyncCompletionCallback;
 import org.apache.cloudstack.storage.datastore.PrimaryDataStoreImpl;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
@@ -42,6 +46,7 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Mockito;
@@ -49,7 +54,10 @@ import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnitRunner;
 
 import com.cloud.agent.api.MigrateCommand;
+import com.cloud.agent.api.to.VirtualMachineTO;
+import com.cloud.host.Host;
 import com.cloud.host.HostVO;
+import com.cloud.hypervisor.Hypervisor;
 import com.cloud.storage.DataStoreRole;
 import com.cloud.storage.ImageStore;
 import com.cloud.storage.ScopeType;
@@ -57,6 +65,8 @@ import com.cloud.storage.Storage;
 import com.cloud.storage.Storage.StoragePoolType;
 import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeVO;
+import com.cloud.storage.dao.VolumeDao;
+import com.cloud.utils.exception.CloudRuntimeException;
 import java.util.AbstractMap;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -86,6 +96,12 @@ public class StorageSystemDataMotionStrategyTest {
 
     @Mock
     Map<String, Storage.StoragePoolType> mapStringStoragePoolTypeMock;
+
+    @Mock
+    VolumeDao volumeDao;
+
+    @Mock
+    VolumeService volumeService;
 
     List<ScopeType> scopeTypes = Arrays.asList(ScopeType.CLUSTER, ScopeType.ZONE);
 
@@ -650,5 +666,53 @@ public class StorageSystemDataMotionStrategyTest {
                 volumeMap, new HostVO("srcHostUuid"), new HostVO("destHostUuid"));
 
         Assert.assertEquals(StrategyPriority.HIGHEST, result);
+    }
+
+    private VolumeInfo destVolume(long id, Volume.State rowState) {
+        VolumeInfo destVolume = mock(VolumeInfo.class);
+        Mockito.when(destVolume.getId()).thenReturn(id);
+        VolumeVO row = null;
+        if (rowState != null) {
+            row = mock(VolumeVO.class);
+            Mockito.when(row.getState()).thenReturn(rowState);
+        }
+        Mockito.when(volumeDao.findById(id)).thenReturn(row);
+        return destVolume;
+    }
+
+    @Test
+    public void aFailedMigrationExpungesOnlyTheDestinationsLeftAndNeverThrows() {
+        VolumeInfo rolledBack = destVolume(11L, null);
+        VolumeInfo destroyed = destVolume(12L, Volume.State.Destroy);
+        VolumeInfo failing = destVolume(13L, Volume.State.Migrating);
+        VolumeInfo left = destVolume(14L, Volume.State.Migrating);
+        Mockito.doThrow(new NullPointerException("volume row is gone")).when(failing).processEvent(Event.DestroyRequested);
+
+        strategy.expungeDestVolumesOfFailedMigration(List.of(rolledBack, destroyed, failing, left), mock(VirtualMachineTO.class));
+
+        for (VolumeInfo skipped : List.of(rolledBack, destroyed)) {
+            Mockito.verify(skipped, Mockito.never()).processEvent(Mockito.any(Event.class));
+            Mockito.verify(volumeService, Mockito.never()).expungeVolumeAsync(skipped);
+        }
+        Mockito.verify(left).processEvent(Event.OperationFailed);
+        Mockito.verify(left).processEvent(Event.DestroyRequested);
+        Mockito.verify(volumeService).expungeVolumeAsync(left);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void aFailedMigrationAlwaysRunsTheCleanupAndCompletesWithItsError() {
+        Host srcHost = mock(Host.class);
+        Mockito.when(srcHost.getHypervisorType()).thenReturn(Hypervisor.HypervisorType.XenServer);
+        Host destHost = mock(Host.class);
+        VirtualMachineTO vmTO = mock(VirtualMachineTO.class);
+        AsyncCompletionCallback<CopyCommandResult> callback = mock(AsyncCompletionCallback.class);
+
+        Assert.assertThrows(CloudRuntimeException.class, () -> strategy.copyAsync(new HashMap<>(), vmTO, srcHost, destHost, callback));
+
+        Mockito.verify(strategy).expungeDestVolumesOfFailedMigration(Mockito.any(), Mockito.eq(vmTO));
+        ArgumentCaptor<CopyCommandResult> result = ArgumentCaptor.forClass(CopyCommandResult.class);
+        Mockito.verify(callback).complete(result.capture());
+        Assert.assertTrue(result.getValue().getResult(), result.getValue().getResult().contains("Invalid hypervisor type"));
     }
 }

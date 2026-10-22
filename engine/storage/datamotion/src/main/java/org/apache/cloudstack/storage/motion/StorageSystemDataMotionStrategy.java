@@ -160,6 +160,7 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
     private static final Random RANDOM = new Random(System.nanoTime());
     private static final int LOCK_TIME_IN_SECONDS = 300;
     private static final String OPERATION_NOT_SUPPORTED = "This operation is not supported.";
+    private static final Set<Volume.State> DESTROYED_VOLUME_STATES = Set.of(Volume.State.Destroy, Volume.State.Expunging, Volume.State.Expunged);
 
 
     @Inject
@@ -2243,13 +2244,8 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
 
             throw new CloudRuntimeException(errMsg);
         } finally {
-            if (!success && !srcVolumeInfoToDestVolumeInfo.isEmpty()) {
-                for (VolumeInfo destVolumeInfo : srcVolumeInfoToDestVolumeInfo.values()) {
-                    logger.info(String.format("Expunging dest volume [id: %s, state: %s] as part of failed VM migration with volumes command for VM [%s].", destVolumeInfo.getId(), destVolumeInfo.getState(), vmTO.getId()));
-                    destVolumeInfo.processEvent(Event.OperationFailed);
-                    destVolumeInfo.processEvent(Event.DestroyRequested);
-                    _volumeService.expungeVolumeAsync(destVolumeInfo);
-                }
+            if (!success) {
+                expungeDestVolumesOfFailedMigration(srcVolumeInfoToDestVolumeInfo.values(), vmTO);
             }
 
             CopyCmdAnswer copyCmdAnswer = new CopyCmdAnswer(errMsg);
@@ -2259,6 +2255,27 @@ public class StorageSystemDataMotionStrategy implements DataMotionStrategy {
             result.setResult(errMsg);
 
             callback.complete(result);
+        }
+    }
+
+    /**
+     * Expunges the destination volumes of a failed migration, except those the post-migration rollback already destroyed.
+     * A failure here is logged and not thrown, since it would replace the error that failed the migration.
+     */
+    protected void expungeDestVolumesOfFailedMigration(Collection<VolumeInfo> destVolumeInfos, VirtualMachineTO vmTO) {
+        for (VolumeInfo destVolumeInfo : destVolumeInfos) {
+            VolumeVO destVolume = _volumeDao.findById(destVolumeInfo.getId());
+            if (destVolume == null || DESTROYED_VOLUME_STATES.contains(destVolume.getState())) {
+                continue;
+            }
+            try {
+                logger.info(String.format("Expunging dest volume [id: %s, state: %s] as part of failed VM migration with volumes command for VM [%s].", destVolumeInfo.getId(), destVolumeInfo.getState(), vmTO.getId()));
+                destVolumeInfo.processEvent(Event.OperationFailed);
+                destVolumeInfo.processEvent(Event.DestroyRequested);
+                _volumeService.expungeVolumeAsync(destVolumeInfo);
+            } catch (RuntimeException e) {
+                logger.warn(String.format("Failed to expunge dest volume [id: %s] of the failed migration of VM [%s].", destVolumeInfo.getId(), vmTO.getId()), e);
+            }
         }
     }
 

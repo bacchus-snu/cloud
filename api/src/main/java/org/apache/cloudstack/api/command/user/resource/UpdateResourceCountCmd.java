@@ -31,6 +31,7 @@ import org.apache.cloudstack.api.response.ProjectResponse;
 import org.apache.cloudstack.api.response.ResourceCountResponse;
 import org.apache.cloudstack.context.CallContext;
 
+import com.cloud.configuration.Resource;
 import com.cloud.configuration.ResourceCount;
 import com.cloud.user.Account;
 
@@ -60,19 +61,7 @@ public class UpdateResourceCountCmd extends BaseCmd {
 
     @Parameter(name = ApiConstants.RESOURCE_TYPE,
                type = CommandType.INTEGER,
-               description = "Type of resource to update. If specifies valid values are 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 11. If not specified will update all resource counts"
-                   + "0 - Instance. Number of Instances a user can create. "
-                   + "1 - IP. Number of public IP addresses a user can own. "
-                   + "2 - Volume. Number of disk volumes a user can create. "
-                   + "3 - Snapshot. Number of Snapshots a user can create. "
-                   + "4 - Template. Number of Templates that a user can register/create. "
-                   + "5 - Project. Number of projects that a user can create. "
-                   + "6 - Network. Number of guest network a user can create. "
-                   + "7 - VPC. Number of VPC a user can create. "
-                   + "8 - CPU. Total number of CPU cores a user can use. "
-                   + "9 - Memory. Total Memory (in MB) a user can use. "
-                   + "10 - PrimaryStorage. Total primary storage space (in GiB) a user can use. "
-                   + "11 - SecondaryStorage. Total secondary storage space (in GiB) a user can use. ")
+               description = "Type of resource to update. If not specified will update all resource counts. " + Resource.RESOURCE_TYPE_VALUES)
     private Integer resourceType;
 
     @Parameter(name = ApiConstants.PROJECT_ID, type = CommandType.UUID, entityType = ProjectResponse.class, description = "Update resource limits for project")

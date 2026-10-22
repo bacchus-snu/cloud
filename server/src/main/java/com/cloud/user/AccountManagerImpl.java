@@ -1498,7 +1498,8 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
     /**
      * if there is any permission under the requested role that is not permitted for the caller, refuse
      */
-    protected void checkRoleEscalation(Account caller, Account requested) {
+    @Override
+    public void checkRoleEscalation(Account caller, Account requested) {
         if (logger.isDebugEnabled()) {
             logger.debug(String.format("Checking if user of account %s [%s] with role-id [%d] can create an account of type %s [%s] with role-id [%d]",
                     caller.getAccountName(),
@@ -2464,6 +2465,9 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
         String newAccountName = cmd.getNewName();
         String networkDomain = cmd.getNetworkDomain();
         final Map<String, String> details = cmd.getDetails();
+        if (details != null) {
+            _configMgr.checkCallerMayChangeAccessControlSettings(details.keySet());
+        }
 
         boolean success;
         Account account;
@@ -2927,6 +2931,9 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
     @Override
     @DB
     public AccountVO createAccount(final String accountName, final Account.Type accountType, final Long roleId, final Long domainId, final String networkDomain, final Map<String, String> details, final String uuid) {
+        if (details != null) {
+            _configMgr.checkCallerMayChangeAccessControlSettings(details.keySet());
+        }
         // Validate domain
         Domain domain = _domainMgr.getDomain(domainId);
         if (domain == null) {
@@ -3156,7 +3163,7 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
                 throw new CloudAuthenticationException(String.format("User %s (or their account) in domain %s is disabled/locked. Please contact the administrator.", userAccount, domain));
             }
             // Whenever the user is able to log in successfully, reset the login attempts to zero
-            if (!isInternalAccount(userAccount.getId())) {
+            if (!isInternalAccount(userAccount.getAccountId())) {
                 updateLoginAttempts(userAccount.getId(), 0, false);
             }
 
@@ -3172,7 +3179,7 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
             }
 
             if (userAccount.getState().equalsIgnoreCase(Account.State.ENABLED.toString())) {
-                if (!isInternalAccount(userAccount.getId())) {
+                if (!isInternalAccount(userAccount.getAccountId())) {
                     // Internal accounts are not disabled
                     updateLoginAttemptsWhenIncorrectLoginAttemptsEnabled(userAccount, updateIncorrectLoginCount, _allowedLoginAttempts);
                 }

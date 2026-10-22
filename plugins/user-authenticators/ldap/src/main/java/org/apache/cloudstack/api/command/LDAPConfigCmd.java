@@ -36,6 +36,7 @@ import org.apache.cloudstack.ldap.LdapConfiguration;
 import org.apache.cloudstack.ldap.LdapConfigurationVO;
 import org.apache.cloudstack.ldap.LdapManager;
 
+import com.cloud.configuration.ConfigurationManager;
 import com.cloud.exception.ConcurrentOperationException;
 import com.cloud.exception.InsufficientCapacityException;
 import com.cloud.exception.InvalidParameterValueException;
@@ -54,6 +55,9 @@ import com.cloud.utils.Pair;
 public class LDAPConfigCmd extends BaseCmd {
 
 
+    private static final List<String> SETTINGS = List.of("ldap.basedn", "ldap.bind.principal", "ldap.bind.password", "ldap.truststore",
+            "ldap.truststore.password");
+
     @Inject
     private ConfigurationDao _configDao;
 
@@ -62,6 +66,9 @@ public class LDAPConfigCmd extends BaseCmd {
 
     @Inject
     private LdapConfiguration _ldapConfiguration;
+
+    @Inject
+    private ConfigurationManager configurationManager;
 
     /////////////////////////////////////////////////////
     //////////////// API parameters /////////////////////
@@ -223,6 +230,7 @@ public class LDAPConfigCmd extends BaseCmd {
     }
 
     private boolean updateLDAP() {
+        configurationManager.checkCallerMayChangeAccessControlSettings(SETTINGS);
         _ldapManager.addConfiguration(hostname, port, null);
 
         /**

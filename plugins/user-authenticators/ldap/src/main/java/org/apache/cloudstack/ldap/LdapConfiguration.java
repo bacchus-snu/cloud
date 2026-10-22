@@ -16,6 +16,7 @@
 // under the License.
 package org.apache.cloudstack.ldap;
 
+import java.util.Arrays;
 import java.util.List;
 
 import javax.inject.Inject;
@@ -359,5 +360,13 @@ public class LdapConfiguration implements Configurable{
                 ldapTrustStorePassword,
                 ldapMemberOfAttribute
         };
+    }
+
+    /**
+     * Every LDAP setting but the read timeout and the page size, which do not decide who signs in as whom.
+     */
+    @Override
+    public String[] getAccessControlConfigKeyNames() {
+        return Arrays.stream(getConfigKeys()).filter(key -> key != ldapReadTimeout && key != ldapPageSize).map(ConfigKey::key).toArray(String[]::new);
     }
 }

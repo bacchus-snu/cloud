@@ -34,6 +34,11 @@ import com.cloud.storage.dao.StoragePoolAndAccessGroupMapDao;
 import org.apache.cloudstack.api.ApiConstants;
 import org.apache.cloudstack.api.command.admin.storage.ChangeStoragePoolScopeCmd;
 import org.apache.cloudstack.api.command.admin.storage.ConfigureStorageAccessCmd;
+import org.apache.cloudstack.api.command.admin.storage.CreateSecondaryStagingStoreCmd;
+import org.apache.cloudstack.api.command.admin.storage.CreateStoragePoolCmd;
+import org.apache.cloudstack.api.command.admin.storage.DeleteImageStoreCmd;
+import org.apache.cloudstack.api.command.admin.storage.UpdateStoragePoolCmd;
+import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreLifeCycle;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreManager;
@@ -46,19 +51,25 @@ import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
 import org.apache.cloudstack.framework.config.impl.ConfigDepotImpl;
 import org.apache.cloudstack.resourcedetail.dao.DiskOfferingDetailsDao;
 import org.apache.cloudstack.storage.command.CheckDataStoreStoragePolicyComplianceCommand;
+import org.apache.cloudstack.storage.datastore.db.ImageStoreDao;
+import org.apache.cloudstack.storage.datastore.db.ImageStoreVO;
 import org.apache.cloudstack.storage.datastore.db.ObjectStoreDao;
 import org.apache.cloudstack.storage.datastore.db.ObjectStoreVO;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
+import org.apache.cloudstack.storage.datastore.db.SnapshotDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolDetailVO;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolDetailsDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
+import org.apache.cloudstack.storage.datastore.db.VolumeDataStoreDao;
 import org.apache.cloudstack.storage.object.ObjectStore;
 import org.apache.commons.collections.MapUtils;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnitRunner;
@@ -67,6 +78,11 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import com.cloud.agent.AgentManager;
 import com.cloud.agent.api.Command;
+import com.cloud.agent.api.UnmountImageStoreCommand;
+import com.cloud.api.query.dao.TemplateJoinDao;
+import com.cloud.configuration.ConfigurationManager;
+import com.cloud.host.Status;
+import com.cloud.utils.db.Transaction;
 import com.cloud.agent.api.StoragePoolInfo;
 import com.cloud.capacity.Capacity;
 import com.cloud.capacity.CapacityManager;
@@ -107,6 +123,9 @@ public class StorageManagerImplTest {
 
     @Mock
     VolumeDao _volumeDao;
+
+    @Mock
+    ConfigurationManager configurationManager;
 
     @Mock
     VMInstanceDao vmInstanceDao;
@@ -1844,5 +1863,68 @@ public class StorageManagerImplTest {
         Mockito.when(lifeCycle.initialize(Mockito.any())).thenThrow(new RuntimeException("Initialization failed"));
 
         storageManagerImpl.discoverObjectStore(name, url, size, providerName, details);
+    }
+
+    private HostVO secondaryStorageVm(long id, long zoneId, Status status) {
+        HostVO ssvm = Mockito.mock(HostVO.class);
+        Mockito.lenient().when(ssvm.getId()).thenReturn(id);
+        Mockito.when(ssvm.getDataCenterId()).thenReturn(zoneId);
+        Mockito.lenient().when(ssvm.getStatus()).thenReturn(status);
+        return ssvm;
+    }
+
+    @Test
+    public void deletingAnImageStoreUnmountsItFromTheSecondaryStorageVmsOfItsZone() {
+        String url = "nfs://store.example.org/export/secondary";
+        ImageStoreVO store = Mockito.mock(ImageStoreVO.class);
+        Mockito.when(store.getDataCenterId()).thenReturn(1L);
+        Mockito.when(store.getUrl()).thenReturn(url);
+        storageManagerImpl._imageStoreDao = Mockito.mock(ImageStoreDao.class);
+        Mockito.when(storageManagerImpl._imageStoreDao.findById(5L)).thenReturn(store);
+        storageManagerImpl._snapshotStoreDao = Mockito.mock(SnapshotDataStoreDao.class);
+        storageManagerImpl._volumeStoreDao = Mockito.mock(VolumeDataStoreDao.class);
+        storageManagerImpl._templateViewDao = Mockito.mock(TemplateJoinDao.class);
+        List<HostVO> secondaryStorageVms = List.of(secondaryStorageVm(21L, 1L, Status.Up), secondaryStorageVm(22L, 2L, Status.Up),
+                secondaryStorageVm(23L, 1L, Status.Down));
+        Mockito.when(hostDao.listByType(Host.Type.SecondaryStorageVM)).thenReturn(secondaryStorageVms);
+        // the agent's Answer, not Mockito's
+        Mockito.when(agentManager.easySend(Mockito.eq(21L), Mockito.any(UnmountImageStoreCommand.class))).thenReturn(new com.cloud.agent.api.Answer(null));
+        DeleteImageStoreCmd cmd = Mockito.mock(DeleteImageStoreCmd.class);
+        Mockito.when(cmd.getId()).thenReturn(5L);
+
+        try (MockedStatic<Transaction> ignored = Mockito.mockStatic(Transaction.class);
+             MockedStatic<CallContext> callContext = Mockito.mockStatic(CallContext.class)) {
+            callContext.when(CallContext::current).thenReturn(Mockito.mock(CallContext.class));
+            assertTrue(storageManagerImpl.deleteImageStore(cmd));
+        }
+
+        ArgumentCaptor<UnmountImageStoreCommand> sent = ArgumentCaptor.forClass(UnmountImageStoreCommand.class);
+        Mockito.verify(agentManager).easySend(Mockito.eq(21L), sent.capture());
+        assertEquals(url, sent.getValue().getStoreUrl());
+        assertTrue("an agent that cannot read the command never answers; the wait must stay short",
+                sent.getValue().getWait() > 0 && sent.getValue().getWait() <= 60);
+        Mockito.verify(agentManager, Mockito.times(1)).easySend(Mockito.anyLong(), Mockito.any(Command.class));
+    }
+
+    @Test
+    public void poolAndImageStoreDetailsCarryAccessControlSettingsOnlyThroughTheSharedCheck() {
+        Map<String, String> details = new HashMap<>();
+        details.put("some.setting", "value");
+        Mockito.doThrow(new PermissionDeniedException("refused")).when(configurationManager).checkCallerMayChangeAccessControlSettings(List.of("some.setting"));
+        CreateSecondaryStagingStoreCmd stagingStore = Mockito.mock(CreateSecondaryStagingStoreCmd.class);
+        Mockito.when(stagingStore.getDetails()).thenReturn(details);
+        Map<String, HashMap<String, String>> apiDetails = new HashMap<>();
+        apiDetails.put("0", new HashMap<>(details));
+        CreateStoragePoolCmd createPool = Mockito.mock(CreateStoragePoolCmd.class);
+        Mockito.doReturn(apiDetails).when(createPool).getDetails();
+        UpdateStoragePoolCmd updatePool = Mockito.mock(UpdateStoragePoolCmd.class);
+        Mockito.doReturn(apiDetails).when(updatePool).getDetails();
+
+        assertThrows(PermissionDeniedException.class, () -> storageManagerImpl.createPool(createPool));
+        assertThrows(PermissionDeniedException.class, () -> storageManagerImpl.updateStoragePool(updatePool));
+        assertThrows(PermissionDeniedException.class, () -> storageManagerImpl.discoverImageStore("store", "nfs://store/export", "NFS", 1L, details));
+        assertThrows(PermissionDeniedException.class, () -> storageManagerImpl.migrateToObjectStore("store", "s3://bucket", "S3", details));
+        assertThrows(PermissionDeniedException.class, () -> storageManagerImpl.createSecondaryStagingStore(stagingStore));
+        Mockito.verifyNoInteractions(dataStoreProviderMgr, storagePoolDao);
     }
 }

@@ -520,6 +520,49 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
     private Set<String> weightBasedParametersForValidation = new HashSet<>();
     private Set<String> overprovisioningFactorsForValidation = new HashSet<>();
 
+    static final String[] ACCESS_CONTROL_CONFIG_KEYS = {
+            // API access checks and the inputs they decide on
+            "dynamic.apichecker.enabled", "dynamic.apichecker.cache.period",
+            "api.source.cidr.checks.enabled", "api.allowed.source.cidr.list",
+            "proxy.header.verify", "proxy.header.names", "proxy.cidr",
+            "integration.api.port",
+            "api.key.access",
+            // what a role or a user may do beyond its API rules
+            "role.types.allowed.for.operations.on.accounts.of.same.role.type",
+            "allow.operations.on.users.in.same.account",
+            "allow.user.create.projects", "allow.user.expunge.recover.vm", "allow.user.expunge.recover.volume",
+            "allow.user.force.stop.vm", "allow.user.list.available.ips.on.shared.network", "allow.user.view.all.domain.accounts",
+            "allow.user.view.all.zones", "allow.user.view.destroyed.vm",
+            "allow.public.user.templates", "share.public.templates.with.other.domains",
+            "allow.domain.admins.to.create.tagged.offerings", "allow.subdomain.network.access",
+            "allow.end.users.to.specify.vr.mtu", "allow.users.to.make.networks.redundant",
+            "enable.additional.vm.configuration", "allow.additional.vm.configuration.list.kvm",
+            "allow.additional.vm.configuration.list.vmware", "allow.additional.vm.configuration.list.xenserver",
+            // how identity is established and recovered
+            "incorrect.login.attempts.allowed",
+            "security.singlesignon.key", "security.singlesignon.tolerance.millis",
+            "password.policy.minimum.special.characters", "password.policy.minimum.length",
+            "password.policy.minimum.uppercase.letters", "password.policy.minimum.lowercase.letters",
+            "password.policy.minimum.digits", "password.policy.allowPasswordToContainUsername", "password.policy.regex",
+            "user.password.reset.enabled", "user.password.reset.ttl", "user.password.reset.email.sender",
+            "user.password.reset.smtp.host", "user.password.reset.smtp.port", "user.password.reset.smtp.useAuth",
+            "user.password.reset.smtp.useStartTLS", "user.password.reset.smtp.enabledSecurityProtocols",
+            "user.password.reset.smtp.username", "user.password.reset.smtp.password",
+            "user.password.reset.mail.domain.url", "user.password.reset.mail.template",
+            "enable.user.2fa", "mandate.user.2fa", "user.2fa.default.provider",
+            "user.allow.multiple.accounts",
+            "use.secret.key.in.response",
+            "enforce.post.requests.and.timestamps", "enable.secure.session.cookie",
+            "api.sessionkey.cookie.samesite", "api.sessionkey.check.locations",
+            // console access
+            "novnc.console.sourceip.check.enabled", "consoleproxy.url.domain", "consoleproxy.sslEnabled",
+            // what the certificate authority issues and trusts
+            "ca.framework.provider.plugin", "ca.framework.cert.keysize", "ca.framework.cert.signature.algorithm",
+            "ca.framework.cert.validity.period", "ca.framework.cert.automatic.renewal",
+            "ca.framework.cert.systemvm.allow.host.ip", "ca.framework.cert.management.custom.san",
+            "ca.framework.inject.default.truststore",
+    };
+
     public static final ConfigKey<Boolean> SystemVMUseLocalStorage = new ConfigKey<>(Boolean.class, "system.vm.use.local.storage", "Advanced", "false",
             "Indicates whether to use local storage pools or shared storage pools for system VMs.", false, ConfigKey.Scope.Zone, null);
 
@@ -614,7 +657,6 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         configValuesForValidation.add("xenserver.heartbeat.timeout");
         configValuesForValidation.add("ovm3.heartbeat.interval");
         configValuesForValidation.add("ovm3.heartbeat.timeout");
-        configValuesForValidation.add("incorrect.login.attempts.allowed");
         configValuesForValidation.add("vm.password.length");
         configValuesForValidation.add("externaldhcp.vmip.retrieval.interval");
         configValuesForValidation.add("externaldhcp.vmip.max.retry");
@@ -1054,10 +1096,12 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         Long domainId = cmd.getDomainId();
         // check if config value exists
         final ConfigurationVO config = _configDao.findByName(name);
+        checkConfigurationNameIsExact(config, name);
         String category = null;
         String eventValue = encryptEventValueIfConfigIsEncrypted(config, value);
         CallContext.current().setEventDetails(String.format(" Name: %s New Value: %s", name, eventValue));
 
+        checkCallerMayChangeConfiguration(name);
         final Account caller = CallContext.current().getCallingAccount();
         if (_accountMgr.isDomainAdmin(caller.getId())) {
             if (accountId == null && domainId == null) {
@@ -1196,6 +1240,8 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         String category;
         List<ConfigKey.Scope> configScope;
         final ConfigurationVO config = _configDao.findByName(name);
+        checkConfigurationNameIsExact(config, name);
+        checkCallerMayChangeConfiguration(name);
         if (config == null) {
             configKey = _configDepot.get(name);
             if (configKey == null) {
@@ -2981,6 +3027,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
                 }
                 newDetails.put(key, value);
             }
+            checkCallerMayChangeAccessControlSettings(newDetails.keySet());
         }
 
         // add the domain prefix list to details if not null
@@ -9443,6 +9490,54 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
                 ENABLE_ACCOUNT_SETTINGS_FOR_DOMAIN, ENABLE_DOMAIN_SETTINGS_FOR_CHILD_DOMAIN,
                 ALLOW_DOMAIN_ADMINS_TO_CREATE_TAGGED_OFFERINGS, EXPOSE_ERRORS_TO_USER, DELETE_QUERY_BATCH_SIZE, AllowNonRFC1918CompliantIPs, HostCapacityTypeCpuMemoryWeight
         };
+    }
+
+    @Override
+    public String[] getAccessControlConfigKeyNames() {
+        return ACCESS_CONTROL_CONFIG_KEYS.clone();
+    }
+
+    /**
+     * Any Admin-type account counts as root admin elsewhere; the access control settings go further and require the
+     * built-in Root Admin role, which no role rules constrain.
+     */
+    protected void checkCallerMayChangeConfiguration(String name) {
+        checkCallerMayChangeAccessControlSettings(Collections.singletonList(name));
+    }
+
+    @Override
+    public void checkCallerMayChangeAccessControlSettings(Collection<String> names) {
+        if (names == null) {
+            return;
+        }
+        for (String name : names) {
+            if (name != null && _configDepot.isAccessControlConfigKey(storedConfigurationName(name)) && !callerHasRootAdminRole()) {
+                throw new PermissionDeniedException(String.format("Only the Root Admin role can change %s, a setting that governs access control.", name));
+            }
+        }
+    }
+
+    /**
+     * The name of the setting the configuration table matches to the given name under its collation, as the details
+     * tables match a detail key to a setting; the given name when no setting matches.
+     */
+    private String storedConfigurationName(String name) {
+        ConfigurationVO config = _configDao.findByName(name);
+        return config != null ? config.getName() : name;
+    }
+
+    private boolean callerHasRootAdminRole() {
+        return Long.valueOf(RoleType.Admin.getId()).equals(CallContext.current().getCallingAccount().getRoleId());
+    }
+
+    /**
+     * The configuration table matches names as its collation does (case-insensitive, trailing spaces ignored), while
+     * every check here compares exact names; a request may therefore only name a setting exactly as it is stored.
+     */
+    protected void checkConfigurationNameIsExact(ConfigurationVO config, String name) {
+        if (config != null && !config.getName().equals(name)) {
+            throw new InvalidParameterValueException(String.format("Config parameter with name %s doesn't exist; names are matched exactly", name));
+        }
     }
 
     /**

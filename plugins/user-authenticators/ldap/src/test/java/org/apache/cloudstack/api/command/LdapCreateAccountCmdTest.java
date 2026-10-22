@@ -16,9 +16,12 @@
 // under the License.
 package org.apache.cloudstack.api.command;
 
+import com.cloud.exception.PermissionDeniedException;
 import com.cloud.user.Account;
 import com.cloud.user.AccountService;
+import com.cloud.user.User;
 import org.apache.cloudstack.acl.RoleService;
+import org.apache.cloudstack.acl.RoleType;
 import org.apache.cloudstack.api.ServerApiException;
 import org.apache.cloudstack.ldap.LdapManager;
 import org.apache.cloudstack.ldap.LdapUser;
@@ -29,10 +32,15 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
 
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.nullable;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @RunWith(MockitoJUnitRunner.class)
@@ -51,6 +59,22 @@ public class LdapCreateAccountCmdTest implements LdapConfigurationChanger {
         ldapCreateAccountCmd = spy(new LdapCreateAccountCmd(ldapManager, accountService));
         ldapCreateAccountCmd.roleService = roleService;
         setHiddenField(ldapCreateAccountCmd,"accountType", Account.Type.DOMAIN_ADMIN.ordinal());
+    }
+
+    @Test
+    public void anLdapAccountOrUserIsCreatedOnlyThroughTheAccountServiceChecks() {
+        LdapUser user = new LdapUser("rmurphy", "rmurphy@cloudstack.org", "Ryan", "Murphy", "cn=rmurphy,ou=engineering,dc=cloudstack,dc=org", "engineering", false, null);
+        when(accountService.getActiveAccountByName("engineering", 1L)).thenReturn(null, mock(Account.class));
+        when(accountService.createUserAccount(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenThrow(new PermissionDeniedException("escalation"));
+        when(accountService.createUser(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(User.Source.class)))
+                .thenThrow(new PermissionDeniedException("escalation"));
+
+        assertThrows(PermissionDeniedException.class, () -> ldapCreateAccountCmd.createCloudstackUserAccount(user, "engineering", 1L));
+        assertThrows(PermissionDeniedException.class, () -> ldapCreateAccountCmd.createCloudstackUserAccount(user, "engineering", 1L));
+
+        verify(accountService).createUserAccount(any(), any(), any(), any(), any(), any(), eq("engineering"), eq(Account.Type.DOMAIN_ADMIN),
+                eq(RoleType.DomainAdmin.getId()), eq(1L), any(), any(), any(), any(), eq(User.Source.LDAP));
     }
 
     @Test(expected = ServerApiException.class)

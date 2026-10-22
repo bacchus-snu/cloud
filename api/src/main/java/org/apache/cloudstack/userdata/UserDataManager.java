@@ -30,7 +30,17 @@ public interface UserDataManager extends Manager, Configurable {
             "Max length of vm userdata after base64 encoding. Default is 32768 and maximum is 1048576", true);
 
     String concatenateUserData(String userdata1, String userdata2, String userdataProvider);
+
+    /**
+     * Validates user data as one request parameter carried it, including the size limit of the request's HTTP method.
+     */
     String validateUserData(String userData, BaseCmd.HTTPMethod httpmethod);
+
+    /**
+     * Validates user data assembled from stored parts (a template's user data with the request's part appended, or a
+     * registered user data): its format and {@link #VM_USERDATA_MAX_LENGTH} only, since no request carried it whole.
+     */
+    String validateFinalizedUserData(String userData);
 
     /**
      * This method validates the user data uuid for system VMs and returns the user data

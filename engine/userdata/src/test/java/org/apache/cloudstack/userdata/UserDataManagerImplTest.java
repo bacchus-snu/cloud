@@ -28,6 +28,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
 import org.apache.cloudstack.api.BaseCmd;
+import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.InjectMocks;
@@ -37,6 +38,7 @@ import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnitRunner;
 
 import com.cloud.domain.Domain;
+import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.user.User;
 import com.cloud.user.UserDataVO;
 import com.cloud.user.dao.UserDataDao;
@@ -72,6 +74,18 @@ public class UserDataManagerImplTest {
         // Verify that we accept both but return the padded version
         assertEquals("validate return the value with padding", encodedUserdata, userDataManager.validateUserData(encodedUserdata, BaseCmd.HTTPMethod.GET));
         assertEquals("validate return the value with padding", encodedUserdata, userDataManager.validateUserData(urlEncodedUserdata, BaseCmd.HTTPMethod.GET));
+    }
+
+    @Test
+    public void theRequestSizeLimitAppliesOnlyToUserDataARequestCarried() {
+        String assembled = Base64.getEncoder().encodeToString(new byte[6000]);
+        Assert.assertThrows(InvalidParameterValueException.class, () -> userDataManager.validateUserData(assembled, BaseCmd.HTTPMethod.GET));
+        assertEquals(assembled, userDataManager.validateFinalizedUserData(assembled));
+
+        String beyondMaxLength = Base64.getEncoder().encodeToString(new byte[UserDataManager.VM_USERDATA_MAX_LENGTH.value()]);
+        Assert.assertThrows(InvalidParameterValueException.class, () -> userDataManager.validateFinalizedUserData(beyondMaxLength));
+        assertNull(userDataManager.validateFinalizedUserData(" "));
+        Assert.assertThrows(InvalidParameterValueException.class, () -> userDataManager.validateFinalizedUserData("not base64!"));
     }
 
     @Test

@@ -91,7 +91,6 @@ import org.apache.cloudstack.framework.config.Configurable;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
 import org.apache.commons.collections.CollectionUtils;
-import org.apache.commons.collections.MapUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
 
@@ -821,7 +820,7 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
         // Get GPU stats on the host and update GPU details
         // getGPUStatistics() fetches the stats
         HashMap<String, HashMap<String, VgpuTypesInfo>> groupDetails = resourceManager.getGPUStatistics(host);
-        if (!MapUtils.isEmpty(groupDetails)) {
+        if (groupDetails != null) {
             resourceManager.updateGPUDetails(host.getId(), groupDetails);
         }
 
@@ -1059,6 +1058,10 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
                 return null;
             }
         });
+
+        for (Long hostId : gpuDevices.stream().map(GpuDeviceVO::getHostId).collect(Collectors.toSet())) {
+            resourceManager.updateGPUDetails(hostId, getGpuGroupDetailsFromGpuDevicesOnHost(hostId));
+        }
         return true;
     }
 

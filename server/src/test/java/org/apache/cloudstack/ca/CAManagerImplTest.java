@@ -56,6 +56,7 @@ import java.lang.reflect.Method;
 import java.math.BigInteger;
 import java.security.KeyPair;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -286,7 +287,7 @@ public class CAManagerImplTest {
             sshCmdHelperMock.when(() -> SSHCmdHelper.sshExecuteCmdWithResult(Mockito.eq(sshConnection), Mockito.anyString()))
                     .thenReturn(new SSHCmdHelper.SSHCmdResult(0, hostCsr("hosta.example.org", List.of("10.0.0.11", "147.46.240.204")), ""));
 
-            caManager.provisionCertificateViaSsh(sshConnection, "10.0.0.11", "hosta", "root");
+            caManager.provisionCertificateViaSsh(sshConnection, "root", "10.0.0.11", "hosta", "root");
         }
 
         Mockito.verify(caProvider).issueCertificateWithNames(anyString(), Mockito.eq(List.of("hosta", "10.0.0.11")),
@@ -438,10 +439,37 @@ public class CAManagerImplTest {
             Mockito.doReturn(new Certificate(x509, null, Collections.singletonList(x509)))
                    .when(caManager).issueCertificate(Mockito.anyString(), Mockito.anyList(), Mockito.anyList(), Mockito.nullable(Integer.class), Mockito.anyString());
 
-            caManager.provisionCertificateViaSsh(sshConnection, agentIp, agentHostname, caProviderStr);
+            caManager.provisionCertificateViaSsh(sshConnection, "root", agentIp, agentHostname, caProviderStr);
 
             sshCmdHelperMock.verify(() -> SSHCmdHelper.sshExecuteCmdWithResult(Mockito.eq(sshConnection), Mockito.contains("keystore-setup")), Mockito.times(1));
             sshCmdHelperMock.verify(() -> SSHCmdHelper.sshExecuteCmdWithResult(Mockito.eq(sshConnection), Mockito.contains("keystore-cert-import")), Mockito.times(1));
+        }
+    }
+
+    @Test
+    public void provisioningOverSshUsesSudoOnlyForAUserOtherThanRoot() throws Exception {
+        Connection sshConnection = Mockito.mock(Connection.class);
+        final String agentIp = "192.168.1.1";
+        final KeyPair keyPair = CertUtils.generateRandomKeyPair(1024);
+        final X509Certificate x509 = CertUtils.generateV3Certificate(null, keyPair, keyPair.getPublic(), "CN=ca", "SHA256withRSA", 365, null, null);
+        Mockito.doReturn(new Certificate(x509, null, Collections.singletonList(x509)))
+                .when(caManager).issueCertificate(Mockito.anyString(), Mockito.anyList(), Mockito.anyList(), Mockito.nullable(Integer.class), Mockito.anyString());
+        List<String> commands = new ArrayList<>();
+
+        try (MockedStatic<SSHCmdHelper> sshCmdHelperMock = Mockito.mockStatic(SSHCmdHelper.class)) {
+            sshCmdHelperMock.when(() -> SSHCmdHelper.sshExecuteCmdWithResult(Mockito.eq(sshConnection), Mockito.anyString())).thenAnswer(invocation -> {
+                commands.add(invocation.getArgument(1));
+                return new SSHCmdHelper.SSHCmdResult(0, hostCsr("host1.example.org", List.of(agentIp)), "");
+            });
+
+            caManager.provisionCertificateViaSsh(sshConnection, "root", agentIp, "host1", "root");
+            Assert.assertEquals(2, commands.size());
+            commands.forEach(command -> Assert.assertTrue(command, command.startsWith("/usr/share/cloudstack-common/scripts/util/")));
+
+            commands.clear();
+            caManager.provisionCertificateViaSsh(sshConnection, "cloud", agentIp, "host1", "root");
+            Assert.assertEquals(2, commands.size());
+            commands.forEach(command -> Assert.assertTrue(command, command.startsWith("sudo /usr/share/cloudstack-common/scripts/util/")));
         }
     }
 
@@ -466,14 +494,16 @@ public class CAManagerImplTest {
             sshCmdHelperMock.when(() -> SSHCmdHelper.acquireAuthorizedConnectionWithPublicKey(Mockito.any(Connection.class), Mockito.anyString(), Mockito.anyString()))
                     .thenReturn(true);
 
-            Mockito.doNothing().when(caManager).provisionCertificateViaSsh(Mockito.any(Connection.class), Mockito.anyString(), Mockito.anyString(), Mockito.anyString());
+            Mockito.doNothing().when(caManager).provisionCertificateViaSsh(Mockito.any(Connection.class), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(),
+                    Mockito.anyString());
 
             Method method = CAManagerImpl.class.getDeclaredMethod("provisionKvmHostViaSsh", Host.class, String.class);
             method.setAccessible(true);
             boolean result = (Boolean) method.invoke(caManager, host, "root");
 
             Assert.assertTrue(result);
-            Mockito.verify(caManager, Mockito.times(1)).provisionCertificateViaSsh(Mockito.any(Connection.class), Mockito.eq("192.168.1.1"), Mockito.eq("host1"), Mockito.eq("root"));
+            Mockito.verify(caManager, Mockito.times(1)).provisionCertificateViaSsh(Mockito.any(Connection.class), Mockito.eq("root"), Mockito.eq("192.168.1.1"),
+                    Mockito.eq("host1"), Mockito.eq("root"));
             sshCmdHelperMock.verify(() -> SSHCmdHelper.sshExecuteCmd(Mockito.any(Connection.class), Mockito.eq("systemctl restart libvirtd")), Mockito.times(1));
             sshCmdHelperMock.verify(() -> SSHCmdHelper.sshExecuteCmd(Mockito.any(Connection.class), Mockito.eq("systemctl restart cloudstack-agent")), Mockito.times(1));
         }

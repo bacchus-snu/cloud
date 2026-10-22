@@ -1298,11 +1298,31 @@ public class ClusterManagerImpl extends ManagerBase implements ClusterManager, C
         return HeartbeatInterval.value();
     }
 
-    private void checkConflicts() throws ConfigurationException {
+    /**
+     * A node that stopped leaves its last heartbeat behind, while a running one renews it every heartbeat interval.
+     */
+    protected boolean isHeartbeatAdvancing(final ManagementServerHostVO peer) {
+        try {
+            Thread.sleep(2L * HeartbeatInterval.value());
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        final ManagementServerHostVO current = _mshostDao.findByMsid(peer.getMsid());
+        return current != null && current.getLastUpdateTime() != null && peer.getLastUpdateTime() != null
+                && current.getLastUpdateTime().after(peer.getLastUpdateTime());
+    }
+
+    protected void checkConflicts() throws ConfigurationException {
         final Date cutTime = DateUtil.currentGMTTime();
         final List<ManagementServerHostVO> peers = _mshostDao.getActiveList(new Date(cutTime.getTime() - HeartbeatThreshold.value()));
         for (final ManagementServerHostVO peer : peers) {
             final String peerIP = peer.getServiceIP().trim();
+            if (peer.getMsid() == _msId && !_clusterNodeIP.equals(peerIP) && isHeartbeatAdvancing(peer)) {
+                final String msg = String.format("Detected another running management node with the node id %d of this one, at %s; node ids derive from " +
+                        "host names, which must be unique among the management nodes", _msId, peerIP);
+                logger.error(msg);
+                throw new ConfigurationException(msg);
+            }
             if (_clusterNodeIP.equals(peerIP)) {
                 if ("127.0.0.1".equals(_clusterNodeIP)) {
                     if (pingManagementNode(peer.getMsid())) {

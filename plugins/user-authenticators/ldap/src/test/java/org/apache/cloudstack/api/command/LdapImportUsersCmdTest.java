@@ -18,10 +18,13 @@ package org.apache.cloudstack.api.command;
 
 import com.cloud.domain.Domain;
 import com.cloud.domain.DomainVO;
+import com.cloud.exception.PermissionDeniedException;
 import com.cloud.user.Account;
 import com.cloud.user.AccountService;
+import com.cloud.user.User;
 import com.cloud.user.DomainService;
 import org.apache.cloudstack.acl.RoleService;
+import org.apache.cloudstack.acl.RoleType;
 import org.apache.cloudstack.api.response.ListResponse;
 import org.junit.Before;
 import org.junit.Test;
@@ -37,10 +40,14 @@ import java.util.List;
 import java.util.UUID;
 
 import static junit.framework.TestCase.assertEquals;
+import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @RunWith(MockitoJUnitRunner.class)
@@ -61,6 +68,27 @@ public class LdapImportUsersCmdTest implements LdapConfigurationChanger {
         ldapImportUsersCmd = spy(new LdapImportUsersCmd(ldapManager, domainService, accountService));
         ldapImportUsersCmd.roleService = roleService;
         setHiddenField(ldapImportUsersCmd, "accountType", Account.Type.DOMAIN_ADMIN.ordinal());
+    }
+
+    @Test
+    public void importedAccountsAndUsersAreCreatedOnlyThroughTheAccountServiceChecks() throws Exception {
+        List<LdapUser> users = new ArrayList<>();
+        users.add(new LdapUser("rmurphy", "rmurphy@test.com", "Ryan", "Murphy", "cn=rmurphy,ou=engineering,dc=cloudstack,dc=org", "engineering", false, null));
+        when(ldapManager.getUsers(null)).thenReturn(users);
+        Domain domain = new DomainVO("engineering", 1L, 1L, "engineering", UUID.randomUUID().toString());
+        when(domainService.getDomainByName("engineering", 1L)).thenReturn(domain);
+        when(accountService.getActiveAccountByName(eq("rmurphy"), any())).thenReturn(null, mock(Account.class));
+        when(accountService.createUserAccount(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenThrow(new PermissionDeniedException("escalation"));
+        when(accountService.createUser(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(User.Source.class)))
+                .thenThrow(new PermissionDeniedException("escalation"));
+
+        assertThrows(PermissionDeniedException.class, () -> ldapImportUsersCmd.execute());
+        assertThrows(PermissionDeniedException.class, () -> ldapImportUsersCmd.execute());
+
+        verify(accountService).createUserAccount(eq("rmurphy"), any(), any(), any(), any(), any(), eq("rmurphy"), eq(Account.Type.DOMAIN_ADMIN),
+                eq(RoleType.DomainAdmin.getId()), any(), any(), any(), any(), any(), eq(User.Source.LDAP));
+        verify(ldapManager, never()).createLdapUserResponse(any(LdapUser.class));
     }
 
     @Test

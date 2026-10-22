@@ -4648,7 +4648,8 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
             // The below method needs the host to be persisted in the DB to save the GPU devices for the host
             gpuService.addGpuDevicesToHost(host, gpuDevices, reportTime);
         }
-        if (CollectionUtils.isNotEmpty(gpuDevices)) {
+        // a KVM host's GPU groups are those of its device rows, whichever path reports them
+        if (CollectionUtils.isNotEmpty(gpuDevices) || (host.getId() > 0 && HypervisorType.KVM.equals(host.getHypervisorType()))) {
             finalGroupDetails = gpuService.getGpuGroupDetailsFromGpuDevicesOnHost(host.getId());
         } else {
             finalGroupDetails = groupDetails;

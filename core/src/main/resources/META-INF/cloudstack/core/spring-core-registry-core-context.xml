@@ -32,6 +32,7 @@
     <bean id="userAuthenticatorsRegistry"
         class="org.apache.cloudstack.spring.lifecycle.registry.ExtensionRegistry">
         <property name="orderConfigKey" value="user.authenticators.order" />
+        <property name="accessControl" value="true" />
         <property name="excludeKey" value="user.authenticators.exclude" />
         <property name="orderConfigDefault" value="PBKDF2,SHA256SALT,MD5,LDAP,SAML2,PLAINTEXT,OAUTH2" />
     </bean>
@@ -39,6 +40,7 @@
     <bean id="userTwoFactorAuthenticatorsRegistry"
           class="org.apache.cloudstack.spring.lifecycle.registry.ExtensionRegistry">
         <property name="orderConfigKey" value="user.2fa.providers.order" />
+        <property name="accessControl" value="true" />
         <property name="excludeKey" value="user.2fa.providers.exclude" />
         <property name="orderConfigDefault" value="totp,staticpin" />
     </bean>
@@ -46,6 +48,7 @@
     <bean id="pluggableAPIAuthenticatorsRegistry"
           class="org.apache.cloudstack.spring.lifecycle.registry.ExtensionRegistry">
         <property name="orderConfigKey" value="pluggableApi.authenticators.order" />
+        <property name="accessControl" value="true" />
         <property name="excludeKey" value="pluggableApi.authenticators.exclude" />
         <property name="orderConfigDefault" value="SAML2Auth,OAUTH2Auth" />
     </bean>
@@ -53,6 +56,7 @@
     <bean id="userPasswordEncodersRegistry"
         class="org.apache.cloudstack.spring.lifecycle.registry.ExtensionRegistry">
         <property name="orderConfigKey" value="user.password.encoders.order" />
+        <property name="accessControl" value="true" />
         <property name="excludeKey" value="user.password.encoders.exclude" />
         <property name="orderConfigDefault" value="PBKDF2,SHA256SALT,MD5,LDAP,SAML2,PLAINTEXT" />
     </bean>
@@ -60,6 +64,7 @@
     <bean id="securityCheckersRegistry"
         class="org.apache.cloudstack.spring.lifecycle.registry.ExtensionRegistry">
         <property name="orderConfigKey" value="security.checkers.order" />
+        <property name="accessControl" value="true" />
         <property name="excludeKey" value="security.checkers.exclude" />
         <property name="orderConfigDefault"
             value="AffinityGroupAccessChecker,DomainChecker" />
@@ -270,11 +275,13 @@
     <bean id="apiCheckersRegistry"
         class="org.apache.cloudstack.spring.lifecycle.registry.ExtensionRegistry">
         <property name="excludeKey" value="api.checkers.exclude" />
+        <property name="accessControl" value="true" />
     </bean>
 
     <bean id="apiAclCheckersRegistry"
           class="org.apache.cloudstack.spring.lifecycle.registry.ExtensionRegistry">
         <property name="excludeKey" value="api.checkers.acl.exclude" />
+        <property name="accessControl" value="true" />
     </bean>
 
     <bean id="querySelectorsRegistry"

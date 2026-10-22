@@ -32,7 +32,10 @@ import com.cloud.utils.db.TransactionCallback;
 import org.apache.cloudstack.annotation.dao.AnnotationDao;
 import org.apache.cloudstack.context.CallContext;
 import org.springframework.test.util.ReflectionTestUtils;
+import com.cloud.agent.api.GetGPUStatsAnswer;
+import com.cloud.agent.api.GetGPUStatsCommand;
 import com.cloud.agent.api.GetVncPortAnswer;
+import com.cloud.agent.api.VgpuTypesInfo;
 import com.cloud.agent.api.GetVncPortCommand;
 import com.cloud.capacity.dao.CapacityDao;
 import com.cloud.dc.ClusterVO;
@@ -94,6 +97,7 @@ import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
 
@@ -1405,6 +1409,22 @@ public class ResourceManagerImplTest {
         Mockito.verify(hostDao).findByDataCenterId(zoneId);
         Mockito.verify(hostDao).findByClusterId(clusterId, Host.Type.Routing);
         Mockito.verify(hostDao).findByPodId(podId, Host.Type.Routing);
+    }
+
+    @Test
+    public void aKvmHostsGpuGroupsAreThoseOfItsDeviceRowsWhateverItReports() {
+        GpuService gpuGroups = Mockito.mock(GpuService.class);
+        ReflectionTestUtils.setField(resourceManager, "gpuService", gpuGroups);
+        HostVO kvmHost = Mockito.mock(HostVO.class);
+        when(kvmHost.getId()).thenReturn(7L);
+        when(kvmHost.getHypervisorType()).thenReturn(Hypervisor.HypervisorType.KVM);
+        HashMap<String, HashMap<String, VgpuTypesInfo>> fromDeviceRows = new HashMap<>();
+        fromDeviceRows.put("A100", new HashMap<>());
+        when(gpuGroups.getGpuGroupDetailsFromGpuDevicesOnHost(7L)).thenReturn(fromDeviceRows);
+        GetGPUStatsCommand stats = new GetGPUStatsCommand("guid", "host");
+        when(agentManager.easySend(Mockito.eq(7L), Mockito.any(GetGPUStatsCommand.class))).thenReturn(new GetGPUStatsAnswer(stats, new ArrayList<VgpuTypesInfo>()));
+
+        Assert.assertEquals(fromDeviceRows, resourceManager.getGPUStatistics(kvmHost));
     }
 
     @Test

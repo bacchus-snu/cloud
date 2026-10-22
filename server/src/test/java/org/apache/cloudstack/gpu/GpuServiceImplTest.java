@@ -785,6 +785,21 @@ public class GpuServiceImplTest {
         verify(resourceManager).getGPUStatistics(mockHost);
     }
 
+    @Test
+    public void discoveringNoGpusStillRefreshesTheHostGpuGroups() {
+        DiscoverGpuDevicesCmd cmd = mock(DiscoverGpuDevicesCmd.class);
+        when(cmd.getId()).thenReturn(HOST_ID);
+        Mockito.lenient().when(cmd.getCommandName()).thenReturn(COMMAND_DISCOVER_GPU_DEVICES);
+        when(hostDao.findById(HOST_ID)).thenReturn(mockHost);
+        Mockito.lenient().when(mockHost.getId()).thenReturn(HOST_ID);
+        when(resourceManager.getGPUStatistics(mockHost)).thenReturn(new HashMap<>());
+        when(gpuDeviceDao.listByHostId(HOST_ID)).thenReturn(List.of());
+
+        gpuService.discoverGpuDevices(cmd);
+
+        verify(resourceManager).updateGPUDetails(HOST_ID, new HashMap<>());
+    }
+
     @Test(expected = InvalidParameterValueException.class)
     public void testDiscoverGpuDevices_HostNotFound() {
         DiscoverGpuDevicesCmd cmd = mock(DiscoverGpuDevicesCmd.class);
@@ -2226,6 +2241,22 @@ public class GpuServiceImplTest {
         }
         verify(gpuDeviceDao, times(2)).lockByHostId(HOST_ID);
         verify(gpuDeviceDao, never()).remove(anyLong());
+    }
+
+    @Test
+    public void deletingGpuDevicesRefreshesTheHostGpuGroups() {
+        GpuDeviceVO stray = gpu(HOST_ID, 31L, GPU_BUS_ADDRESS, null, GpuDevice.State.Free);
+        DeleteGpuDeviceCmd delete = mock(DeleteGpuDeviceCmd.class);
+        when(delete.getIds()).thenReturn(List.of(31L));
+        when(gpuDeviceDao.listByIds(List.of(31L))).thenReturn(List.of(stray));
+        when(gpuDeviceDao.listByHostId(HOST_ID)).thenReturn(List.of());
+        runTransactionsInline();
+
+        assertTrue(gpuService.deleteGpuDevices(delete));
+
+        InOrder inOrder = Mockito.inOrder(gpuDeviceDao, resourceManager);
+        inOrder.verify(gpuDeviceDao).remove(31L);
+        inOrder.verify(resourceManager).updateGPUDetails(HOST_ID, new HashMap<>());
     }
 
     /**

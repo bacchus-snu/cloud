@@ -374,7 +374,8 @@ public class CAManagerImpl extends ManagerBase implements CAManager {
     }
 
     @Override
-    public void provisionCertificateViaSsh(final Connection sshConnection, final String agentIp, final String agentHostname, final String caProvider) {
+    public void provisionCertificateViaSsh(final Connection sshConnection, final String sshUsername, final String agentIp, final String agentHostname,
+            final String caProvider) {
         Integer validityPeriod = CAManager.CertValidityPeriod.value();
         if (validityPeriod < 1) {
             validityPeriod = 1;
@@ -384,11 +385,12 @@ public class CAManagerImpl extends ManagerBase implements CAManager {
 
         // 1. Setup Keystore and Generate CSR
         final SSHCmdHelper.SSHCmdResult keystoreSetupResult = SSHCmdHelper.sshExecuteCmdWithResult(sshConnection,
-                String.format("sudo /usr/share/cloudstack-common/scripts/util/%s " +
+                String.format("%s/usr/share/cloudstack-common/scripts/util/%s " +
                               "/etc/cloudstack/agent/agent.properties " +
                               "/etc/cloudstack/agent/%s " +
                               "%s %d " +
                               "/etc/cloudstack/agent/%s",
+                        sudoPrefix(sshUsername),
                         KeyStoreUtils.KS_SETUP_SCRIPT,
                         KeyStoreUtils.KS_FILENAME,
                         keystorePassword,
@@ -415,12 +417,13 @@ public class CAManagerImpl extends ManagerBase implements CAManager {
         // 3. Import Certificate into agent keystore
         final SetupCertificateCommand certificateCommand = new SetupCertificateCommand(certificate);
         final SSHCmdHelper.SSHCmdResult setupCertResult = SSHCmdHelper.sshExecuteCmdWithResult(sshConnection,
-                String.format("sudo /usr/share/cloudstack-common/scripts/util/%s " +
+                String.format("%s/usr/share/cloudstack-common/scripts/util/%s " +
                               "/etc/cloudstack/agent/agent.properties %s " +
                               "/etc/cloudstack/agent/%s %s " +
                               "/etc/cloudstack/agent/%s \"%s\" " +
                               "/etc/cloudstack/agent/%s \"%s\" " +
                               "/etc/cloudstack/agent/%s \"%s\"",
+                        sudoPrefix(sshUsername),
                         KeyStoreUtils.KS_IMPORT_SCRIPT,
                         keystorePassword,
                         KeyStoreUtils.KS_FILENAME,
@@ -435,6 +438,10 @@ public class CAManagerImpl extends ManagerBase implements CAManager {
         if (!setupCertResult.isSuccess()) {
             throw new CloudRuntimeException("Failed to import certificates into agent keystore via SSH on host: " + agentIp);
         }
+    }
+
+    private static String sudoPrefix(String sshUsername) {
+        return "root".equals(sshUsername) ? "" : "sudo ";
     }
 
     private boolean provisionKvmHostViaSsh(Host host, String caProvider) {
@@ -461,11 +468,10 @@ public class CAManagerImpl extends ManagerBase implements CAManager {
                 }
             }
 
-            provisionCertificateViaSsh(sshConnection, hostIp, host.getName(), caProvider);
+            provisionCertificateViaSsh(sshConnection, username, hostIp, host.getName(), caProvider);
 
-            String sudoPrefix = "root".equals(username) ? "" : "sudo ";
-            SSHCmdHelper.sshExecuteCmd(sshConnection, sudoPrefix + "systemctl restart libvirtd");
-            SSHCmdHelper.sshExecuteCmd(sshConnection, sudoPrefix + "systemctl restart cloudstack-agent");
+            SSHCmdHelper.sshExecuteCmd(sshConnection, sudoPrefix(username) + "systemctl restart libvirtd");
+            SSHCmdHelper.sshExecuteCmd(sshConnection, sudoPrefix(username) + "systemctl restart cloudstack-agent");
 
             return true;
         } catch (Exception e) {

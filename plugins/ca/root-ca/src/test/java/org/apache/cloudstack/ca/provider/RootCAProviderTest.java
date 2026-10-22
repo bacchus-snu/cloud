@@ -33,7 +33,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -73,6 +75,13 @@ public class RootCAProviderTest {
 
     private RootCAProvider provider;
 
+    /**
+     * Static settings some tests replace with mocks; restored after each test, since they outlive the provider instance.
+     */
+    private static final String[] STATIC_CONFIG_KEYS = {"rootCAPrivateKey", "rootCAPublicKey", "rootCACertificate", "rootCAIssuerDN",
+            "rootCAAuthStrictness", "rootCAAllowExpiredCert"};
+    private final Map<String, Object> staticConfigKeys = new HashMap<>();
+
     private void addField(final RootCAProvider provider, final String name, final Object o) throws IllegalAccessException, NoSuchFieldException {
         Field f = RootCAProvider.class.getDeclaredField(name);
         f.setAccessible(true);
@@ -81,6 +90,11 @@ public class RootCAProviderTest {
 
     @Before
     public void setUp() throws Exception {
+        for (String name : STATIC_CONFIG_KEYS) {
+            Field f = RootCAProvider.class.getDeclaredField(name);
+            f.setAccessible(true);
+            staticConfigKeys.put(name, f.get(null));
+        }
         caKeyPair = CertUtils.generateRandomKeyPair(1024);
         caCertificate = CertUtils.generateV3Certificate(null, caKeyPair, caKeyPair.getPublic(), "CN=ca", "SHA256withRSA", 365, null, null);
 
@@ -93,6 +107,11 @@ public class RootCAProviderTest {
 
     @After
     public void tearDown() throws Exception {
+        for (Map.Entry<String, Object> key : staticConfigKeys.entrySet()) {
+            Field f = RootCAProvider.class.getDeclaredField(key.getKey());
+            f.setAccessible(true);
+            f.set(null, key.getValue());
+        }
     }
 
     @Test

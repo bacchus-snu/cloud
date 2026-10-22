@@ -548,4 +548,17 @@ public class SAML2AuthManagerImpl extends AdapterBase implements SAML2AuthManage
                 SAMLSignatureAlgorithm, SAMLAppendDomainSuffix, SAMLTimeout, SAMLCheckSignature,
                 SAMLForceAuthn, SAMLUserSessionKeyPathAttribute, SAMLRequirePasswordLogin, EnableLoginAfterSAMLDisable};
     }
+
+    /**
+     * Every setting of the SAML sign-in but the descriptive ones published in the service provider metadata and the
+     * metadata fetch timeout.
+     */
+    @Override
+    public String[] getAccessControlConfigKeyNames() {
+        return new String[] {SAMLIsPluginEnabled.key(), SAMLServiceProviderID.key(), SAMLServiceProviderSingleSignOnURL.key(),
+                SAMLServiceProviderSingleLogOutURL.key(), SAMLCloudStackRedirectionUrl.key(), SAMLUserAttributeName.key(),
+                SAMLIdentityProviderMetadataURL.key(), SAMLDefaultIdentityProviderId.key(), SAMLSignatureAlgorithm.key(),
+                SAMLAppendDomainSuffix.key(), SAMLCheckSignature.key(), SAMLForceAuthn.key(), SAMLUserSessionKeyPathAttribute.key(),
+                SAMLRequirePasswordLogin.key(), EnableLoginAfterSAMLDisable.key(), "saml2.failed.login.redirect.url"};
+    }
 }

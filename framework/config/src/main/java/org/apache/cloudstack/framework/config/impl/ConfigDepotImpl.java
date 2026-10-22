@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import javax.annotation.PostConstruct;
 import javax.inject.Inject;
@@ -87,6 +88,7 @@ public class ConfigDepotImpl implements ConfigDepot, ConfigDepotAdmin {
     List<ScopedConfigStorage> _scopedStorages;
     Set<Configurable> _configured = Collections.synchronizedSet(new HashSet<Configurable>());
     Set<String> newConfigs = Collections.synchronizedSet(new HashSet<>());
+    final Set<String> accessControlConfigKeys = ConcurrentHashMap.newKeySet();
     LazyCache<Ternary<String, ConfigKey.Scope, Long>, String> configCache;
 
     private HashMap<String, Pair<String, ConfigKey<?>>> _allKeys = new HashMap<String, Pair<String, ConfigKey<?>>>(1007);
@@ -153,8 +155,17 @@ public class ConfigDepotImpl implements ConfigDepot, ConfigDepotAdmin {
                 }
             }
         }
+        String[] accessControlKeyNames = configurable.getAccessControlConfigKeyNames();
+        if (accessControlKeyNames != null) {
+            Collections.addAll(accessControlConfigKeys, accessControlKeyNames);
+        }
 
         _configured.add(configurable);
+    }
+
+    @Override
+    public boolean isAccessControlConfigKey(String name) {
+        return accessControlConfigKeys.contains(name);
     }
 
     private void createOrupdateConfigObject(Date date, String componentName, ConfigKey<?> key, String value) {

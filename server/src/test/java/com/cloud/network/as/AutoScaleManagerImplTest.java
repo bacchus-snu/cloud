@@ -440,8 +440,9 @@ public class AutoScaleManagerImplTest {
         when(ApiDBUtils.searchForLatestUserKeyPair(Mockito.any())).thenReturn(ret);
 
         userDataDetails.put("0", new HashMap<>() {{ put("key1", "value1"); put("key2", "value2"); }});
+        Mockito.doReturn(userData).when(userDataMgr).validateUserData(eq(userData), nullable(BaseCmd.HTTPMethod.class));
         Mockito.doReturn(userDataFinal).when(userVmMgr).finalizeUserData(any(), any(), any());
-        Mockito.doReturn(userDataFinal).when(userDataMgr).validateUserData(eq(userDataFinal), nullable(BaseCmd.HTTPMethod.class));
+        Mockito.doReturn(userDataFinal).when(userDataMgr).validateFinalizedUserData(userDataFinal);
 
         when(templateMock.getGuestOSId()).thenReturn(100L);
         GuestOSVO guestOSMock = Mockito.mock(GuestOSVO.class);
@@ -767,6 +768,13 @@ public class AutoScaleManagerImplTest {
         Mockito.verify(asPolicyDao, never()).persist(Mockito.any());
     }
 
+    private void verifyRequestSizeLimitAppliesToTheRequestPartOnly() {
+        Mockito.verify(userDataMgr).validateUserData(eq(userData), nullable(BaseCmd.HTTPMethod.class));
+        Mockito.verify(userVmMgr).finalizeUserData(eq(userData), any(), any());
+        Mockito.verify(userDataMgr).validateFinalizedUserData(userDataFinal);
+        Mockito.verify(userDataMgr, Mockito.never()).validateUserData(eq(userDataFinal), nullable(BaseCmd.HTTPMethod.class));
+    }
+
     @Test
     public void testCreateAutoScaleVmProfile() {
         when(entityManager.findById(DataCenter.class, zoneId)).thenReturn(zoneMock);
@@ -800,8 +808,7 @@ public class AutoScaleManagerImplTest {
             Assert.assertEquals(asVmProfileMock, vmProfile);
             Mockito.verify(autoScaleVmProfileDao).persist(Mockito.any());
 
-            Mockito.verify(userVmMgr).finalizeUserData(any(), any(), any());
-            Mockito.verify(userDataMgr).validateUserData(eq(userDataFinal), nullable(BaseCmd.HTTPMethod.class));
+            verifyRequestSizeLimitAppliesToTheRequestPartOnly();
         }
     }
 
@@ -861,8 +868,7 @@ public class AutoScaleManagerImplTest {
         Assert.assertEquals(asVmProfileMock, vmProfile);
         Mockito.verify(autoScaleVmProfileDao).persist(Mockito.any());
 
-        Mockito.verify(userVmMgr).finalizeUserData(any(), any(), any());
-        Mockito.verify(userDataMgr).validateUserData(eq(userDataFinal), nullable(BaseCmd.HTTPMethod.class));
+        verifyRequestSizeLimitAppliesToTheRequestPartOnly();
     }
 
     @Test

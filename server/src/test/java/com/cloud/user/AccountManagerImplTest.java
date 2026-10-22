@@ -382,6 +382,51 @@ public class AccountManagerImplTest extends AccountManagentImplTestBase {
         Mockito.verify(userAuthenticator, Mockito.never()).authenticate("test", "", 1L, null);
     }
 
+    @Test
+    public void adminTypeAccountsAreExemptFromLockoutWhateverTheirUserIds() throws UnknownHostException {
+        long userId = 5L;
+        long adminAccountId = 2L;
+        UserAccountVO adminUser = new UserAccountVO();
+        adminUser.setId(userId);
+        adminUser.setAccountId(adminAccountId);
+        adminUser.setUsername("operator");
+        adminUser.setSource(User.Source.UNKNOWN);
+        adminUser.setState(Account.State.ENABLED.toString());
+        adminUser.setAccountState(Account.State.ENABLED.toString());
+        Mockito.when(userAccountDao.getUserAccount("operator", 1L)).thenReturn(adminUser);
+        AccountVO adminAccount = new AccountVO("admins", 1L, null, Account.Type.ADMIN, "uuid");
+        Mockito.when(_accountDao.findById(adminAccountId)).thenReturn(adminAccount);
+        Mockito.lenient().when(_accountDao.findById(userId)).thenReturn(null);
+        Mockito.lenient().when(_accountDao.findByIdIncludingRemoved(adminAccountId)).thenReturn(adminAccount);
+        Mockito.doReturn(false).when(accountManagerImpl).isRootAdmin(Mockito.anyLong());
+        Mockito.when(userAuthenticator.getName()).thenReturn("test");
+        Mockito.when(userAuthenticator.authenticate("operator", "wrong", 1L, new HashMap<>())).thenReturn(new Pair<>(false,
+                UserAuthenticator.ActionOnFailedAuthentication.INCREMENT_INCORRECT_LOGIN_ATTEMPT_COUNT));
+        Mockito.when(userAuthenticator.authenticate("operator", "right", 1L, new HashMap<>())).thenReturn(new Pair<>(true, null));
+
+        Assert.assertNull(accountManagerImpl.authenticateUser("operator", "wrong", 1L, InetAddress.getByName("127.0.0.1"), new HashMap<>()));
+        try (MockedStatic<ActionEventUtils> ignored = Mockito.mockStatic(ActionEventUtils.class)) {
+            Assert.assertNotNull(accountManagerImpl.authenticateUser("operator", "right", 1L, InetAddress.getByName("127.0.0.1"), new HashMap<>()));
+        }
+
+        Mockito.verify(accountManagerImpl, Mockito.never()).updateLoginAttemptsWhenIncorrectLoginAttemptsEnabled(Mockito.any(), Mockito.anyBoolean(), Mockito.anyInt());
+        Mockito.verify(accountManagerImpl, Mockito.never()).updateLoginAttempts(Mockito.anyLong(), Mockito.anyInt(), Mockito.anyBoolean());
+    }
+
+    @Test
+    public void accountDetailsCarryAccessControlSettingsOnlyThroughTheSharedCheck() {
+        Map<String, String> details = new HashMap<>();
+        details.put("api.allowed.source.cidr.list", "0.0.0.0/0");
+        Mockito.doThrow(new PermissionDeniedException("refused")).when(_configMgr).checkCallerMayChangeAccessControlSettings(details.keySet());
+        Mockito.doReturn(details).when(UpdateAccountCmdMock).getDetails();
+
+        Assert.assertThrows(PermissionDeniedException.class, () -> accountManagerImpl.updateAccount(UpdateAccountCmdMock));
+        Assert.assertThrows(PermissionDeniedException.class, () -> accountManagerImpl.createAccount("account", Account.Type.NORMAL, null, 1L, null, details, "uuid"));
+
+        Mockito.verify(_accountDetailsDao, Mockito.never()).update(Mockito.anyLong(), Mockito.anyMap());
+        Mockito.verify(_accountDetailsDao, Mockito.never()).persist(Mockito.anyLong(), Mockito.anyMap());
+    }
+
     @Test(expected = PermissionDeniedException.class)
     public void testGetUserCmd() {
         CallContext.register(callingUser, callingAccount); // Calling account is user account i.e normal account

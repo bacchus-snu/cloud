@@ -19,17 +19,57 @@
 
 package org.apache.cloudstack.utils.identity;
 
-
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
 import com.cloud.utils.component.AdapterBase;
 import com.cloud.utils.component.ComponentLifecycle;
 import com.cloud.utils.component.SystemIntegrityChecker;
 import com.cloud.utils.exception.CloudRuntimeException;
-import com.cloud.utils.net.MacAddress;
 
 public class ManagementServerNode extends AdapterBase implements SystemIntegrityChecker {
 
-    private static final long s_nodeId = MacAddress.getMacAddress().toLong();
+    static final Path HOST_NAME_FILE = Paths.get("/proc/sys/kernel/hostname");
+
+    private static final long s_nodeId = nodeIdOfHostNameIn(HOST_NAME_FILE);
+
+    /**
+     * A node keeps its host name across restarts, while its interfaces and their MAC addresses may be recreated; host
+     * names must therefore be unique among the nodes sharing a database. The id stays within the 48-bit range of the
+     * MAC-derived ids it replaces.
+     */
+    static long nodeIdOf(String hostName) {
+        final byte[] digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256").digest(hostName.getBytes(StandardCharsets.UTF_8));
+        } catch (NoSuchAlgorithmException e) {
+            throw new CloudRuntimeException("SHA-256 is unavailable", e);
+        }
+        long id = 0;
+        for (int i = 0; i < 6; i++) {
+            id = (id << 8) | (digest[i] & 0xff);
+        }
+        return id != 0 ? id : 1;
+    }
+
+    /**
+     * The host name the Linux kernel holds, read from its host name file as it is set rather than resolved, so that the
+     * id cannot depend on name resolution. The management server runs on Linux; there is no other source.
+     * @return the id of that host name, or 0 when there is none
+     */
+    static long nodeIdOfHostNameIn(Path hostNameFile) {
+        try {
+            String hostName = new String(Files.readAllBytes(hostNameFile), StandardCharsets.UTF_8).trim();
+            return hostName.isEmpty() ? 0 : nodeIdOf(hostName);
+        } catch (IOException e) {
+            return 0;
+        }
+    }
 
     public ManagementServerNode() {
         setRunLevel(ComponentLifecycle.RUN_LEVEL_FRAMEWORK_BOOTSTRAP);
@@ -38,7 +78,7 @@ public class ManagementServerNode extends AdapterBase implements SystemIntegrity
     @Override
     public void check() {
         if (s_nodeId <= 0) {
-            throw new CloudRuntimeException("Unable to get the management server node id");
+            throw new CloudRuntimeException("Unable to get the management server node id: no host name could be read from the Linux kernel host name file " + HOST_NAME_FILE);
         }
     }
 

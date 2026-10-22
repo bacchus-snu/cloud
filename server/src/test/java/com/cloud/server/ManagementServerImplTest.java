@@ -46,6 +46,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.apache.cloudstack.annotation.dao.AnnotationDao;
+import org.apache.cloudstack.utils.identity.ManagementServerNode;
 import org.apache.cloudstack.affinity.dao.AffinityGroupVMMapDao;
 import org.apache.cloudstack.api.ApiConstants;
 import org.apache.cloudstack.api.BaseCmd;
@@ -316,6 +317,11 @@ public class ManagementServerImplTest {
         Field f = ConfigKey.class.getDeclaredField(name);
         f.setAccessible(true);
         f.set(configKey, o);
+    }
+
+    @Test
+    public void theServerIdIsTheManagementServerNodeId() {
+        Assert.assertEquals(ManagementServerNode.getManagementServerId(), spy.getId());
     }
 
     @Test(expected = InvalidParameterValueException.class)

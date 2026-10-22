@@ -37,4 +37,13 @@ public interface Configurable {
      * @return The list of config keys provided by this configuable.
      */
     ConfigKey<?>[] getConfigKeys();
+
+    /**
+     * @return names of settings that govern access control (API access checks, sign-in, certificate trust). Only the
+     * built-in Root Admin role may change them, at any scope, since a setting that switches such a check off would undo
+     * the rules of every role it constrains.
+     */
+    default String[] getAccessControlConfigKeyNames() {
+        return new String[0];
+    }
 }

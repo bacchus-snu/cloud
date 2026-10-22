@@ -38,6 +38,7 @@ import java.io.OutputStreamWriter;
 import java.io.UnsupportedEncodingException;
 import java.net.InetAddress;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -124,6 +125,7 @@ import com.cloud.agent.api.SecStorageFirewallCfgCommand;
 import com.cloud.agent.api.SecStorageFirewallCfgCommand.PortConfig;
 import com.cloud.agent.api.SecStorageSetupAnswer;
 import com.cloud.agent.api.SecStorageSetupCommand;
+import com.cloud.agent.api.UnmountImageStoreCommand;
 import com.cloud.agent.api.SecStorageVMSetupCommand;
 import com.cloud.agent.api.StartupCommand;
 import com.cloud.agent.api.StartupSecondaryStorageCommand;
@@ -316,6 +318,8 @@ public class NfsSecondaryStorageResource extends ServerResourceBase implements S
             return execute((SecStorageVMSetupCommand)cmd);
         } else if (cmd instanceof SecStorageSetupCommand) {
             return execute((SecStorageSetupCommand)cmd);
+        } else if (cmd instanceof UnmountImageStoreCommand) {
+            return execute((UnmountImageStoreCommand)cmd);
         } else if (cmd instanceof ComputeChecksumCommand) {
             return execute((ComputeChecksumCommand)cmd);
         } else if (cmd instanceof ListTemplateCommand) {
@@ -3128,8 +3132,7 @@ public class NfsSecondaryStorageResource extends ServerResourceBase implements S
         String uriHostIp = getUriHostIp(uri);
         String nfsPath = uriHostIp + ":" + uri.getPath();
 
-        // Single means of calculating mount directory regardless of scheme
-        String dir = UuidUtils.nameUUIDFromBytes(nfsPath.getBytes(com.cloud.utils.StringUtils.getPreferredCharset())).toString();
+        String dir = getMountDir(uriHostIp, uri);
         String localRootPath = _parent + "/" + dir;
 
         // remote device syntax varies by scheme.
@@ -3143,6 +3146,49 @@ public class NfsSecondaryStorageResource extends ServerResourceBase implements S
         }
         mount(localRootPath, remoteDevice, uri, nfsVersion);
         return dir;
+    }
+
+    /**
+     * Single means of calculating mount directory regardless of scheme
+     */
+    private static String getMountDir(String uriHostIp, URI uri) {
+        String nfsPath = uriHostIp + ":" + uri.getPath();
+        return UuidUtils.nameUUIDFromBytes(nfsPath.getBytes(com.cloud.utils.StringUtils.getPreferredCharset())).toString();
+    }
+
+    protected Answer execute(UnmountImageStoreCommand cmd) {
+        if (!_inSystemVM) {
+            return new Answer(cmd);
+        }
+        try {
+            URI uri = new URI(cmd.getStoreUrl());
+            if (!"nfs".equalsIgnoreCase(uri.getScheme()) && !"cifs".equalsIgnoreCase(uri.getScheme())) {
+                return new Answer(cmd);
+            }
+            String localRootPath = _parent + "/" + getMountDir(getUriHostIp(uri), uri);
+            if (mountExists(localRootPath, uri)) {
+                String result = umount(localRootPath);
+                if (result != null) {
+                    return new Answer(cmd, false, "Unable to unmount " + localRootPath + " due to " + result);
+                }
+            }
+            new File(localRootPath).delete();
+            logger.debug("Unmounted the removed image store from " + localRootPath);
+            return new Answer(cmd);
+        } catch (URISyntaxException | UnknownHostException e) {
+            return new Answer(cmd, false, "Unable to locate the mount of the removed image store due to " + e.getMessage());
+        }
+    }
+
+    /**
+     * Detaches the mount at once, even while the server is unreachable or a file is still open; the kernel releases it
+     * when the last user lets go.
+     */
+    protected String umount(String localRootPath) {
+        Script command = new Script(!_inSystemVM, "umount", _timeout, logger);
+        command.add("-l");
+        command.add(localRootPath);
+        return command.execute();
     }
 
     protected void mount(String localRootPath, String remoteDevice, URI uri, String nfsVersion) {

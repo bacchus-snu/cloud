@@ -167,6 +167,7 @@ import com.cloud.agent.api.GetVolumeStatsCommand;
 import com.cloud.agent.api.ModifyStoragePoolAnswer;
 import com.cloud.agent.api.ModifyStoragePoolCommand;
 import com.cloud.agent.api.StoragePoolInfo;
+import com.cloud.agent.api.UnmountImageStoreCommand;
 import com.cloud.agent.api.VolumeStatsEntry;
 import com.cloud.agent.api.to.DataTO;
 import com.cloud.agent.api.to.DiskTO;
@@ -965,6 +966,7 @@ public class StorageManagerImpl extends ManagerBase implements StorageManager, C
 
     @Override
     public PrimaryDataStoreInfo createPool(CreateStoragePoolCmd cmd) throws ResourceInUseException, IllegalArgumentException, UnknownHostException, ResourceUnavailableException {
+        checkDetailNames(extractApiParamAsMap(cmd.getDetails()));
         jsInterpreterHelper.ensureInterpreterEnabledIfParameterProvided(ApiConstants.IS_TAG_A_RULE, Boolean.TRUE.equals(cmd.isTagARule()));
 
         String providerName = cmd.getStorageProviderName();
@@ -1170,6 +1172,15 @@ public class StorageManagerImpl extends ManagerBase implements StorageManager, C
         return uriParams;
     }
 
+    /**
+     * Pool and image store details are where the pool and image store scopes of a setting are read from.
+     */
+    protected void checkDetailNames(Map<?, ?> details) {
+        if (MapUtils.isNotEmpty(details)) {
+            _configMgr.checkCallerMayChangeAccessControlSettings(details.keySet().stream().map(String::valueOf).collect(Collectors.toList()));
+        }
+    }
+
     private Map<String, String> extractApiParamAsMap(Map ds) {
         Map<String, String> details = new HashMap<>();
         if (ds != null) {
@@ -1228,6 +1239,7 @@ public class StorageManagerImpl extends ManagerBase implements StorageManager, C
     @Override
     @ActionEvent(eventType = EventTypes.EVENT_UPDATE_PRIMARY_STORAGE, eventDescription = "update storage pool")
     public PrimaryDataStoreInfo updateStoragePool(UpdateStoragePoolCmd cmd) throws IllegalArgumentException {
+        checkDetailNames(extractApiParamAsMap(cmd.getDetails()));
         // Input validation
         jsInterpreterHelper.ensureInterpreterEnabledIfParameterProvided(ApiConstants.IS_TAG_A_RULE, Boolean.TRUE.equals(cmd.isTagARule()));
 
@@ -3972,6 +3984,7 @@ public class StorageManagerImpl extends ManagerBase implements StorageManager, C
     }
     @Override
     public ImageStore discoverImageStore(String name, String url, String providerName, Long zoneId, Map details) throws IllegalArgumentException, DiscoveryException, InvalidParameterValueException {
+        checkDetailNames(details);
         DataStoreProvider storeProvider = _dataStoreProviderMgr.getDataStoreProvider(providerName);
 
         if (storeProvider == null) {
@@ -4147,6 +4160,7 @@ public class StorageManagerImpl extends ManagerBase implements StorageManager, C
     }
     @Override
     public ImageStore migrateToObjectStore(String name, String url, String providerName, Map<String, String> details) throws DiscoveryException, InvalidParameterValueException {
+        checkDetailNames(details);
         // check if current cloud is ready to migrate, we only support cloud with only NFS secondary storages
         List<ImageStoreVO> imgStores = _imageStoreDao.listImageStores();
         List<ImageStoreVO> nfsStores = new ArrayList<>();
@@ -4359,12 +4373,32 @@ public class StorageManagerImpl extends ManagerBase implements StorageManager, C
                 _imageStoreDao.remove(storeId);
             }
         });
+        unmountFromSecondaryStorageVms(store);
 
         return true;
     }
 
+    /**
+     * A secondary storage VM keeps each image store it used mounted, which would otherwise outlive the store.
+     */
+    protected void unmountFromSecondaryStorageVms(ImageStoreVO store) {
+        if (store.getDataCenterId() == null) {
+            return;
+        }
+        for (HostVO ssvm : _hostDao.listByType(Host.Type.SecondaryStorageVM)) {
+            if (!store.getDataCenterId().equals(ssvm.getDataCenterId()) || ssvm.getStatus() != Status.Up) {
+                continue;
+            }
+            Answer answer = _agentMgr.easySend(ssvm.getId(), new UnmountImageStoreCommand(store.getUrl()));
+            if (answer == null || !answer.getResult()) {
+                logger.warn("Unable to unmount the removed image store {} from {}: {}", store, ssvm, answer == null ? "no answer" : answer.getDetails());
+            }
+        }
+    }
+
     @Override
     public ImageStore createSecondaryStagingStore(CreateSecondaryStagingStoreCmd cmd) {
+        checkDetailNames(cmd.getDetails());
         String providerName = cmd.getProviderName();
         DataStoreProvider storeProvider = _dataStoreProviderMgr.getDataStoreProvider(providerName);
 

@@ -17,7 +17,9 @@
 package com.cloud.configuration;
 
 import com.cloud.alert.AlertManager;
+import com.cloud.api.ApiServer;
 import com.cloud.capacity.dao.CapacityDao;
+import com.cloud.consoleproxy.ConsoleProxyManager;
 import com.cloud.dc.DataCenterVO;
 import com.cloud.dc.VlanVO;
 import com.cloud.dc.dao.DataCenterDao;
@@ -28,10 +30,13 @@ import com.cloud.dc.dao.VlanDao;
 import com.cloud.domain.Domain;
 import com.cloud.domain.dao.DomainDao;
 import com.cloud.exception.InvalidParameterValueException;
+import com.cloud.exception.PermissionDeniedException;
 import com.cloud.host.dao.HostDao;
+import com.cloud.network.IpAddressManager;
 import com.cloud.network.Network;
 import com.cloud.network.NetworkModel;
 import com.cloud.network.NetworkService;
+import com.cloud.network.NetworkServiceImpl;
 import com.cloud.network.Networks;
 import com.cloud.network.dao.IPAddressDao;
 import com.cloud.network.dao.NetrisProviderDao;
@@ -45,10 +50,14 @@ import com.cloud.offerings.dao.NetworkOfferingDao;
 import com.cloud.service.ServiceOfferingVO;
 import com.cloud.storage.DiskOfferingVO;
 import com.cloud.storage.StorageManager;
+import com.cloud.storage.VolumeApiServiceImpl;
 import com.cloud.storage.dao.VMTemplateZoneDao;
 import com.cloud.storage.dao.VolumeDao;
+import com.cloud.template.TemplateManager;
 import com.cloud.user.Account;
+import com.cloud.user.AccountManager;
 import com.cloud.user.AccountManagerImpl;
+import com.cloud.user.PasswordPolicy;
 import com.cloud.user.User;
 import com.cloud.utils.DomainHelper;
 import com.cloud.utils.Pair;
@@ -56,14 +65,21 @@ import com.cloud.utils.db.EntityManager;
 import com.cloud.utils.db.SearchCriteria;
 import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.utils.net.NetUtils;
+import com.cloud.vm.UserVmManager;
+import com.cloud.vm.UserVmManagerImpl;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.dao.VMInstanceDao;
 import org.apache.cloudstack.acl.RoleService;
+import org.apache.cloudstack.acl.RoleType;
 import org.apache.cloudstack.annotation.dao.AnnotationDao;
 import org.apache.cloudstack.api.command.admin.config.ResetCfgCmd;
+import org.apache.cloudstack.api.command.admin.config.UpdateCfgCmd;
 import org.apache.cloudstack.api.command.admin.network.CreateNetworkOfferingCmd;
 import org.apache.cloudstack.api.command.admin.offering.UpdateDiskOfferingCmd;
 import org.apache.cloudstack.api.command.admin.zone.DeleteZoneCmd;
+import org.apache.cloudstack.api.command.admin.zone.UpdateZoneCmd;
+import org.apache.cloudstack.ca.CAManager;
+import org.apache.cloudstack.config.ApiServiceConfiguration;
 import org.apache.cloudstack.config.Configuration;
 import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.engine.subsystem.api.storage.ZoneScope;
@@ -78,6 +94,9 @@ import org.apache.cloudstack.storage.datastore.db.StoragePoolDetailsDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
 import org.apache.cloudstack.vm.UnmanagedVMsManager;
 import org.apache.cloudstack.kms.KMSManager;
+import org.apache.cloudstack.query.QueryService;
+import org.apache.cloudstack.user.UserPasswordResetManager;
+import org.apache.cloudstack.user.UserPasswordResetManagerImpl;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -93,7 +112,9 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -862,6 +883,14 @@ public class ConfigurationManagerImplTest {
     }
 
     @Test
+    public void incorrectLoginAttemptsAllowedAcceptsZeroAndNegativeAsDocumented() {
+        Config config = Config.IncorrectLoginAttemptsAllowed;
+        for (String value : List.of("0", "-1", "5")) {
+            Assert.assertNull(value, configurationManagerImplSpy.validateValueRange(config.key(), value, config.getType(), config));
+        }
+    }
+
+    @Test
     public void validateValueRangeTestValidatesValueWhenConfigHasRange() {
         Config config = Config.SecStorageEncryptCopy;
         String name = config.name();
@@ -910,6 +939,151 @@ public class ConfigurationManagerImplTest {
 
         Pair<Configuration, String> result = configurationManagerImplSpy.resetConfiguration(cmd);
         Assert.assertEquals(".85", result.second());
+    }
+
+    @Test
+    public void accessControlSettingsChangeOnlyUnderTheRootAdminRole() {
+        String name = RoleService.EnableDynamicApiChecker.key();
+        Mockito.when(configDao.findByName(Mockito.anyString())).thenReturn(null);
+        Mockito.when(configDepot.isAccessControlConfigKey(name)).thenReturn(true);
+        CallContext callContext = mock(CallContext.class);
+        when(callContext.getCallingAccount()).thenReturn(accountMock);
+        try (MockedStatic<CallContext> ignored = Mockito.mockStatic(CallContext.class)) {
+            when(CallContext.current()).thenReturn(callContext);
+            when(accountMock.getRoleId()).thenReturn(RoleType.Admin.getId() + 100);
+            Assert.assertThrows(PermissionDeniedException.class, () -> configurationManagerImplSpy.checkCallerMayChangeConfiguration(name));
+            configurationManagerImplSpy.checkCallerMayChangeConfiguration("some.other.config.key");
+
+            when(accountMock.getRoleId()).thenReturn(RoleType.Admin.getId());
+            configurationManagerImplSpy.checkCallerMayChangeConfiguration(name);
+        }
+    }
+
+    private void callerWithCustomAdminRole(MockedStatic<CallContext> callContextStatic) {
+        CallContext callContext = mock(CallContext.class);
+        when(callContext.getCallingAccount()).thenReturn(accountMock);
+        when(accountMock.getRoleId()).thenReturn(RoleType.Admin.getId() + 100);
+        callContextStatic.when(CallContext::current).thenReturn(callContext);
+    }
+
+    @Test
+    public void updateAndResetConfigurationRefuseAccessControlSettingsToOtherRoles() {
+        String name = RoleService.EnableDynamicApiChecker.key();
+        Mockito.when(configDepot.isAccessControlConfigKey(name)).thenReturn(true);
+        Mockito.when(configurationVOMock.getName()).thenReturn(name);
+        UpdateCfgCmd update = mock(UpdateCfgCmd.class);
+        when(update.getCfgName()).thenReturn(name);
+        when(update.getValue()).thenReturn("false");
+        when(update.getZoneId()).thenReturn(1L);
+        ResetCfgCmd reset = mock(ResetCfgCmd.class);
+        when(reset.getCfgName()).thenReturn(name);
+        when(reset.getAccountId()).thenReturn(1L);
+        try (MockedStatic<CallContext> callContext = Mockito.mockStatic(CallContext.class)) {
+            callerWithCustomAdminRole(callContext);
+            Assert.assertThrows(PermissionDeniedException.class, () -> configurationManagerImplSpy.updateConfiguration(update));
+            Assert.assertThrows(PermissionDeniedException.class, () -> configurationManagerImplSpy.resetConfiguration(reset));
+        }
+    }
+
+    @Test
+    public void aSettingIsChangedOnlyByItsExactName() {
+        String stored = "api.source.cidr.checks.enabled";
+        Mockito.when(configurationVOMock.getName()).thenReturn(stored);
+        try (MockedStatic<CallContext> callContext = Mockito.mockStatic(CallContext.class)) {
+            callerWithCustomAdminRole(callContext);
+            for (String variant : List.of("API.SOURCE.CIDR.CHECKS.ENABLED", stored + " ")) {
+                for (Long zoneId : Arrays.asList(null, 1L)) {
+                    UpdateCfgCmd update = mock(UpdateCfgCmd.class);
+                    when(update.getCfgName()).thenReturn(variant);
+                    when(update.getValue()).thenReturn("false");
+                    when(update.getZoneId()).thenReturn(zoneId);
+                    Assert.assertThrows(variant + " " + zoneId, InvalidParameterValueException.class, () -> configurationManagerImplSpy.updateConfiguration(update));
+                    ResetCfgCmd reset = mock(ResetCfgCmd.class);
+                    when(reset.getCfgName()).thenReturn(variant);
+                    when(reset.getZoneId()).thenReturn(zoneId);
+                    Assert.assertThrows(variant + " " + zoneId, InvalidParameterValueException.class, () -> configurationManagerImplSpy.resetConfiguration(reset));
+                }
+            }
+        }
+        Mockito.verify(configDao, Mockito.never()).update(Mockito.anyString(), Mockito.anyString(), Mockito.any());
+        Mockito.verify(configDao, Mockito.never()).update(Mockito.anyString(), Mockito.anyString());
+    }
+
+    @Test
+    public void zoneDetailsCarryAccessControlSettingsOnlyForTheRootAdminRole() {
+        Mockito.when(configDepot.isAccessControlConfigKey("ca.framework.cert.systemvm.allow.host.ip")).thenReturn(true);
+        ConfigurationVO stored = mock(ConfigurationVO.class);
+        Mockito.when(stored.getName()).thenReturn("ca.framework.cert.systemvm.allow.host.ip");
+        Mockito.when(configDao.findByName("CA.Framework.Cert.SystemVM.Allow.Host.IP ")).thenReturn(stored);
+        DataCenterVO zone = mock(DataCenterVO.class);
+        Mockito.lenient().when(zoneDao.findById(1L)).thenReturn(zone);
+        UpdateZoneCmd cmd = mock(UpdateZoneCmd.class);
+        Mockito.lenient().when(cmd.getId()).thenReturn(1L);
+        HashMap<String, String> detail = new HashMap<>();
+        detail.put("key", "CA.Framework.Cert.SystemVM.Allow.Host.IP ");
+        detail.put("value", "true");
+        Map<String, HashMap<String, String>> details = new HashMap<>();
+        details.put("0", detail);
+        Mockito.doReturn(details).when(cmd).getDetails();
+        try (MockedStatic<CallContext> callContext = Mockito.mockStatic(CallContext.class)) {
+            callerWithCustomAdminRole(callContext);
+            Assert.assertThrows(PermissionDeniedException.class, () -> configurationManagerImplSpy.editZone(cmd));
+        }
+        Mockito.verify(zoneDao, Mockito.never()).update(Mockito.anyLong(), Mockito.any());
+    }
+
+    @Test
+    public void aDetailKeyIsTheSettingTheConfigurationTableMatchesItTo() {
+        Mockito.when(configDepot.isAccessControlConfigKey("api.source.cidr.checks.enabled")).thenReturn(true);
+        ConfigurationVO stored = mock(ConfigurationVO.class);
+        Mockito.when(stored.getName()).thenReturn("api.source.cidr.checks.enabled");
+        Mockito.when(configDao.findByName("API.Source.CIDR.Checks.Enabled")).thenReturn(stored);
+        Mockito.when(configDao.findByName("some.detail")).thenReturn(null);
+        try (MockedStatic<CallContext> callContext = Mockito.mockStatic(CallContext.class)) {
+            callerWithCustomAdminRole(callContext);
+            Assert.assertThrows(PermissionDeniedException.class,
+                    () -> configurationManagerImplSpy.checkCallerMayChangeAccessControlSettings(List.of("some.detail", "API.Source.CIDR.Checks.Enabled")));
+            configurationManagerImplSpy.checkCallerMayChangeAccessControlSettings(List.of("some.detail"));
+        }
+    }
+
+    private static void addConfigKeys(Set<String> known, Class<?> owner) throws IllegalAccessException {
+        for (Field field : owner.getDeclaredFields()) {
+            if (Modifier.isStatic(field.getModifiers()) && ConfigKey.class.isAssignableFrom(field.getType())) {
+                field.setAccessible(true);
+                known.add(((ConfigKey<?>) field.get(null)).key());
+            }
+        }
+    }
+
+    @Test
+    public void accessControlSettingsNameExistingKeys() throws IllegalAccessException {
+        Set<String> declared = Set.of(configurationManagerImplSpy.getAccessControlConfigKeyNames());
+        Set<String> known = new HashSet<>();
+        for (Config config : Config.values()) {
+            known.add(config.key());
+        }
+        for (Class<?> owner : List.of(RoleService.class, ApiServiceConfiguration.class, ApiServer.class,
+                AccountManagerImpl.class, AccountManager.class, PasswordPolicy.class,
+                UserPasswordResetManager.class, UserPasswordResetManagerImpl.class,
+                CAManager.class, UserVmManager.class, UserVmManagerImpl.class,
+                VolumeApiServiceImpl.class, IpAddressManager.class, QueryService.class,
+                TemplateManager.class, ConfigurationManagerImpl.class, NetworkService.class,
+                NetworkServiceImpl.class, ConsoleProxyManager.class)) {
+            addConfigKeys(known, owner);
+        }
+        for (String name : declared) {
+            Assert.assertTrue(name, known.contains(name));
+        }
+        for (String name : List.of(RoleService.EnableDynamicApiChecker.key(), RoleService.DynamicApiCheckerCachePeriod.key(), "api.allowed.source.cidr.list",
+                "integration.api.port", "role.types.allowed.for.operations.on.accounts.of.same.role.type", Config.IncorrectLoginAttemptsAllowed.key(),
+                "allow.user.view.destroyed.vm", "novnc.console.sourceip.check.enabled", "ca.framework.provider.plugin")) {
+            Assert.assertTrue(name, declared.contains(name));
+        }
+        for (String name : List.of("user.2fa.issuer", "ca.framework.cert.expiry.alert.period", "ca.framework.background.task.delay", "saml2.enabled",
+                "ldap.provider", "oauth2.enabled", "ca.plugin.root.auth.strictness")) {
+            Assert.assertFalse(name, declared.contains(name));
+        }
     }
 
     @Test

@@ -52,9 +52,10 @@ public interface HostGpuGroupsDao extends GenericDao<HostGpuGroupsVO, Long> {
     void deleteGpuEntries(long hostId);
 
     /**
-     * Save the list of GPU groups belonging to a host
+     * Makes the given list the host's GPU groups: adds the missing ones and removes those the host no longer has,
+     * together with their vGPU types.
      * @param hostId the host
-     * @param gpuGroups the list of GPU groups to save
+     * @param gpuGroups every GPU group the host has
      */
     void persist(long hostId, List<String> gpuGroups);
 

@@ -616,6 +616,10 @@ public class MockAccountManager extends ManagerBase implements AccountManager {
     }
 
     @Override
+    public void checkRoleEscalation(Account caller, Account requested) {
+    }
+
+    @Override
     public void checkCallerRoleTypeAllowedForUserOrAccountOperations(Account userAccount, User user) {
     }
 

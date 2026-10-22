@@ -1140,6 +1140,7 @@ public class UserVmManagerImplTest {
         when(cmd.getHttpMethod()).thenReturn(HTTPMethod.GET);
 
         when(userDataManager.validateUserData(testUserData, HTTPMethod.GET)).thenReturn(testUserData);
+        when(userDataManager.validateFinalizedUserData(testUserData)).thenReturn(testUserData);
 
         try {
             doNothing().when(userVmManagerImpl).updateUserData(userVmVO);
@@ -1178,7 +1179,7 @@ public class UserVmManagerImplTest {
         when(apiUserDataVO.getUserData()).thenReturn(testUserData);
         when(cmd.getHttpMethod()).thenReturn(HTTPMethod.GET);
 
-        when(userDataManager.validateUserData(testUserData, HTTPMethod.GET)).thenReturn(testUserData);
+        when(userDataManager.validateFinalizedUserData(testUserData)).thenReturn(testUserData);
 
         try {
             doNothing().when(userVmManagerImpl).updateUserData(userVmVO);
@@ -1189,6 +1190,102 @@ public class UserVmManagerImplTest {
 
         Assert.assertEquals("testUserdata", userVmVO.getUserData());
         Assert.assertEquals(1L, (long)userVmVO.getUserDataId());
+    }
+
+    @Test
+    public void resetUserDataAppliesTheRequestSizeLimitToTheRequestPartOnly() throws ResourceUnavailableException, InsufficientCapacityException {
+        UserVmVO userVmVO = new UserVmVO();
+        userVmVO.setTemplateId(2L);
+        userVmVO.setState(VirtualMachine.State.Stopped);
+        ResetVMUserDataCmd cmd = Mockito.mock(ResetVMUserDataCmd.class);
+        when(cmd.getId()).thenReturn(1L);
+        when(userVmDao.findById(1L)).thenReturn(userVmVO);
+        VMTemplateVO template = templateWithAppendedUserData();
+        when(templateDao.findByIdIncludingRemoved(2L)).thenReturn(template);
+        when(cmd.getUserData()).thenReturn("requestPart");
+        when(cmd.getUserdataId()).thenReturn(null);
+        when(cmd.getHttpMethod()).thenReturn(HTTPMethod.GET);
+        stubUserDataTooLongForGetOnceMerged();
+
+        doNothing().when(userVmManagerImpl).updateUserData(userVmVO);
+        userVmManagerImpl.resetVMUserData(cmd);
+
+        Assert.assertEquals("merged", userVmVO.getUserData());
+        Mockito.verify(userDataManager, Mockito.never()).validateUserData(eq("merged"), any());
+    }
+
+    @Test
+    public void deployAppliesTheRequestSizeLimitToTheRequestPartOnly() throws ResourceUnavailableException, InsufficientCapacityException, ResourceAllocationException {
+        DeployVMCmd deployVMCmd = new DeployVMCmd();
+        ReflectionTestUtils.setField(deployVMCmd, "zoneId", zoneId);
+        ReflectionTestUtils.setField(deployVMCmd, "templateId", templateId);
+        ReflectionTestUtils.setField(deployVMCmd, "serviceOfferingId", serviceOfferingId);
+        ReflectionTestUtils.setField(deployVMCmd, "userData", "requestPart");
+        deployVMCmd.setHttpMethod(HTTPMethod.GET.name());
+        deployVMCmd._accountService = accountService;
+
+        when(accountService.finalizeAccountId(nullable(String.class), nullable(Long.class), nullable(Long.class), eq(true))).thenReturn(accountId);
+        when(accountService.getActiveAccountById(accountId)).thenReturn(account);
+        when(entityManager.findById(DataCenter.class, zoneId)).thenReturn(_dcMock);
+        when(entityManager.findById(ServiceOffering.class, serviceOfferingId)).thenReturn(serviceOffering);
+        when(serviceOffering.getState()).thenReturn(ServiceOffering.State.Active);
+        VMTemplateVO template = templateWithAppendedUserData();
+        when(entityManager.findById(VirtualMachineTemplate.class, templateId)).thenReturn(template);
+        when(template.getFormat()).thenReturn(Storage.ImageFormat.QCOW2);
+        when(serviceOfferingJoinDao.findById(anyLong())).thenReturn(Mockito.mock(ServiceOfferingJoinVO.class));
+        when(_dcMock.isLocalStorageEnabled()).thenReturn(true);
+        when(_dcMock.getNetworkType()).thenReturn(DataCenter.NetworkType.Basic);
+        stubUserDataTooLongForGetOnceMerged();
+        Mockito.doReturn(userVmVoMock).when(userVmManagerImpl).createBasicSecurityGroupVirtualMachine(any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), nullable(Boolean.class), any(), any(), any(),
+                any(), any(), any(), any(), eq(true), any(), any(), any(), any());
+
+        userVmManagerImpl.createVirtualMachine(deployVMCmd);
+
+        Mockito.verify(userVmManagerImpl).createBasicSecurityGroupVirtualMachine(any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), eq("merged"), any(), any(), any(), any(), any(), nullable(Boolean.class), any(), any(), any(),
+                any(), any(), any(), any(), eq(true), any(), any(), any(), any());
+        Mockito.verify(userDataManager, Mockito.never()).validateUserData(eq("merged"), any());
+    }
+
+    @Test
+    public void updateAppliesTheRequestSizeLimitToTheRequestPartOnly() throws ResourceUnavailableException, InsufficientCapacityException, ResourceAllocationException {
+        configureDoNothingForMethodsThatWeDoNotWantToTest();
+        VMTemplateVO template = templateWithAppendedUserData();
+        Mockito.when(template.getExtensionId()).thenReturn(null);
+        Mockito.when(templateDao.findById(Mockito.anyLong())).thenReturn(template);
+        Mockito.when(updateVmCommand.getUserData()).thenReturn("requestPart");
+        Mockito.when(updateVmCommand.getUserdataId()).thenReturn(null);
+        Mockito.when(updateVmCommand.getHttpMethod()).thenReturn(HTTPMethod.GET);
+        stubUserDataTooLongForGetOnceMerged();
+        Mockito.doReturn(Mockito.mock(UserVm.class)).when(userVmManagerImpl).updateVirtualMachine(Mockito.anyLong(), any(), any(), any(), any(), any(), any(),
+                eq("merged"), any(), any(), any(), any(), any(), any(), any(), any(), any());
+
+        userVmManagerImpl.updateVirtualMachine(updateVmCommand);
+
+        Mockito.verify(userVmManagerImpl).updateVirtualMachine(Mockito.anyLong(), any(), any(), any(), any(), any(), any(),
+                eq("merged"), any(), any(), any(), any(), any(), any(), any(), any(), any());
+        Mockito.verify(userDataManager, Mockito.never()).validateUserData(eq("merged"), any());
+    }
+
+    private VMTemplateVO templateWithAppendedUserData() {
+        VMTemplateVO template = Mockito.mock(VMTemplateVO.class);
+        when(template.getUserDataId()).thenReturn(10L);
+        when(template.getUserDataOverridePolicy()).thenReturn(UserData.UserDataOverridePolicy.APPEND);
+        UserDataVO templateUserData = Mockito.mock(UserDataVO.class);
+        when(templateUserData.getUserData()).thenReturn("templatePart");
+        when(userDataDao.findById(10L)).thenReturn(templateUserData);
+        return template;
+    }
+
+    /**
+     * The GET size limit refuses the merged user data, as it would a template part of more than 4 KB.
+     */
+    private void stubUserDataTooLongForGetOnceMerged() {
+        lenient().when(userDataManager.validateUserData("requestPart", HTTPMethod.GET)).thenReturn("requestPart");
+        when(userDataManager.concatenateUserData("templatePart", "requestPart", null)).thenReturn("merged");
+        lenient().when(userDataManager.validateUserData("merged", HTTPMethod.GET)).thenThrow(new InvalidParameterValueException("User data is too long for http GET request"));
+        lenient().when(userDataManager.validateFinalizedUserData("merged")).thenReturn("merged");
     }
 
     @Test

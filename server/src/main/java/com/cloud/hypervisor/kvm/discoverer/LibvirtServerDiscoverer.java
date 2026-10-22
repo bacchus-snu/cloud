@@ -164,12 +164,12 @@ public abstract class LibvirtServerDiscoverer extends DiscovererBase implements 
         return false;
     }
 
-    private void setupAgentSecurity(final Connection sshConnection, final String agentIp, final String agentHostname) {
+    private void setupAgentSecurity(final Connection sshConnection, final String sshUsername, final String agentIp, final String agentHostname) {
         if (sshConnection == null) {
             throw new CloudRuntimeException("Cannot secure agent communication because SSH connection is invalid for host IP=" + agentIp);
         }
 
-        caManager.provisionCertificateViaSsh(sshConnection, agentIp, agentHostname, null);
+        caManager.provisionCertificateViaSsh(sshConnection, sshUsername, agentIp, agentHostname, null);
 
         if (logger.isDebugEnabled()) {
             logger.debug("Succeeded to import certificate in the keystore for agent on the KVM host: " + agentIp + ". Agent secured and trusted.");
@@ -288,7 +288,7 @@ public abstract class LibvirtServerDiscoverer extends DiscovererBase implements 
                 throw new CloudRuntimeException("Configured CA plugin cannot provision X509 certificate(s), failing to add host due to security insufficiency.");
             }
 
-            setupAgentSecurity(sshConnection, agentIp, hostname);
+            setupAgentSecurity(sshConnection, username, agentIp, hostname);
 
             String parameters = " -m " + StringUtils.toCSVList(indirectAgentLB.getManagementServerList(null, dcId, null)) + " -z " + dcId + " -p " + podId     + " -c " + clusterId + " -g " + guid + " -a -s ";
 

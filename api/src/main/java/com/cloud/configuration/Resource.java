@@ -21,6 +21,52 @@ public interface Resource {
     short RESOURCE_UNLIMITED = -1;
     String UNLIMITED = "Unlimited";
 
+    /**
+     * The meaning of each {@link ResourceType} ordinal, as API parameter descriptions (annotations need a constant).
+     */
+    String RESOURCE_TYPE_VALUES = "Values are 0 to 16. "
+            + "0 - Instance. Number of Instances a user can create. "
+            + "1 - IP. Number of public IP addresses a user can own. "
+            + "2 - Volume. Number of disk volumes a user can create. "
+            + "3 - Snapshot. Number of Snapshots a user can create. "
+            + "4 - Template. Number of Templates that a user can register/create. "
+            + "5 - Project. Number of Projects a user can create. "
+            + "6 - Network. Number of guest Network a user can create. "
+            + "7 - VPC. Number of VPC a user can create. "
+            + "8 - CPU. Total number of CPU cores a user can use. "
+            + "9 - Memory. Total Memory (in MB) a user can use. "
+            + "10 - PrimaryStorage. Total primary storage space (in GiB) a user can use; while resource.limit.storage.combined is true, "
+            + "the space of primary and secondary storage together. "
+            + "11 - SecondaryStorage. Total secondary storage space (in GiB) a user can use; not checked while resource.limit.storage.combined is true. "
+            + "12 - Backup. Number of Backups a user can create. "
+            + "13 - BackupStorage. Total backup storage space (in GiB) a user can use. "
+            + "14 - Bucket. Number of object storage Buckets a user can create. "
+            + "15 - ObjectStorage. Total object storage space (in GiB) a user can use. "
+            + "16 - GPU. Total number of GPUs a user can use. ";
+
+    /**
+     * {@link #RESOURCE_TYPE_VALUES} by {@link ResourceType} name.
+     */
+    String RESOURCE_TYPE_NAME_VALUES = "Values are: "
+            + "user_vm - Instance. "
+            + "public_ip - IP. "
+            + "volume - Volume. "
+            + "snapshot - Snapshot. "
+            + "template - Template. "
+            + "project - Project. "
+            + "network - Network. "
+            + "vpc - VPC. "
+            + "cpu - CPU. "
+            + "memory - Memory. "
+            + "primary_storage - PrimaryStorage. "
+            + "secondary_storage - SecondaryStorage. "
+            + "backup - Backup. "
+            + "backup_storage - BackupStorage. "
+            + "bucket - Bucket. "
+            + "object_storage - ObjectStorage. "
+            + "gpu - GPU. "
+            + "See the resourcetype parameter for their meaning. ";
+
     enum ResourceType { // All storage type resources are allocated_storage and not the physical storage.
         user_vm("user_vm", 0),
         public_ip("public_ip", 1),

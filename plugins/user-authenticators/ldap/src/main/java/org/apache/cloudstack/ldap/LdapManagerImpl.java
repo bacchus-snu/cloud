@@ -27,6 +27,7 @@ import javax.naming.ConfigurationException;
 import javax.naming.NamingException;
 import javax.naming.ldap.LdapContext;
 
+import org.apache.cloudstack.acl.RoleType;
 import org.apache.cloudstack.api.LdapValidator;
 import org.apache.cloudstack.api.command.LDAPConfigCmd;
 import org.apache.cloudstack.api.command.LDAPRemoveCmd;
@@ -446,6 +447,7 @@ public class LdapManagerImpl extends ComponentLifecycleBase implements LdapManag
     @NotNull
     private LinkDomainToLdapResponse linkDomainToLdapAndGetResponse(Long domainId, String name, Account.Type accountType, LinkType linkType) {
         DomainVO domain = getDomainToLink(domainId);
+        checkCallerMayCreate(domain, new AccountVO(null, domain.getId(), null, accountType, RoleType.getByAccountType(accountType).getId(), UUID.randomUUID().toString()));
         LdapTrustMapVO vo = _ldapTrustMapDao.persist(new LdapTrustMapVO(domain.getId(), linkType, name, accountType, 0));
         String domainUuid = domain.getUuid();
         return new LinkDomainToLdapResponse(domainUuid, vo.getType().toString(), vo.getName(), vo.getAccountType().ordinal());
@@ -467,8 +469,12 @@ public class LdapManagerImpl extends ComponentLifecycleBase implements LdapManag
         DomainVO domain = getDomainToLink(cmd.getDomainId());
         LinkType linkType = LinkType.valueOf(cmd.getType().toUpperCase());
         Account account = accountDao.findActiveAccount(cmd.getAccountName(), cmd.getDomainId());
-        if (account == null) {
+        boolean create = account == null;
+        if (create) {
             account = new AccountVO(cmd.getAccountName(), cmd.getDomainId(), null, cmd.getAccountType(), cmd.getRoleId(), UUID.randomUUID().toString());
+        }
+        checkCallerMayCreate(domain, account);
+        if (create) {
             accountDao.persist((AccountVO)account);
         }
 
@@ -476,6 +482,16 @@ public class LdapManagerImpl extends ComponentLifecycleBase implements LdapManag
         clearOldAccountMapping(cmd);
         LdapTrustMapVO vo = _ldapTrustMapDao.persist(new LdapTrustMapVO(cmd.getDomainId(), linkType, cmd.getLdapDomain(), cmd.getAccountType(), accountId));
         return new LinkAccountToLdapResponse(domain.getUuid(), vo.getType().toString(), vo.getName(), vo.getAccountType().ordinal(), account.getUuid(), cmd.getAccountName());
+    }
+
+    /**
+     * A link provisions accounts, or users of an account, from the directory when they first sign in, with no caller
+     * left to check then; the caller who links must therefore be one who could create that account itself.
+     */
+    private void checkCallerMayCreate(DomainVO domain, Account requested) {
+        Account caller = CallContext.current().getCallingAccount();
+        accountManager.checkAccess(caller, domain);
+        accountManager.checkRoleEscalation(caller, requested);
     }
 
     private boolean unlinkDomainFromLdap(Long domainId) {

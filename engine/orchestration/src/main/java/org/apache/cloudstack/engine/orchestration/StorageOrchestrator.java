@@ -207,12 +207,12 @@ public class StorageOrchestrator extends ManagerBase implements StorageOrchestra
             storageCapacities.put(storeId, new Pair<>(null, null));
         }
         storageCapacities.put(srcDataStoreId, new Pair<>(null, null));
+        storageCapacities = getStorageCapacities(storageCapacities, srcDataStoreId);
         if (migrationPolicy == MigrationPolicy.COMPLETE) {
             logger.debug("Setting source image store: {} to read-only", srcDatastore);
             storageService.updateImageStoreStatus(srcDataStoreId, true);
         }
 
-        storageCapacities = getStorageCapacities(storageCapacities, srcDataStoreId);
         double meanstddev = getStandardDeviation(storageCapacities);
         double threshold = ImageStoreImbalanceThreshold.value();
         MigrationResponse response = null;

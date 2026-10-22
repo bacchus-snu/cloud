@@ -125,6 +125,11 @@ public class VGPUTypesDaoImpl extends GenericDaoBase<VGPUTypesVO, Long> implemen
             Entry<String, HashMap<String, VgpuTypesInfo>> entry = it1.next();
             HostGpuGroupsVO gpuGroup = hostGpuGroupsDao.findByHostIdGroupName(hostId, entry.getKey());
             HashMap<String, VgpuTypesInfo> values = entry.getValue();
+            for (VGPUTypesVO vgpuType : listByGroupId(gpuGroup.getId())) {
+                if (!values.containsKey(vgpuType.getVgpuType())) {
+                    remove(vgpuType.getId());
+                }
+            }
             Iterator<Entry<String, VgpuTypesInfo>> it2 = values.entrySet().iterator();
             while (it2.hasNext()) {
                 Entry<String, VgpuTypesInfo> record = it2.next();

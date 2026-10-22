@@ -107,7 +107,10 @@ public class DataMotionServiceImpl implements DataMotionService {
         volDao.update(destinationVO.getId(), destinationVO);
 
         if (passphraseId != null) {
-            passphraseDao.remove(passphraseId);
+            List<VolumeVO> sharing = volDao.listVolumesByPassphraseId(passphraseId);
+            if (sharing == null || sharing.isEmpty()) {
+                passphraseDao.remove(passphraseId);
+            }
         }
 
     }

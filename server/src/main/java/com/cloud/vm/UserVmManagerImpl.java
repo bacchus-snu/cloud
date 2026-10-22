@@ -1039,8 +1039,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         if (MapUtils.isNotEmpty(cmd.getUserdataDetails())) {
             userDataDetails = cmd.getUserdataDetails().toString();
         }
-        userData = finalizeUserData(userData, userDataId, template);
         userData = userDataManager.validateUserData(userData, cmd.getHttpMethod());
+        userData = userDataManager.validateFinalizedUserData(finalizeUserData(userData, userDataId, template));
 
         userVm.setUserDataId(userDataId);
         userVm.setUserData(userData);
@@ -3198,8 +3198,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         if (MapUtils.isNotEmpty(cmd.getUserdataDetails())) {
             userDataDetails = cmd.getUserdataDetails().toString();
         }
-        userData = finalizeUserData(userData, userDataId, template);
         userData = userDataManager.validateUserData(userData, cmd.getHttpMethod());
+        userData = userDataManager.validateFinalizedUserData(finalizeUserData(userData, userDataId, template));
 
         long accountId = vmInstance.getAccountId();
 
@@ -3463,7 +3463,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         if (userData != null) {
             // check and replace newlines
             userData = userData.replace("\\n", "");
-            userData = userDataManager.validateUserData(userData, httpMethod);
+            userData = userDataManager.validateFinalizedUserData(userData);
             // update userData on domain router.
             updateUserdata = true;
         } else {
@@ -4978,7 +4978,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             _accountMgr.checkAccess(owner, AccessType.UseEntry, false, template);
 
             // check if the user data is correct
-            userData = userDataManager.validateUserData(userData, httpmethod);
+            userData = userDataManager.validateFinalizedUserData(userData);
 
             // Find an SSH public key corresponding to the key pair name, if one is
             // given
@@ -7239,8 +7239,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             if (MapUtils.isNotEmpty(cmd.getUserdataDetails())) {
                 userDataDetails = cmd.getUserdataDetails().toString();
             }
-            userData = finalizeUserData(userData, userDataId, template);
             userData = userDataManager.validateUserData(userData, cmd.getHttpMethod());
+            userData = userDataManager.validateFinalizedUserData(finalizeUserData(userData, userDataId, template));
 
             sshKeyPairNames = cmd.getSSHKeyPairNames();
         }

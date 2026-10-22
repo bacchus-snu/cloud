@@ -362,4 +362,9 @@ public class OAuth2AuthManagerImpl extends ManagerBase implements OAuth2AuthMana
     public ConfigKey<?>[] getConfigKeys() {
         return new ConfigKey<?>[] {OAuth2IsPluginEnabled, OAuth2Plugins, OAuth2PluginsExclude};
     }
+
+    @Override
+    public String[] getAccessControlConfigKeyNames() {
+        return new String[] {OAuth2IsPluginEnabled.key(), OAuth2Plugins.key(), OAuth2PluginsExclude.key()};
+    }
 }

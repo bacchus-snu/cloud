@@ -156,11 +156,12 @@ public interface CAManager extends CAService, Configurable, PluggableService {
      * Runs keystore-setup to generate a CSR, issues a certificate, then runs keystore-cert-import.
      * Used during host discovery and for forced re-provisioning when the NIO agent is unreachable.
      * @param sshConnection active SSH connection to the KVM host
+     * @param sshUsername the user the connection is authenticated as; commands run through sudo unless it is root
      * @param agentIp IP address of the KVM host agent
      * @param agentHostname hostname of the KVM host agent
      * @param caProvider optional CA provider plugin name (null uses default)
      */
-    void provisionCertificateViaSsh(Connection sshConnection, String agentIp, String agentHostname, String caProvider);
+    void provisionCertificateViaSsh(Connection sshConnection, String sshUsername, String agentIp, String agentHostname, String caProvider);
 
     /**
      * Setups up a new keystore and generates CSR for a host

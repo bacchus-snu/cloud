@@ -585,8 +585,8 @@ public class AutoScaleManagerImpl extends ManagerBase implements AutoScaleManage
         if (MapUtils.isNotEmpty(cmd.getUserDataDetails())) {
             userDataDetails = cmd.getUserDataDetails().toString();
         }
-        userData = userVmMgr.finalizeUserData(userData, userDataId, template);
         userData = userDataMgr.validateUserData(userData, cmd.getHttpMethod());
+        userData = userDataMgr.validateFinalizedUserData(userVmMgr.finalizeUserData(userData, userDataId, template));
         if (userData != null) {
             profileVO.setUserData(userData);
         }
@@ -664,8 +664,8 @@ public class AutoScaleManagerImpl extends ManagerBase implements AutoScaleManage
                 templateId = vmProfile.getTemplateId();
             }
             VirtualMachineTemplate template = entityMgr.findByIdIncludingRemoved(VirtualMachineTemplate.class, templateId);
-            userData = userVmMgr.finalizeUserData(userData, userDataId, template);
             userData = userDataMgr.validateUserData(userData, cmd.getHttpMethod());
+            userData = userDataMgr.validateFinalizedUserData(userVmMgr.finalizeUserData(userData, userDataId, template));
             vmProfile.setUserDataId(userDataId);
             vmProfile.setUserData(userData);
             vmProfile.setUserDataDetails(userDataDetails);

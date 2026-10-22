@@ -80,6 +80,11 @@ public class HostGpuGroupsDaoImpl extends GenericDaoBase<HostGpuGroupsVO, Long> 
 
     @Override
     public void persist(long hostId, List<String> gpuGroups) {
+        for (HostGpuGroupsVO group : listByHostId(hostId)) {
+            if (!gpuGroups.contains(group.getGroupName())) {
+                remove(group.getId());
+            }
+        }
         for (String groupName : gpuGroups) {
             if (findByHostIdGroupName(hostId, groupName) == null) {
                 HostGpuGroupsVO record = new HostGpuGroupsVO(hostId, groupName);

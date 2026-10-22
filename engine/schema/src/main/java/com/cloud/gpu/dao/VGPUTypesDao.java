@@ -50,7 +50,7 @@ public interface VGPUTypesDao extends GenericDao<VGPUTypesVO, Long> {
     VGPUTypesVO findByGroupIdVGPUType(long groupId, String vgpuType);
 
     /**
-     * Save the list of enabled VGPU types
+     * Makes the given vGPU types the types of each given GPU group of the host, removing the types a group no longer has
      * @param hostId the host
      * @param groupDetails with enabled VGPU types
      */

@@ -37,6 +37,7 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 import com.cloud.agent.api.Answer;
+import com.cloud.agent.api.UnmountImageStoreCommand;
 import com.cloud.agent.api.to.NfsTO;
 import org.apache.cloudstack.storage.command.BackupDeleteAnswer;
 import org.apache.cloudstack.storage.command.DeleteCommand;
@@ -49,7 +50,9 @@ import org.apache.logging.log4j.Logger;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.InOrder;
 import org.mockito.Mock;
+import org.mockito.MockedConstruction;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import org.mockito.Spy;
@@ -59,7 +62,9 @@ import org.springframework.test.util.ReflectionTestUtils;
 import com.cloud.agent.api.to.DataStoreTO;
 import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.utils.EncryptionUtil;
+import com.cloud.utils.UuidUtils;
 import com.cloud.utils.net.NetUtils;
+import com.cloud.utils.script.Script;
 
 @RunWith(MockitoJUnitRunner.class)
 public class NfsSecondaryStorageResourceTest {
@@ -406,5 +411,32 @@ public class NfsSecondaryStorageResourceTest {
         resource.deleteScreenshot(deleteCommandMock, File.separator + "path/to/file", "/root/");
 
         verify(resource).deleteLocalFile("/root/" + "path/to/file");
+    }
+
+    @Test
+    public void aRemovedImageStoreIsUnmountedFromItsMountPoint() throws Exception {
+        ReflectionTestUtils.setField(resource, "_inSystemVM", true);
+        ReflectionTestUtils.setField(resource, "_parent", "/mnt/SecStorage");
+        String mountPoint = "/mnt/SecStorage/" + UuidUtils.nameUUIDFromBytes("10.0.0.5:/export/secondary".getBytes()).toString();
+        doReturn("10.0.0.5").when(resource).getUriHostIp(any());
+        doReturn(true).when(resource).mountExists(Mockito.eq(mountPoint), any());
+        doReturn(null).when(resource).umount(mountPoint);
+
+        Answer answer = resource.executeRequest(new UnmountImageStoreCommand("nfs://store.example.org/export/secondary"));
+
+        assertTrue(answer.getResult());
+        verify(resource).umount(mountPoint);
+    }
+
+    @Test
+    public void theUnmountDetachesTheMountAtOnce() {
+        try (MockedConstruction<Script> scripts = Mockito.mockConstruction(Script.class)) {
+            resource.umount("/mnt/SecStorage/store");
+
+            Script script = scripts.constructed().get(0);
+            InOrder order = Mockito.inOrder(script);
+            order.verify(script).add("-l");
+            order.verify(script).add("/mnt/SecStorage/store");
+        }
     }
 }

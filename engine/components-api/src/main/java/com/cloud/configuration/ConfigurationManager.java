@@ -16,6 +16,7 @@
 // under the License.
 package com.cloud.configuration;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -216,4 +217,11 @@ public interface ConfigurationManager {
     List<ConfigurationSubGroupVO> getConfigurationSubGroups(Long groupId);
 
     void validateExtraConfigInServiceOfferingDetail(String detailName);
+
+    /**
+     * Refuses a change of any of the named settings that govern access control unless the caller's account has the
+     * built-in Root Admin role, whichever store the change writes: the configuration table or the details a scoped
+     * setting is read from.
+     */
+    void checkCallerMayChangeAccessControlSettings(Collection<String> names);
 }

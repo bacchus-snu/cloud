@@ -93,6 +93,7 @@ import org.springframework.stereotype.Component;
 
 import javax.inject.Inject;
 import javax.naming.ConfigurationException;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -705,5 +706,9 @@ public class MockConfigurationManagerImpl extends ManagerBase implements Configu
     @Override
     public void validateExtraConfigInServiceOfferingDetail(String detailName) {
         // TODO Auto-generated method stub
+    }
+
+    @Override
+    public void checkCallerMayChangeAccessControlSettings(Collection<String> names) {
     }
 }

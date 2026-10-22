@@ -212,6 +212,11 @@ public interface AccountManager extends AccountService, Configurable {
 
     void verifyCallerPrivilegeForUserOrAccountOperations(Account userAccount);
 
+    /**
+     * Refuses when the requested account's role would allow an API that the caller's role does not.
+     */
+    void checkRoleEscalation(Account caller, Account requested);
+
     void verifyCallerPrivilegeForUserOrAccountOperations(User user);
 
     void checkCallerRoleTypeAllowedForUserOrAccountOperations(Account userAccount, User user);

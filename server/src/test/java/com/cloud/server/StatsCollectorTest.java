@@ -38,6 +38,7 @@ import java.util.concurrent.TimeUnit;
 import com.cloud.utils.DateUtil;
 import com.google.gson.JsonSyntaxException;
 import org.apache.cloudstack.framework.config.ConfigKey;
+import org.apache.cloudstack.utils.identity.ManagementServerNode;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
 import org.apache.commons.collections.CollectionUtils;
 import org.influxdb.InfluxDB;
@@ -62,9 +63,13 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import com.cloud.agent.api.GetStorageStatsAnswer;
 import com.cloud.agent.api.GetStorageStatsCommand;
+import com.cloud.agent.api.VgpuTypesInfo;
 import com.cloud.agent.api.VmDiskStatsEntry;
 import com.cloud.agent.api.VmStatsEntry;
+import com.cloud.gpu.dao.HostGpuGroupsDao;
+import com.cloud.host.HostVO;
 import com.cloud.hypervisor.Hypervisor;
+import com.cloud.resource.ResourceManager;
 import com.cloud.server.StatsCollector.ExternalStatsProtocol;
 import com.cloud.storage.StorageStats;
 import com.cloud.storage.VolumeStatsVO;
@@ -142,6 +147,11 @@ public class StatsCollectorTest {
             influxDBFactoryMocked.close();
         }
         closeable.close();
+    }
+
+    @Test
+    public void statsOwnershipUsesTheManagementServerNodeId() {
+        Assert.assertEquals(ManagementServerNode.getManagementServerId(), (long) ReflectionTestUtils.getField(statsCollector, "mgmtSrvrId"));
     }
 
     @Test
@@ -742,6 +752,23 @@ public class StatsCollectorTest {
             at com.google.gson.DefaultTypeAdapters$DefaultDateTypeAdapter.deserializeToDate(DefaultTypeAdapters.java:374)
             ... 42 more
          */
+    }
+
+    @Test
+    public void aGpuHostWhoseGroupsAllVanishedHasItsGroupsUpdated() {
+        ResourceManager resourceManager = Mockito.mock(ResourceManager.class);
+        HostGpuGroupsDao hostGpuGroupsDao = Mockito.mock(HostGpuGroupsDao.class);
+        ReflectionTestUtils.setField(statsCollector, "_resourceMgr", resourceManager);
+        ReflectionTestUtils.setField(statsCollector, "_hostGpuGroupsDao", hostGpuGroupsDao);
+        HostVO host = Mockito.mock(HostVO.class);
+        when(host.getId()).thenReturn(7L);
+        when(hostGpuGroupsDao.listHostIds()).thenReturn(List.of(7L));
+        HashMap<String, HashMap<String, VgpuTypesInfo>> noGroups = new HashMap<>();
+        when(resourceManager.getGPUStatistics(host)).thenReturn(noGroups);
+
+        ReflectionTestUtils.invokeMethod(statsCollector.new HostCollector(), "updateGpuEnabledHostsDetails", List.of(host));
+
+        Mockito.verify(resourceManager).updateGPUDetails(7L, noGroups);
     }
 
     private static class TestClass {

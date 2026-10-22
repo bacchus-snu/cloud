@@ -16,6 +16,9 @@
 // under the License.
 package com.cloud.metadata;
 
+import java.util.Collection;
+import java.util.Collections;
+import java.util.function.Supplier;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -26,6 +29,7 @@ import javax.naming.ConfigurationException;
 import com.cloud.offerings.dao.NetworkOfferingDetailsDao;
 import com.cloud.server.ResourceManagerUtil;
 import org.apache.cloudstack.api.ResourceDetail;
+import org.apache.cloudstack.framework.config.ScopedConfigStorage;
 import org.apache.cloudstack.resourcedetail.ResourceDetailsDao;
 import org.apache.cloudstack.resourcedetail.dao.AutoScaleVmGroupDetailsDao;
 import org.apache.cloudstack.resourcedetail.dao.AutoScaleVmProfileDetailsDao;
@@ -49,6 +53,7 @@ import org.apache.cloudstack.storage.datastore.db.StoragePoolDetailsDao;
 
 import org.springframework.stereotype.Component;
 
+import com.cloud.configuration.ConfigurationManager;
 import com.cloud.dc.dao.DataCenterDetailsDao;
 import com.cloud.event.ActionEvent;
 import com.cloud.event.EventTypes;
@@ -70,6 +75,8 @@ import com.cloud.vm.dao.VMInstanceDetailsDao;
 
 @Component
 public class ResourceMetaDataManagerImpl extends ManagerBase implements ResourceMetaDataService, ResourceMetaDataManager {
+    @Inject
+    ConfigurationManager configurationManager;
     @Inject
     VolumeDetailsDao _volumeDetailDao;
     @Inject
@@ -179,6 +186,7 @@ public class ResourceMetaDataManagerImpl extends ManagerBase implements Resource
     @DB
     @ActionEvent(eventType = EventTypes.EVENT_RESOURCE_DETAILS_CREATE, eventDescription = "creating resource meta data")
     public boolean addResourceMetaData(final String resourceId, final ResourceObjectType resourceType, final Map<String, String> details, final boolean forDisplay) {
+        checkDetailNames(resourceType, details::keySet);
         return Transaction.execute(new TransactionCallback<Boolean>() {
             @Override
             public Boolean doInTransaction(TransactionStatus status) {
@@ -205,6 +213,7 @@ public class ResourceMetaDataManagerImpl extends ManagerBase implements Resource
         long id = resourceManagerUtil.getResourceId(resourceId, resourceType);
 
         DetailDaoHelper newDetailDaoHelper = new DetailDaoHelper(resourceType);
+        checkDetailNames(resourceType, () -> key != null ? Collections.singletonList(key) : s_daoMap.get(resourceType).listDetailsKeyPairs(id).keySet());
         if (key != null) {
             newDetailDaoHelper.removeDetail(id, key);
         } else {
@@ -212,6 +221,16 @@ public class ResourceMetaDataManagerImpl extends ManagerBase implements Resource
         }
 
         return true;
+    }
+
+    /**
+     * The details of a resource whose details table is a scoped setting store are also where that scope of a setting is
+     * read from.
+     */
+    private void checkDetailNames(ResourceObjectType resourceType, Supplier<Collection<String>> names) {
+        if (s_daoMap.get(resourceType) instanceof ScopedConfigStorage) {
+            configurationManager.checkCallerMayChangeAccessControlSettings(names.get());
+        }
     }
 
     private class DetailDaoHelper {

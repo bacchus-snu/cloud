@@ -296,6 +296,72 @@ const user = {
           })
         }
 
+        // Optional lookups: each is asked only when the caller's API list holds it, and none of them can fail the
+        // sign-in, so a role that is denied one of them signs in the same way.
+        const loadOptionalInfo = (apis, signedIn) => {
+          if (signedIn && 'listNetworks' in apis) {
+            getAPI('listNetworks', { restartrequired: true, forvpc: false }).then(response => {
+              if (response.listnetworksresponse.count > 0) {
+                store.dispatch('AddHeaderNotice', {
+                  key: 'NETWORK_RESTART_REQUIRED',
+                  title: i18n.global.t('label.network.restart.required'),
+                  description: i18n.global.t('message.network.restart.required'),
+                  path: '/guestnetwork/',
+                  query: { restartrequired: true, forvpc: false },
+                  status: 'done',
+                  timestamp: new Date()
+                })
+              }
+            }).catch(ignored => {})
+          }
+
+          if (signedIn && 'listVPCs' in apis) {
+            getAPI('listVPCs', { restartrequired: true }).then(response => {
+              if (response.listvpcsresponse.count > 0) {
+                store.dispatch('AddHeaderNotice', {
+                  key: 'VPC_RESTART_REQUIRED',
+                  title: i18n.global.t('label.vpc.restart.required'),
+                  description: i18n.global.t('message.vpc.restart.required'),
+                  path: '/vpc/',
+                  query: { restartrequired: true },
+                  status: 'done',
+                  timestamp: new Date()
+                })
+              }
+            }).catch(ignored => {})
+          }
+
+          if ('listNetworkServiceProviders' in apis) {
+            getAPI(
+              'listNetworkServiceProviders',
+              { name: 'SecurityGroupProvider', state: 'Enabled' }
+            ).then(response => {
+              const showSecurityGroups = response.listnetworkserviceprovidersresponse.count > 0
+              commit('SET_SHOW_SECURITY_GROUPS', showSecurityGroups)
+            }).catch(ignored => {
+            })
+          }
+
+          if ('listLdapConfigurations' in apis) {
+            getAPI('listLdapConfigurations').then(response => {
+              const ldapEnable = (response.ldapconfigurationresponse.count > 0)
+              commit('SET_LDAP', ldapEnable)
+            }).catch(ignored => {
+              commit('SET_LDAP', false)
+            })
+          } else {
+            commit('SET_LDAP', false)
+          }
+
+          if ('cloudianIsEnabled' in apis) {
+            getAPI('cloudianIsEnabled').then(response => {
+              const cloudian = response.cloudianisenabledresponse.cloudianisenabled || {}
+              commit('SET_CLOUDIAN', cloudian)
+            }).catch(ignored => {
+            })
+          }
+        }
+
         // This block is to enforce password change for first time login after admin resets password
         const isPwdChangeRequired = vueProps.$localStorage.get(PASSWORD_CHANGE_REQUIRED)
         commit('SET_PASSWORD_CHANGE_REQUIRED', isPwdChangeRequired)
@@ -313,6 +379,7 @@ const user = {
           commit('SET_USE_BROWSER_TIMEZONE', cachedUseBrowserTimezone)
           commit('SET_CUSTOM_COLUMNS', cachedCustomColumns)
           commit('SET_MS_ID', msId)
+          loadOptionalInfo(cachedApis, false)
 
           // Ensuring we get the user info so that store.getters.user is never empty when the page is freshly loaded
           getAPI('listUsers', { id: Cookies.get('userid'), listall: true }).then(response => {
@@ -348,6 +415,7 @@ const user = {
               }
             }
             commit('SET_APIS', apis)
+            loadOptionalInfo(apis, true)
             loadFeatures(apis).then(() => {
               resolve(apis)
               store.dispatch('GenerateRoutes', { apis }).then(() => {
@@ -361,34 +429,6 @@ const user = {
           }).catch(error => {
             reject(error)
           })
-
-          getAPI('listNetworks', { restartrequired: true, forvpc: false }).then(response => {
-            if (response.listnetworksresponse.count > 0) {
-              store.dispatch('AddHeaderNotice', {
-                key: 'NETWORK_RESTART_REQUIRED',
-                title: i18n.global.t('label.network.restart.required'),
-                description: i18n.global.t('message.network.restart.required'),
-                path: '/guestnetwork/',
-                query: { restartrequired: true, forvpc: false },
-                status: 'done',
-                timestamp: new Date()
-              })
-            }
-          }).catch(ignored => {})
-
-          getAPI('listVPCs', { restartrequired: true }).then(response => {
-            if (response.listvpcsresponse.count > 0) {
-              store.dispatch('AddHeaderNotice', {
-                key: 'VPC_RESTART_REQUIRED',
-                title: i18n.global.t('label.vpc.restart.required'),
-                description: i18n.global.t('message.vpc.restart.required'),
-                path: '/vpc/',
-                query: { restartrequired: true },
-                status: 'done',
-                timestamp: new Date()
-              })
-            }
-          }).catch(ignored => {})
         }
 
         getAPI('listUsers', { id: Cookies.get('userid'), showicon: true }).then(response => {
@@ -399,28 +439,6 @@ const user = {
           commit('SET_AVATAR', result.icon?.base64image || '')
         }).catch(error => {
           reject(error)
-        })
-
-        getAPI(
-          'listNetworkServiceProviders',
-          { name: 'SecurityGroupProvider', state: 'Enabled' }
-        ).then(response => {
-          const showSecurityGroups = response.listnetworkserviceprovidersresponse.count > 0
-          commit('SET_SHOW_SECURITY_GROUPS', showSecurityGroups)
-        }).catch(ignored => {
-        })
-
-        getAPI('listLdapConfigurations').then(response => {
-          const ldapEnable = (response.ldapconfigurationresponse.count > 0)
-          commit('SET_LDAP', ldapEnable)
-        }).catch(error => {
-          reject(error)
-        })
-
-        getAPI('cloudianIsEnabled').then(response => {
-          const cloudian = response.cloudianisenabledresponse.cloudianisenabled || {}
-          commit('SET_CLOUDIAN', cloudian)
-        }).catch(ignored => {
         })
       }).catch(error => {
         console.error(error)
@@ -547,6 +565,11 @@ const user = {
     },
     UpdateConfiguration ({ commit }) {
       return new Promise((resolve, reject) => {
+        if (!('listLdapConfigurations' in store.getters.apis)) {
+          commit('SET_LDAP', false)
+          resolve()
+          return
+        }
         getAPI('listLdapConfigurations').then(response => {
           const ldapEnable = (response.ldapconfigurationresponse.count > 0)
           commit('SET_LDAP', ldapEnable)

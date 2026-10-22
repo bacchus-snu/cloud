@@ -24,25 +24,7 @@
       <a-menu
         :selectedKeys="[language]"
         @click="onClick">
-        <a-menu-item key="en" value="enUS">English</a-menu-item>
-        <a-menu-item key="hi" value="hi">हिन्दी</a-menu-item>
-        <a-menu-item key="te" value="te">తెలుగు</a-menu-item>
-        <a-menu-item key="ja_JP" value="jpJP">日本語</a-menu-item>
-        <a-menu-item key="ko_KR" value="koKR">한국어</a-menu-item>
-        <a-menu-item key="zh_CN" value="zhCN">简体中文</a-menu-item>
-        <a-menu-item key="ar" value="arEG">Arabic</a-menu-item>
-        <a-menu-item key="ca" value="caES">Catalan</a-menu-item>
-        <a-menu-item key="de_DE" value="deDE">Deutsch</a-menu-item>
-        <a-menu-item key="es" value="esES">Español</a-menu-item>
-        <a-menu-item key="fr_FR" value="frFR">Français</a-menu-item>
-        <a-menu-item key="it_IT" value="itIT">Italiano</a-menu-item>
-        <a-menu-item key="hu" value="huHU">Magyar</a-menu-item>
-        <a-menu-item key="nl_NL" value="nlNL">Nederlands</a-menu-item>
-        <a-menu-item key="nb_NO" value="nbNO">Norsk</a-menu-item>
-        <a-menu-item key="pl" value="plPL">Polish</a-menu-item>
-        <a-menu-item key="pt_BR" value="ptBR">Português brasileiro</a-menu-item>
-        <a-menu-item key="ru_RU" value="ruRU">Русский</a-menu-item>
-        <a-menu-item key="el_GR" value="elGR">Ελληνικά</a-menu-item>
+        <a-menu-item v-for="item in languages" :key="item.key" :value="item.value">{{ item.name }}</a-menu-item>
       </a-menu>
     </template>
   </a-dropdown>
@@ -53,8 +35,31 @@ import moment from 'moment'
 import 'moment/locale/zh-cn'
 import { loadLanguageAsync } from '@/locales'
 import { vueProps } from '@/vue-app'
+import { offeredLanguages } from '@/utils/uiConfig'
 
 moment.locale('en')
+
+const LANGUAGES = [
+  { key: 'en', value: 'enUS', name: 'English' },
+  { key: 'hi', value: 'hi', name: 'हिन्दी' },
+  { key: 'te', value: 'te', name: 'తెలుగు' },
+  { key: 'ja_JP', value: 'jpJP', name: '日本語' },
+  { key: 'ko_KR', value: 'koKR', name: '한국어' },
+  { key: 'zh_CN', value: 'zhCN', name: '简体中文' },
+  { key: 'ar', value: 'arEG', name: 'Arabic' },
+  { key: 'ca', value: 'caES', name: 'Catalan' },
+  { key: 'de_DE', value: 'deDE', name: 'Deutsch' },
+  { key: 'es', value: 'esES', name: 'Español' },
+  { key: 'fr_FR', value: 'frFR', name: 'Français' },
+  { key: 'it_IT', value: 'itIT', name: 'Italiano' },
+  { key: 'hu', value: 'huHU', name: 'Magyar' },
+  { key: 'nl_NL', value: 'nlNL', name: 'Nederlands' },
+  { key: 'nb_NO', value: 'nbNO', name: 'Norsk' },
+  { key: 'pl', value: 'plPL', name: 'Polish' },
+  { key: 'pt_BR', value: 'ptBR', name: 'Português brasileiro' },
+  { key: 'ru_RU', value: 'ruRU', name: 'Русский' },
+  { key: 'el_GR', value: 'elGR', name: 'Ελληνικά' }
+]
 
 export default {
   name: 'TranslationMenu',
@@ -63,12 +68,30 @@ export default {
       language: 'en'
     }
   },
+  computed: {
+    // every language except those the config.json hides from the caller's role type (area "languages")
+    languages () {
+      return offeredLanguages(LANGUAGES, this.$store.getters.userInfo?.roletype, this.$config)
+    }
+  },
+  watch: {
+    // the offered list can narrow once the caller's role type is known, after this menu mounted
+    languages (offered) {
+      if (!offered.some(item => item.key === this.language)) {
+        this.setLocale(this.offeredLocale())
+      }
+    }
+  },
   mounted () {
-    this.language = this.$localStorage.get('LOCALE') || vueProps.$config?.defaultLanguage || 'en'
-    this.setLocale(this.language)
+    this.setLocale(this.offeredLocale())
   },
   methods: {
     moment,
+    offeredLocale () {
+      const offered = this.languages.map(item => item.key)
+      const wanted = [this.$localStorage.get('LOCALE'), vueProps.$config?.defaultLanguage, 'en', offered[0]]
+      return wanted.find(key => key && offered.includes(key)) || 'en'
+    },
     onClick (e) {
       let localeValue = e.key
       if (!localeValue) {

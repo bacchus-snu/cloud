@@ -58,6 +58,45 @@ the links that sign out of each provider that has an end-session address.
 - `foldPasswordLogin` keeps the username and password form folded behind a link while at least one provider is
   offered (default `true`); with `false` the form is always open. Without providers the form is always open.
 
+## What a role type sees
+What a caller may do is decided by the server: menus, tabs, actions, wizard steps and the lists they need appear only
+when the caller's API list (`listApis`) holds their APIs. The `hidden` block covers what an API list cannot express; it
+hides entries for a role type (`Admin`, `ResourceAdmin`, `DomainAdmin`, `User`) and never removes a route, so a hidden
+page still opens from a link.
+```json
+{
+  "hidden": {
+    "User": {
+      "sidebar": ["template", "event"],
+      "header": [],
+      "dashboard": ["project", "template"],
+      "deploy": ["imagetype.snapshotid", "keyboard"],
+      "actions": ["vm.createSnapshot"],
+      "details": ["vm.hypervisor"],
+      "columns": ["volume.zonename"],
+      "languages": ["ja_JP", "zh_CN"]
+    }
+  },
+  "showGpuSlots": true,
+  "showCpuSpeed": false
+}
+```
+
+- `hidden.<role type>.sidebar` lists menu entries by route name (a section left without entries goes too).
+- `header` lists `create`, `links`, `language`, `notices` and the user menu items `profile`, `limits`, `timezone`, `document`.
+- `dashboard` lists the user dashboard's cards (`gpuslots`, `leases`, `requests`, `help`, `events`), its counts (`instances`,
+  `volumes`, `templates`, …) and its usage rows (`vm`, `cpu`, `memory`, `gpu`, `volume`, `storage`, `project`, `template`, …).
+- `deploy` lists deploy wizard items: image types as `imagetype.<templateid|isoid|volumeid|snapshotid>`, `dynamicscalingenabled`
+  and `keyboard`.
+- `actions` lists actions as `<route name>.<API>`, `details` lists detail fields as `<route name>.<field>`, `columns` lists
+  list-view columns as `<route name>.<field>`.
+- `languages` lists the locales the language menu leaves out (`ja_JP`, `zh_CN`, …). The sign-in page, where no role type
+  is known yet, offers every locale.
+- `showGpuSlots` (default `true`) shows the free and total slots of the GPU offerings; `showCpuSpeed` (default `false`)
+  shows CPU clock speeds.
+- `docBase` is the address the Help menu opens and under which the pages' help links open. A value of
+  `docHelpMappings` that is a full address (`https://…`) is opened as it is, so pages can keep links to another site.
+
 ## Theme
 Customize themes like colors, border color, etc.
 ```json

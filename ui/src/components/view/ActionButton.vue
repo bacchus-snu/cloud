@@ -43,7 +43,7 @@
       />
     </a-tooltip>
     <a-tooltip
-      v-for="(action, actionIndex) in actions"
+      v-for="(action, actionIndex) in visibleActions"
       :key="actionIndex"
       arrowPointAtCenter
       placement="bottomRight">
@@ -57,11 +57,7 @@
         class="button-action-badge"
         :overflowCount="9"
         :count="actionBadge[action.api] ? actionBadge[action.api].badgeNum : 0"
-        v-if="action.api in $store.getters.apis &&
-          action.showBadge && (
-            (!dataView && ((action.listView && ('show' in action ? action.show(resource, $store.getters) : true)) || (action.groupAction && selectedRowKeys.length > 0 && ('groupShow' in action ? action.groupShow(selectedItems, $store.getters) : true)))) ||
-            (dataView && action.dataView && ('show' in action ? action.show(resource, $store.getters) : true))
-          )"
+        v-if="action.showBadge"
         :disabled="'disabled' in action ? action.disabled(resource, $store.getters) : false" >
         <a-button
           :type="(primaryIconList.includes(action.icon) ? 'primary' : 'default')"
@@ -78,11 +74,7 @@
         </a-button>
       </a-badge>
       <a-button
-        v-if="action.api in $store.getters.apis &&
-          !action.showBadge && (
-            (!dataView && ((action.listView && ('show' in action ? action.show(resource, $store.getters) : true)) || (action.groupAction && selectedRowKeys.length > 0 && ('groupShow' in action ? action.groupShow(selectedItems, $store.getters) : true)))) ||
-            (dataView && action.dataView && ('show' in action ? action.show(resource, $store.getters) : true))
-          )"
+        v-else
         :disabled="'disabled' in action ? action.disabled(resource, $store.getters) : false"
         :type="(primaryIconList.includes(action.icon) ? 'primary' : 'default')"
         :danger="dangerIconList.includes(action.icon)"
@@ -172,6 +164,16 @@ export default {
     },
     dangerIconList () {
       return ['DeleteOutlined', 'delete-outlined', 'UsergroupDeleteOutlined', 'usergroup-delete-outlined']
+    },
+    visibleActions () {
+      const getters = this.$store.getters
+      const page = this.$route?.meta?.name
+      const shown = (action) => 'show' in action ? action.show(this.resource, getters) : true
+      return this.actions.filter(action => action.api in getters.apis &&
+        !this.$isHidden('actions', page + '.' + action.api) && (
+        (!this.dataView && ((action.listView && shown(action)) ||
+          (action.groupAction && this.selectedRowKeys.length > 0 && ('groupShow' in action ? action.groupShow(this.selectedItems, getters) : true)))) ||
+        (this.dataView && action.dataView && shown(action))))
     }
   },
   methods: {

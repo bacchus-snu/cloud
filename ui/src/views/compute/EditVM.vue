@@ -44,7 +44,7 @@
         </template>
         <a-input v-model:value="form.displayname" />
       </a-form-item>
-      <a-form-item name="ostypeid" ref="ostypeid">
+      <a-form-item name="ostypeid" ref="ostypeid" v-if="'listOsTypes' in $store.getters.apis">
         <template #label>
           <tooltip-label :title="$t('label.ostypeid')" :tooltip="apiParams.ostypeid.description"/>
         </template>
@@ -73,7 +73,7 @@
         </template>
         <a-switch v-model:checked="form.haenable" />
       </a-form-item>
-      <a-form-item name="group" ref="group">
+      <a-form-item name="group" ref="group" v-if="'listInstanceGroups' in $store.getters.apis">
         <template #label>
           <tooltip-label :title="$t('label.group')" :tooltip="apiParams.group.description"/>
         </template>
@@ -97,7 +97,11 @@
         </template>
         <a-textarea v-model:value="form.extraconfig"/>
       </a-form-item>
-      <a-form-item ref="securitygroupids" name="securitygroupids" :label="$t('label.security.groups')" v-if="securityGroupsEnabled">
+      <a-form-item
+        ref="securitygroupids"
+        name="securitygroupids"
+        :label="$t('label.security.groups')"
+        v-if="securityGroupsEnabled && 'listSecurityGroups' in $store.getters.apis">
         <a-select
           mode="multiple"
           :placeholder="$t('label.select.security.groups')"
@@ -271,6 +275,9 @@ export default {
       })
     },
     fetchSecurityGroups () {
+      if (!('listSecurityGroups' in this.$store.getters.apis)) {
+        return
+      }
       this.securitygroups.loading = true
       getAPI('listSecurityGroups', {
         zoneid: this.resource.zoneid
@@ -329,8 +336,11 @@ export default {
       return this.template.isdynamicallyscalable && this.serviceOffering.dynamicscalingenabled && this.$store.getters.features.dynamicscalingenabled
     },
     fetchOsTypes () {
-      this.osTypes.loading = true
       this.osTypes.opts = []
+      if (!('listOsTypes' in this.$store.getters.apis)) {
+        return
+      }
+      this.osTypes.loading = true
       getAPI('listOsTypes').then(json => {
         this.osTypes.opts = json.listostypesresponse.ostype || []
       }).catch(error => {
@@ -338,8 +348,11 @@ export default {
       }).finally(() => { this.osTypes.loading = false })
     },
     fetchInstanceGroups () {
-      this.groups.loading = true
       this.groups.opts = []
+      if (!('listInstanceGroups' in this.$store.getters.apis)) {
+        return
+      }
+      this.groups.loading = true
       const params = {
         domainid: this.$store.getters.userInfo.domainid,
         listall: true
@@ -369,6 +382,14 @@ export default {
           networkId = nic.networkid
         }
       })
+      if (!('listNetworks' in this.$store.getters.apis)) {
+        // without the network probe the field follows the command that changes user data
+        if ('updateVirtualMachine' in this.$store.getters.apis) {
+          this.userDataEnabled = true
+          this.fetchVmUserData()
+        }
+        return
+      }
       if (!networkId) {
         return
       }
@@ -380,17 +401,19 @@ export default {
         json.listnetworksresponse.network[0].service.forEach(service => {
           if (service.name === 'UserData') {
             this.userDataEnabled = true
-
-            const listVmParams = {
-              id: this.resource.id,
-              userdata: true,
-              listall: true
-            }
-            getAPI('listVirtualMachines', listVmParams).then(json => {
-              this.form.userdata = atob(json.listvirtualmachinesresponse.virtualmachine[0].userdata || '')
-            })
+            this.fetchVmUserData()
           }
         })
+      })
+    },
+    fetchVmUserData () {
+      const listVmParams = {
+        id: this.resource.id,
+        userdata: true,
+        listall: true
+      }
+      getAPI('listVirtualMachines', listVmParams).then(json => {
+        this.form.userdata = atob(json.listvirtualmachinesresponse.virtualmachine[0].userdata || '')
       })
     },
     handleSubmit () {
@@ -419,7 +442,7 @@ export default {
         if (values.userdata && values.userdata.length > 0) {
           params.userdata = this.$toBase64AndURIEncoded(values.userdata)
         }
-        if (values.leaseduration !== undefined && (values.leaseduration === -1 || values.leaseduration > 0)) {
+        if (this.isLeaseEditable && values.leaseduration !== undefined && (values.leaseduration === -1 || values.leaseduration > 0)) {
           params.leaseduration = values.leaseduration
           if (values.leaseexpiryaction !== undefined) {
             params.leaseexpiryaction = values.leaseexpiryaction

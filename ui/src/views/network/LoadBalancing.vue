@@ -303,7 +303,7 @@
         <span>{{ $t('label.configure.sticky.policy') }}</span>
         <a
           style="margin-left: 5px"
-          :href="$config.docBase + '/adminguide/networking/external_firewalls_and_load_balancers.html#sticky-session-policies-for-load-balancer-rules'"
+          :href="$docHelpUrl($applyDocHelpMappings('adminguide/networking/external_firewalls_and_load_balancers.html#sticky-session-policies-for-load-balancer-rules'))"
           target="_blank">
           <question-circle-outlined />
         </a>

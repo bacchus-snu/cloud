@@ -23,6 +23,7 @@ import eventBus from '@/config/eventBus'
 import store from '@/store'
 import { sourceToken } from '@/utils/request'
 import { toLocalDate, toLocaleDate } from '@/utils/date'
+import { docHelpUrl, isHidden } from '@/utils/uiConfig'
 
 export const pollJobPlugin = {
   install (app) {
@@ -334,6 +335,14 @@ export const configUtilPlugin = {
         }
       }
       return docHelp
+    }
+
+    app.config.globalProperties.$docHelpUrl = function (docHelp) {
+      return docHelpUrl(docHelp, this.$config)
+    }
+
+    app.config.globalProperties.$isHidden = function (area, key) {
+      return isHidden(area, key, this.$store?.getters?.userInfo?.roletype, this.$config)
     }
   }
 }

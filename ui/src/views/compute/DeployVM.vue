@@ -40,7 +40,7 @@
                   </div>
                 </template>
               </a-step>
-              <a-step :title="$t('label.select.deployment.infrastructure')" status="process">
+              <a-step v-if="showZoneSection" :title="$t('label.select.deployment.infrastructure')" status="process">
                 <template #description>
                   <div style="margin-top: 15px">
                     <span>{{ $t('message.select.a.zone') }}</span><br/>
@@ -421,7 +421,7 @@
               <a-step
                 :title="$t('label.networks')"
                 :status="zoneSelected ? 'process' : 'wait'"
-                v-if="zone && zone.networktype !== 'Basic'">
+                v-if="showNetworkSection">
                 <template #description>
                   <div v-if="zoneSelected" style="margin-top: 5px">
                     <div style="margin-bottom: 10px">
@@ -611,7 +611,10 @@
                       ref="bootintosetup">
                       <a-switch v-model:checked="form.bootintosetup" />
                     </a-form-item>
-                    <a-form-item name="dynamicscalingenabled" ref="dynamicscalingenabled" v-if="!!template && !isTemplateHypervisorExternal">
+                    <a-form-item
+                      name="dynamicscalingenabled"
+                      ref="dynamicscalingenabled"
+                      v-if="!!template && !isTemplateHypervisorExternal && !$isHidden('deploy', 'dynamicscalingenabled')">
                       <template #label>
                         <tooltip-label :title="$t('label.dynamicscalingenabled')" :tooltip="$t('label.dynamicscalingenabled.tooltip')"/>
                       </template>
@@ -778,7 +781,7 @@
                       </template>
                       <a-textarea v-model:value="form.extraconfig"/>
                     </a-form-item>
-                    <a-form-item :label="$t('label.affinity.groups')">
+                    <a-form-item :label="$t('label.affinity.groups')" v-if="'listAffinityGroups' in $store.getters.apis">
                       <affinity-group-selection
                         :items="options.affinityGroups"
                         :row-count="rowCount.affinityGroups"
@@ -842,13 +845,13 @@
                     <a-form-item :label="$t('label.name.optional')" name="name" ref="name">
                       <a-input v-model:value="form.name" />
                     </a-form-item>
-                    <a-form-item :label="$t('label.group.optional')" name="group" ref="group">
+                    <a-form-item :label="$t('label.group.optional')" name="group" ref="group" v-if="'listInstanceGroups' in $store.getters.apis">
                       <a-auto-complete
                         v-model:value="form.group"
                         :filterOption="filterOption"
                         :options="options.instanceGroups" />
                     </a-form-item>
-                    <a-form-item :label="$t('label.keyboard')" name="keyboard" ref="keyboard">
+                    <a-form-item :label="$t('label.keyboard')" name="keyboard" ref="keyboard" v-if="!$isHidden('deploy', 'keyboard')">
                       <a-select
                         v-model:value="form.keyboard"
                         :options="keyboardSelectOptions"
@@ -1141,7 +1144,7 @@ export default {
       defaultnetworkid: '',
       networkConfig: [],
       dataNetworkCreated: [],
-      userdataTabKey: 'userdataregistered',
+      userdataTabKey: 'listUserData' in this.$store.getters.apis ? 'userdataregistered' : 'userdatatext',
       dataPreFill: {},
       showDetails: false,
       showRootDiskSizeChanger: false,
@@ -1501,19 +1504,29 @@ export default {
       }]
     },
     userdataTabList () {
-      let tabList = []
-      tabList = [{
-        key: 'userdataregistered',
-        tab: this.$t('label.user.data.registered')
-      },
-      {
+      const tabList = [{
         key: 'userdatatext',
         tab: this.$t('label.user.data.text')
       }]
-
+      if (this.isUserAllowedToListUserDatas) {
+        tabList.unshift({
+          key: 'userdataregistered',
+          tab: this.$t('label.user.data.registered')
+        })
+      }
       return tabList
     },
+    showNetworkSection () {
+      return !!this.zone && this.zone.networktype !== 'Basic' && 'listNetworks' in this.$store.getters.apis
+    },
+    showZoneSection () {
+      // with one zone and no pod, cluster or host to pick there is nothing to choose: the zone is selected on its own
+      return !this.zoneSelected || this.options.zones.length !== 1 || 'listPods' in this.$store.getters.apis
+    },
     showSecurityGroupSection () {
+      if (!('listSecurityGroups' in this.$store.getters.apis)) {
+        return false
+      }
       if (this.zone && this.zone.networktype === 'Basic') {
         return true
       }
@@ -2010,6 +2023,9 @@ export default {
     },
     fetchInstanceGroups () {
       this.options.instanceGroups = []
+      if (!('listInstanceGroups' in this.$store.getters.apis)) {
+        return
+      }
       getAPI('listInstanceGroups', {
         account: this.$store.getters.project?.id ? null : this.$store.getters.userInfo.account,
         domainid: this.$store.getters.project?.id ? null : this.$store.getters.userInfo.domainid,
@@ -2026,7 +2042,7 @@ export default {
       this.fetchOptions(param, 'networks')
     },
     fetchKmsKeys () {
-      if (!this.zoneId) {
+      if (!this.zoneId || !('listKMSKeys' in this.$store.getters.apis)) {
         return
       }
       this.loading.kmsKeys = true
@@ -2253,7 +2269,7 @@ export default {
       })
     },
     updateTemplateLinkedUserData (id) {
-      if (id === '0') {
+      if (id === '0' || !('listUserData' in this.$store.getters.apis)) {
         return
       }
       this.templateUserDataParams = []
@@ -2381,8 +2397,6 @@ export default {
 
         this.loading.deploy = true
 
-        let networkIds = []
-
         let deployVmData = {}
         // step 1 : select zone
         deployVmData.zoneid = values.zoneid
@@ -2502,50 +2516,16 @@ export default {
         // step 5: select an affinity group
         deployVmData.affinitygroupids = (values.affinitygroupids || []).join(',')
         // step 6: select network
-        if (this.zone.networktype !== 'Basic') {
-          if (this.nicToNetworkSelection && this.nicToNetworkSelection.length > 0) {
-            for (var j in this.nicToNetworkSelection) {
-              var nicNetwork = this.nicToNetworkSelection[j]
-              deployVmData['nicnetworklist[' + j + '].nic'] = nicNetwork.nic
-              deployVmData['nicnetworklist[' + j + '].network'] = nicNetwork.network
-            }
-          } else {
-            const arrNetwork = []
-            networkIds = values.networkids
-            if (networkIds.length > 0) {
-              for (let i = 0; i < networkIds.length; i++) {
-                if (networkIds[i] === this.defaultnetworkid) {
-                  const ipToNetwork = {
-                    networkid: this.defaultnetworkid
-                  }
-                  arrNetwork.unshift(ipToNetwork)
-                } else {
-                  const ipToNetwork = {
-                    networkid: networkIds[i]
-                  }
-                  arrNetwork.push(ipToNetwork)
-                }
-              }
-            } else {
-              this.$notification.error({
-                message: this.$t('message.request.failed'),
-                description: this.$t('message.step.4.continue')
-              })
-              this.loading.deploy = false
-              return
-            }
-            for (let j = 0; j < arrNetwork.length; j++) {
-              deployVmData['iptonetworklist[' + j + '].networkid'] = arrNetwork[j].networkid
-              if (this.networkConfig.length > 0) {
-                const networkConfig = this.networkConfig.filter((item) => item.key === arrNetwork[j].networkid)
-                if (networkConfig && networkConfig.length > 0) {
-                  deployVmData['iptonetworklist[' + j + '].ip'] = networkConfig[0].ipAddress ? networkConfig[0].ipAddress : undefined
-                  deployVmData['iptonetworklist[' + j + '].mac'] = networkConfig[0].macAddress ? networkConfig[0].macAddress : undefined
-                }
-              }
-            }
-          }
+        const networkParams = this.networkDeployParams(values)
+        if (!networkParams) {
+          this.$notification.error({
+            message: this.$t('message.request.failed'),
+            description: this.$t('message.step.4.continue')
+          })
+          this.loading.deploy = false
+          return
         }
+        Object.assign(deployVmData, networkParams)
         if (this.securitygroupids.length > 0) {
           deployVmData.securitygroupids = this.securitygroupids.join(',')
         }
@@ -2736,9 +2716,54 @@ export default {
         })
       })
     },
+    /**
+     * The network parameters of the deployment, or null when the network step is shown and no network is chosen.
+     * Without the step (a basic zone, or a role that may not list networks) none is sent and the server picks the
+     * zone's network.
+     */
+    networkDeployParams (values) {
+      const params = {}
+      if (!this.showNetworkSection) {
+        return params
+      }
+      if (this.nicToNetworkSelection && this.nicToNetworkSelection.length > 0) {
+        for (const j in this.nicToNetworkSelection) {
+          const nicNetwork = this.nicToNetworkSelection[j]
+          params['nicnetworklist[' + j + '].nic'] = nicNetwork.nic
+          params['nicnetworklist[' + j + '].network'] = nicNetwork.network
+        }
+        return params
+      }
+      const networkIds = values.networkids || []
+      if (networkIds.length === 0) {
+        return null
+      }
+      const arrNetwork = []
+      for (const networkId of networkIds) {
+        if (networkId === this.defaultnetworkid) {
+          arrNetwork.unshift({ networkid: networkId })
+        } else {
+          arrNetwork.push({ networkid: networkId })
+        }
+      }
+      for (let j = 0; j < arrNetwork.length; j++) {
+        params['iptonetworklist[' + j + '].networkid'] = arrNetwork[j].networkid
+        const networkConfig = this.networkConfig.filter((item) => item.key === arrNetwork[j].networkid)
+        if (networkConfig.length > 0) {
+          params['iptonetworklist[' + j + '].ip'] = networkConfig[0].ipAddress ? networkConfig[0].ipAddress : undefined
+          params['iptonetworklist[' + j + '].mac'] = networkConfig[0].macAddress ? networkConfig[0].macAddress : undefined
+        }
+      }
+      return params
+    },
     fetchOptions (param, name, exclude) {
       return new Promise((resolve, reject) => {
         if (exclude && exclude.length > 0 && exclude.includes(name)) {
+          return resolve(null)
+        }
+        // a list the caller's role does not allow is not asked for; its part of the wizard stays empty
+        if (!(param.list in this.$store.getters.apis)) {
+          this.options[name] = []
           return resolve(null)
         }
         this.loading[name] = true

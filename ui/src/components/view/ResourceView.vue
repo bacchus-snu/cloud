@@ -169,6 +169,9 @@ export default {
       return tab.name
     },
     showTab (tab) {
+      if (tab.api && !(tab.api in this.$store.getters.apis)) {
+        return false
+      }
       if (this.networkService && this.networkService.service && tab.networkServiceFilter) {
         return tab.networkServiceFilter(this.networkService.service)
       } else if ('show' in tab) {

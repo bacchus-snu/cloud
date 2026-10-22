@@ -61,6 +61,7 @@ export default {
     show: (resource) => { return resource.hypervisortype !== 'External' }
   }, {
     name: 'comments',
+    api: 'listAnnotations',
     component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue')))
   },
   {

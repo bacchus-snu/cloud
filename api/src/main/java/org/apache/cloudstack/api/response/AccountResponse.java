@@ -267,6 +267,13 @@ public class AccountResponse extends BaseResponse implements ResourceLimitAndCou
     @Param(description = "The total secondary storage space (in GiB) available to be used for this account", since = "4.2.0")
     private String secondaryStorageAvailable;
 
+    @SerializedName(ApiConstants.REMAINING_STORAGE_QUOTA)
+    @Param(description = "the storage the account can still add, in whole GiB: the smallest remainder of the account's storage quota and " +
+            "of its domains' quotas, where volumes and snapshots count together when the storage quota is combined; -1 when unlimited. " +
+            "Returned by listAccounts only when its details include storagequota",
+            since = "4.23.0.100")
+    private Long remainingStorageQuota;
+
     @SerializedName(ApiConstants.BUCKET_LIMIT)
     @Param(description = "the total number of buckets which can be stored by this account", since = "4.21.0")
     private String bucketLimit;
@@ -640,6 +647,14 @@ public class AccountResponse extends BaseResponse implements ResourceLimitAndCou
     @Override
     public void setSecondaryStorageAvailable(String secondaryStorageAvailable) {
         this.secondaryStorageAvailable = secondaryStorageAvailable;
+    }
+
+    public Long getRemainingStorageQuota() {
+        return remainingStorageQuota;
+    }
+
+    public void setRemainingStorageQuota(Long remainingStorageQuota) {
+        this.remainingStorageQuota = remainingStorageQuota;
     }
 
     @Override

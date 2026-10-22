@@ -17,13 +17,13 @@
 
 <template>
   <div class="user-menu">
-    <span class="action">
+    <span class="action" v-if="!$isHidden('header', 'create')">
       <create-menu v-if="device === 'desktop'" />
     </span>
-    <external-link class="action"/>
-    <translation-menu class="action"/>
+    <external-link class="action" v-if="!$isHidden('header', 'links')"/>
+    <translation-menu class="action" v-if="!$isHidden('header', 'language')"/>
     <pending-request-badge class="action" />
-    <header-notice class="action"/>
+    <header-notice class="action" v-if="!$isHidden('header', 'notices')"/>
     <label class="user-menu-server-info action" v-if="$config.multipleServer">
       <database-outlined />
       {{ server.name || server.apiBase || 'Local-Server' }}
@@ -43,20 +43,20 @@
       </span>
       <template #overlay>
         <a-menu class="user-menu-wrapper" @click="handleClickMenu">
-          <a-menu-item class="user-menu-item" key="profile">
+          <a-menu-item class="user-menu-item" key="profile" v-if="menuItems.includes('profile')">
             <UserOutlined class="user-menu-item-icon" />
             <span class="user-menu-item-name">{{ $t('label.profilename') }}</span>
           </a-menu-item>
-          <a-menu-item class="user-menu-item" key="limits">
+          <a-menu-item class="user-menu-item" key="limits" v-if="menuItems.includes('limits')">
             <ControlOutlined class="user-menu-item-icon" />
             <span class="user-menu-item-name">{{ $t('label.limits') }}</span>
           </a-menu-item>
-          <a-menu-item class="user-menu-item" key="timezone">
+          <a-menu-item class="user-menu-item" key="timezone" v-if="menuItems.includes('timezone')">
             <ClockCircleOutlined class="user-menu-item-icon" />
             <span class="user-menu-item-name" style="margin-right: 5px">{{ $t('label.use.local.timezone') }}</span>
             <a-switch :checked="$store.getters.usebrowsertimezone" />
           </a-menu-item>
-          <a-menu-item class="user-menu-item" key="document">
+          <a-menu-item class="user-menu-item" key="document" v-if="menuItems.includes('document')">
             <QuestionCircleOutlined class="user-menu-item-icon" />
             <span class="user-menu-item-name">{{ $t('label.help') }}</span>
           </a-menu-item>
@@ -131,6 +131,9 @@ export default {
   computed: {
     server () {
       return this.$localStorage.get(SERVER_MANAGER) || this.$config.servers[0]
+    },
+    menuItems () {
+      return ['profile', 'limits', 'timezone', 'document', 'logout'].filter(key => key === 'logout' || !this.$isHidden('header', key))
     }
   },
   methods: {

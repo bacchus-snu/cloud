@@ -73,6 +73,7 @@ export default {
     show: () => { return 'listEvents' in store.getters.apis }
   }, {
     name: 'comments',
+    api: 'listAnnotations',
     component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue')))
   }],
   actions: [

@@ -25,7 +25,7 @@
       <a-tab-pane :tab="$t('label.details')" key="details">
         <DetailsTab :resource="dataResource" :loading="loading" />
       </a-tab-pane>
-      <a-tab-pane :tab="$t('label.metrics')" key="stats">
+      <a-tab-pane :tab="$t('label.metrics')" key="stats" v-if="'listVirtualMachinesUsageHistory' in $store.getters.apis">
         <StatsTab :resource="resource"/>
       </a-tab-pane>
       <a-tab-pane :tab="$t('label.iso')" key="cdrom" v-if="attachedIsos.length > 0">
@@ -49,7 +49,7 @@
         </a-button>
         <volumes-tab :resource="vm" :loading="loading" />
       </a-tab-pane>
-      <a-tab-pane :tab="$t('label.gpu')" key="gpu" v-if="dataResource.gpucardname">
+      <a-tab-pane :tab="$t('label.gpu')" key="gpu" v-if="dataResource.gpucardname && 'listGpuDevices' in $store.getters.apis">
         <GPUTab
           apiName="listGpuDevices"
           :resource="dataResource"
@@ -80,7 +80,10 @@
           :routerlinks="(record) => { return { name: '/backup/' + record.id } }"
           :showSearch="false"/>
       </a-tab-pane>
-      <a-tab-pane :tab="$t('label.securitygroups')" key="securitygroups" v-if="dataResource.securitygroup && dataResource.securitygroup.length > 0 || $store.getters.showSecurityGroups">
+      <a-tab-pane
+        :tab="$t('label.securitygroups')"
+        key="securitygroups"
+        v-if="'listSecurityGroups' in $store.getters.apis && (dataResource.securitygroup && dataResource.securitygroup.length > 0 || $store.getters.showSecurityGroups)">
         <a-button
           type="primary"
           style="width: 100%; margin-bottom: 10px"
@@ -104,7 +107,7 @@
           resourceType="VirtualMachine"
           :loading="loading"/>
       </a-tab-pane>
-      <a-tab-pane :tab="$t('label.settings')" key="settings">
+      <a-tab-pane :tab="$t('label.settings')" key="settings" v-if="'listDetailOptions' in $store.getters.apis">
         <DetailSettings :resource="dataResource" :loading="loading" />
       </a-tab-pane>
       <a-tab-pane :tab="$t('label.events')" key="events" v-if="'listEvents' in $store.getters.apis">
@@ -279,7 +282,7 @@ export default {
     },
     fetchData () {
       this.annotations = []
-      if (!this.vm || !this.vm.id) {
+      if (!this.vm || !this.vm.id || !('listAnnotations' in this.$store.getters.apis)) {
         return
       }
       getAPI('listAnnotations', { entityid: this.dataResource.id, entitytype: 'VM', annotationfilter: 'all' }).then(json => {

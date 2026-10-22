@@ -505,7 +505,7 @@ export default {
       }
 
       detailsKeys = this.projectname ? [...detailsKeys.filter(x => x !== 'account'), 'projectname'] : detailsKeys
-      return detailsKeys
+      return detailsKeys.filter(key => !this.$isHidden('details', this.$route.meta.name + '.' + key))
     },
     getDetailTitle (detail) {
       return `label.${String(this.detailsTitles[detail]).toLowerCase()}`

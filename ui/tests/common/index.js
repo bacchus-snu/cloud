@@ -69,7 +69,9 @@ function createFactory (component, options) {
     store = null,
     props = {},
     data = {},
-    mocks = {}
+    mocks = {},
+    provide = {},
+    stubs = {}
   } = options
 
   if (router) plugins.push(router)
@@ -92,7 +94,9 @@ function createFactory (component, options) {
         dialogUtilPlugin,
         StoragePlugin
       ],
-      mocks
+      mocks,
+      provide,
+      stubs
     },
     props,
     data () {

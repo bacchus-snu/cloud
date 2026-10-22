@@ -139,6 +139,7 @@ export default {
       },
       {
         name: 'comments',
+        api: 'listAnnotations',
         component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue')))
       }],
       actions: [
@@ -892,6 +893,7 @@ export default {
       },
       {
         name: 'comments',
+        api: 'listAnnotations',
         component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue')))
       }],
       actions: [
@@ -1328,6 +1330,7 @@ export default {
         },
         {
           name: 'comments',
+          api: 'listAnnotations',
           component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue')))
         }
       ],

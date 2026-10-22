@@ -41,7 +41,7 @@ function hasAccessToSection (route) {
   return true
 }
 
-function filterAsyncRouter (routerMap, apis) {
+export function filterAsyncRouter (routerMap, apis) {
   const accessedRouters = routerMap.filter(route => {
     if (hasAccessToRoute(apis, route)) {
       if (route.children && route.children.length > 0) {
@@ -55,6 +55,26 @@ function filterAsyncRouter (routerMap, apis) {
     return false
   })
   return accessedRouters
+}
+
+/**
+ * The menu entries left once the names a deployment hides are taken out; a section left without entries goes too.
+ * The routes themselves are untouched, so a hidden page still opens from a link.
+ */
+export function visibleMenu (menu, hiddenNames = []) {
+  const shown = (route) => !route.hidden && !hiddenNames.includes(route.name)
+  const entries = []
+  for (const item of menu.filter(shown)) {
+    if (!item.children || item.hideChildrenInMenu) {
+      entries.push(item)
+      continue
+    }
+    const children = item.children.filter(shown)
+    if (children.length > 0) {
+      entries.push({ ...item, children })
+    }
+  }
+  return entries
 }
 
 const permission = {

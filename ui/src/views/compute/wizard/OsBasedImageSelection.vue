@@ -23,10 +23,9 @@
         button-style="solid"
         :disabled="imagePreSelected"
         @change="emitChangeImageType()">
-        <a-radio-button value="templateid">{{ $t('label.template') }}</a-radio-button>
-        <a-radio-button value="isoid">{{ $t('label.iso') }}</a-radio-button>
-        <a-radio-button value="volumeid">{{ $t('label.volume') }}</a-radio-button>
-        <a-radio-button value="snapshotid">{{ $t('label.snapshot') }}</a-radio-button>
+        <a-radio-button v-for="imageType in offeredImageTypes" :key="imageType.value" :value="imageType.value">
+          {{ $t(imageType.label) }}
+        </a-radio-button>
       </a-radio-group>
       <div style="margin-top: 5px; margin-bottom: 5px;">
         {{ $t('message.' + localSelectedImageType.replace('id', '') + '.desc') }}
@@ -250,6 +249,15 @@ export default {
     }
   },
   computed: {
+    offeredImageTypes () {
+      const apis = this.$store.getters.apis || {}
+      return [
+        { value: 'templateid', label: 'label.template', api: 'listTemplates' },
+        { value: 'isoid', label: 'label.iso', api: 'listIsos' },
+        { value: 'volumeid', label: 'label.volume', api: 'listVolumes' },
+        { value: 'snapshotid', label: 'label.snapshot', api: 'listSnapshots' }
+      ].filter(type => type.api in apis && !this.$isHidden('deploy', 'imagetype.' + type.value))
+    },
     defaultImageFilter () {
       return ['DomainAdmin', 'User'].includes(this.$store.getters.userInfo.roletype) ? 'executable' : 'all'
     },

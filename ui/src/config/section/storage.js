@@ -78,6 +78,7 @@ export default {
         {
           name: 'metrics',
           resourceType: 'Volume',
+          api: 'listVolumesUsageHistory',
           component: shallowRef(defineAsyncComponent(() => import('@/components/view/StatsTab.vue'))),
           show: (record) => { return store.getters.features.instancesdisksstatsretentionenabled }
         },
@@ -89,6 +90,7 @@ export default {
         },
         {
           name: 'comments',
+          api: 'listAnnotations',
           component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue')))
         }
       ],
@@ -138,6 +140,15 @@ export default {
           show: (record) => { return ['Allocated', 'Ready', 'Uploaded'].includes(record.state) && !('virtualmachineid' in record) },
           popup: true,
           component: shallowRef(defineAsyncComponent(() => import('@/views/storage/AttachVolume.vue')))
+        },
+        {
+          // a detached volume made from a template, such as the root an instance left behind, boots a new instance
+          api: 'deployVirtualMachine',
+          icon: 'rocket-outlined',
+          label: 'label.action.deploy.from.volume',
+          dataView: true,
+          show: (record) => { return record.state === 'Ready' && !record.virtualmachineid && !!record.templateid },
+          navigate: (record) => { return { path: '/action/deployVirtualMachine', query: { volumeid: record.id, zoneid: record.zoneid } } }
         },
         {
           api: 'detachVolume',
@@ -299,7 +310,7 @@ export default {
           dataView: true,
           show: (record, store) => {
             return ['Expunging', 'Expunged', 'UploadError'].includes(record.state) ||
-                ['Allocated', 'Uploaded'].includes(record.state) && record.type !== 'ROOT' && !record.virtualmachineid ||
+                ['Allocated', 'Uploaded'].includes(record.state) && !record.virtualmachineid ||
                 ((['Admin', 'DomainAdmin'].includes(store.userInfo.roletype) || store.features.allowuserexpungerecovervolume) && record.state === 'Destroy')
           },
           groupAction: true,
@@ -318,7 +329,7 @@ export default {
           },
           show: (record, store) => {
             return !['Destroy', 'Destroyed', 'Expunging', 'Expunged', 'Migrating', 'Uploading', 'UploadError', 'Creating', 'Allocated', 'Uploaded'].includes(record.state) &&
-              record.type !== 'ROOT' && !record.virtualmachineid
+              !record.virtualmachineid
           }
         }
       ]
@@ -371,6 +382,7 @@ export default {
         },
         {
           name: 'comments',
+          api: 'listAnnotations',
           component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue')))
         }
       ],

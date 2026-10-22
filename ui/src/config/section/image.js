@@ -88,6 +88,7 @@ export default {
         component: shallowRef(defineAsyncComponent(() => import('@/views/image/TemplateZones.vue')))
       }, {
         name: 'settings',
+        api: 'listDetailOptions',
         component: shallowRef(defineAsyncComponent(() => import('@/components/view/DetailSettings')))
       }, {
         name: 'vnf.settings',
@@ -102,6 +103,7 @@ export default {
       },
       {
         name: 'comments',
+        api: 'listAnnotations',
         component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue')))
       }],
       actions: [
@@ -263,6 +265,7 @@ export default {
       },
       {
         name: 'comments',
+        api: 'listAnnotations',
         component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue')))
       }],
       actions: [

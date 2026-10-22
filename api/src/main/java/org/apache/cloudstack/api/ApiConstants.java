@@ -1408,6 +1408,7 @@ public class ApiConstants {
     public static final String RESOURCE_REQUEST_EXPIRY_MAX_DAYS = "resourcerequestexpirymaxdays";
     public static final String RESOURCE_REQUEST_EXPIRY_TIMEZONE = "resourcerequestexpirytimezone";
     public static final String RESOURCE_LIMIT_REQUEST_ALLOWED = "resourcelimitrequestallowed";
+    public static final String REMAINING_STORAGE_QUOTA = "remainingstoragequota";
 
     // Object Storage related
     public static final String BUCKET_AVAILABLE = "bucketavailable";

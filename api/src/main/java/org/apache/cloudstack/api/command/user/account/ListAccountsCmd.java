@@ -34,6 +34,7 @@ import org.apache.cloudstack.api.response.ListResponse;
 import org.apache.cloudstack.api.response.ResourceIconResponse;
 import org.apache.commons.collections.CollectionUtils;
 
+import com.cloud.configuration.Resource;
 import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.server.ResourceIcon;
 import com.cloud.server.ResourceTag;
@@ -43,6 +44,8 @@ import com.cloud.user.Account;
         requestHasSensitiveInfo = false, responseHasSensitiveInfo = true)
 public class ListAccountsCmd extends BaseListDomainResourcesCmd implements UserCmd {
     private static final String s_name = "listaccountsresponse";
+
+    public static final String REMAINING_STORAGE_QUOTA_DETAIL = "storagequota";
 
     /////////////////////////////////////////////////////
     //////////////// API parameters /////////////////////
@@ -68,7 +71,8 @@ public class ListAccountsCmd extends BaseListDomainResourcesCmd implements UserC
     @Parameter(name = ApiConstants.DETAILS,
                type = CommandType.LIST,
                collectionType = CommandType.STRING,
-               description = "Comma separated list of account details requested, value can be a list of [ all, resource, min]")
+               description = "Comma separated list of account details requested, value can be a list of [ all, resource, min, storagequota]; " +
+                       "storagequota adds the storage each account can still add (remainingstoragequota), which no other value returns")
     private List<String> viewDetails;
 
     @Parameter(name = ApiConstants.API_KEY_ACCESS, type = CommandType.STRING, description = "List accounts by the Api key access value", since = "4.20.1.0", authorized = {RoleType.Admin})
@@ -113,15 +117,21 @@ public class ListAccountsCmd extends BaseListDomainResourcesCmd implements UserC
             try {
                 ArrayList<DomainDetails> dc = new ArrayList<DomainDetails>();
                 for (String detail : viewDetails) {
-                    dc.add(DomainDetails.valueOf(detail));
+                    if (!REMAINING_STORAGE_QUOTA_DETAIL.equals(detail)) {
+                        dc.add(DomainDetails.valueOf(detail));
+                    }
                 }
-                dv = EnumSet.copyOf(dc);
+                dv = dc.isEmpty() ? EnumSet.of(DomainDetails.min) : EnumSet.copyOf(dc);
             } catch (IllegalArgumentException e) {
                 throw new InvalidParameterValueException("The details parameter contains a non permitted value. The allowed values are " +
-                    EnumSet.allOf(DomainDetails.class));
+                    EnumSet.allOf(DomainDetails.class) + " and " + REMAINING_STORAGE_QUOTA_DETAIL);
             }
         }
         return dv;
+    }
+
+    public boolean isRemainingStorageQuotaRequested() {
+        return viewDetails != null && viewDetails.contains(REMAINING_STORAGE_QUOTA_DETAIL);
     }
 
     public String getApiKeyAccess() {
@@ -161,6 +171,14 @@ public class ListAccountsCmd extends BaseListDomainResourcesCmd implements UserC
         if (details.contains(DomainDetails.all) || details.contains(DomainDetails.resource)) {
             _resourceLimitService.updateTaggedResourceLimitsAndCountsForAccounts(response, getTag());
         }
+        if (isRemainingStorageQuotaRequested()) {
+            for (AccountResponse accountResponse : response) {
+                Account account = _accountService.getAccountByUuid(accountResponse.getObjectId());
+                if (account != null) {
+                    accountResponse.setRemainingStorageQuota(toWholeGiB(_resourceLimitService.getRemainingStorageQuota(account)));
+                }
+            }
+        }
         if (!getShowIcon()) {
             return;
         }
@@ -172,6 +190,13 @@ public class ListAccountsCmd extends BaseListDomainResourcesCmd implements UserC
             ResourceIconResponse iconResponse = _responseGenerator.createResourceIconResponse(resourceIcon);
             accountResponse.setResourceIconResponse(iconResponse);
         }
+    }
+
+    /**
+     * Rounded down, so that a size entered within the figure never exceeds what the quota leaves.
+     */
+    private static long toWholeGiB(long bytes) {
+        return bytes == Resource.RESOURCE_UNLIMITED ? bytes : bytes / Resource.ResourceType.bytesToGiB;
     }
 
     @Override

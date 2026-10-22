@@ -19,6 +19,7 @@ import { shallowRef, defineAsyncComponent } from 'vue'
 import store from '@/store'
 import { isZoneCreated } from '@/utils/zone'
 import { hasLease, RENEW_LEASE_API } from '@/utils/lease'
+import { showCpuSpeed } from '@/utils/uiConfig'
 import { getAPI, postAPI, getBaseUrl } from '@/api'
 import { getLatestKubernetesIsoParams } from '@/utils/acsrepo'
 import kubernetesIcon from '@/assets/icons/kubernetes.svg?inline'
@@ -77,7 +78,8 @@ export default {
           'networkread', 'networkwrite', 'diskread', 'diskwrite', 'diskiopstotal']
 
         if (store.getters.metrics) {
-          fields.push(...metricsFields)
+          // the metrics' CPU total reads "<count> x <clock>"
+          fields.push(...metricsFields.filter(field => showCpuSpeed() || field !== 'cputotal'))
         }
         fields.push('arch')
         if (store.getters.userInfo.roletype === 'Admin') {
@@ -98,7 +100,7 @@ export default {
       searchFilters: ['name', 'gpuenabled', 'zoneid', 'domainid', 'account', 'groupid', 'arch', 'extensionid', 'tags'],
       details: () => {
         var fields = ['name', 'displayname', 'id', 'state', 'ipaddress', 'ip6address', 'templatename', 'ostypename',
-          'serviceofferingname', 'gpucount', 'isdynamicallyscalable', 'haenable', 'hypervisor', 'arch', 'boottype', 'bootmode', 'account',
+          'serviceofferingname', 'gpucardname', 'gpucount', 'isdynamicallyscalable', 'haenable', 'hypervisor', 'arch', 'boottype', 'bootmode', 'account',
           'domain', 'zonename', 'userdataid', 'userdataname', 'userdataparams', 'userdatadetails', 'userdatapolicy',
           'hostcontrolstate', 'deleteprotection', 'leaseexpirydate', 'leaseexpiryaction']
         const listZoneHaveSGEnabled = store.getters.zones.filter(zone => zone.securitygroupsenabled === true)
@@ -527,6 +529,7 @@ export default {
         },
         {
           name: 'comments',
+          api: 'listAnnotations',
           component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue')))
         }
       ],
@@ -951,6 +954,7 @@ export default {
         },
         {
           name: 'comments',
+          api: 'listAnnotations',
           component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue')))
         }
       ],
@@ -1042,6 +1046,7 @@ export default {
         },
         {
           name: 'comments',
+          api: 'listAnnotations',
           component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue')))
         }
       ],
@@ -1107,6 +1112,7 @@ export default {
         },
         {
           name: 'comments',
+          api: 'listAnnotations',
           component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue')))
         }
       ],
@@ -1190,6 +1196,7 @@ export default {
         },
         {
           name: 'comments',
+          api: 'listAnnotations',
           component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue')))
         }
       ],
@@ -1273,6 +1280,7 @@ export default {
         },
         {
           name: 'comments',
+          api: 'listAnnotations',
           component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue')))
         }
       ],

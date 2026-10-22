@@ -24,6 +24,8 @@ export default {
   icon: 'team-outlined',
   docHelp: 'adminguide/accounts.html',
   permission: ['listAccounts'],
+  // the remaining storage quota is computed per account, so only one account's page asks for it
+  params: (dataView) => dataView ? { details: 'all,storagequota' } : {},
   searchFilters: () => {
     var filters = ['name', 'accounttype', 'domainid']
     if (store.getters.userInfo.roletype === 'Admin') {
@@ -86,6 +88,7 @@ export default {
     },
     {
       name: 'certificates',
+      api: 'listSslCerts',
       component: shallowRef(defineAsyncComponent(() => import('@/views/iam/SSLCertificateTab.vue')))
     },
     {

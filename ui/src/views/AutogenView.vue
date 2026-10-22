@@ -163,7 +163,7 @@
             <a
               v-if="currentAction.docHelp || $route.meta.docHelp"
               style="margin-left: 5px"
-              :href="$config.docBase + '/' + (currentAction.docHelp || $route.meta.docHelp)"
+              :href="$docHelpUrl(currentAction.docHelp || $route.meta.docHelp)"
               target="_blank"
             >
               <question-circle-outlined />
@@ -204,7 +204,7 @@
           <a
             v-if="currentAction.docHelp || $route.meta.docHelp"
             style="margin-left: 5px"
-            :href="$config.docBase + '/' + (currentAction.docHelp || $route.meta.docHelp)"
+            :href="$docHelpUrl(currentAction.docHelp || $route.meta.docHelp)"
             target="_blank"
           >
             <question-circle-outlined />
@@ -624,6 +624,7 @@ import { Button } from 'ant-design-vue'
 import { getAPI, postAPI, callAPI } from '@/api'
 import { mixinDevice } from '@/utils/mixin.js'
 import { genericCompare } from '@/utils/sort.js'
+import { visibleColumns } from '@/utils/uiConfig'
 import { sourceToken } from '@/utils/request'
 import store from '@/store'
 import eventBus from '@/config/eventBus'
@@ -1040,6 +1041,7 @@ export default {
           } else {
             this.columnKeys = columns
           }
+          this.columnKeys = visibleColumns(this.$route.meta.name, this.columnKeys)
         }
 
         if (this.$route.meta.actions) {
@@ -1379,6 +1381,10 @@ export default {
       this.setModalWidthByScreen()
     },
     execAction (action, isGroupAction) {
+      if (action.navigate) {
+        this.$router.push(action.navigate(action.resource))
+        return
+      }
       this.formRef = ref()
       this.form = reactive({})
       this.rules = reactive({})

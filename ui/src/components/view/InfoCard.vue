@@ -252,7 +252,7 @@
                   :icon="['fa-solid', 'fa-microchip']"
                   class="anticon"
                   :style="[$store.getters.darkMode ? { color: 'rgba(255, 255, 255, 0.65)' } : { color: '#888' }]" />
-                <span v-if="'cpunumber' in resource && 'cpuspeed' in resource">{{ resource.cpunumber }} CPU x {{ (resource.cpuspeed / 1000.0).toFixed(2) }} GHz
+                <span v-if="'cpunumber' in resource && 'cpuspeed' in resource && cpuSpeedShown">{{ resource.cpunumber }} CPU x {{ (resource.cpuspeed / 1000.0).toFixed(2) }} GHz
                   <a-tooltip placement="top">
                     <template #title>
                       {{ resource.cpuspeed }} MHz
@@ -260,6 +260,7 @@
                     <QuestionCircleOutlined />
                   </a-tooltip>
                 </span>
+                <span v-else-if="'cpunumber' in resource">{{ resource.cpunumber }} CPU</span>
                 <span v-else>{{ resource.cputotal }}</span>
                 <a-tag v-if="resource.arch" style="margin-left: 10px">
                   {{ resource.arch }}
@@ -381,9 +382,9 @@
                   :style="[$store.getters.darkMode ? { color: 'rgba(255, 255, 255, 0.65)' } : { color: '#888' }]" />
                 <span>
                   {{ resource.gpucount ? resource.gpucount + ' x ' : '' }}
-                  <router-link v-if="resource.gpucardid" :to="{ path: '/gpucard/' + resource.gpucardid }">{{ resource.gpucardname}} </router-link>
+                  <router-link v-if="resource.gpucardid && 'listGpuCards' in $store.getters.apis" :to="{ path: '/gpucard/' + resource.gpucardid }">{{ resource.gpucardname}} </router-link>
                   <span v-else>{{ resource.gpucardname }}</span>
-                  <router-link v-if="resource.vgpuprofilename !== 'passthrough' && resource.vgpuprofileid" :to="{ path: '/vgpuprofile/' + resource.vgpuprofileid }">{{ ' (' + resource.vgpuprofilename + ')' }}</router-link>
+                  <router-link v-if="resource.vgpuprofilename !== 'passthrough' && resource.vgpuprofileid && 'listVgpuProfiles' in $store.getters.apis" :to="{ path: '/vgpuprofile/' + resource.vgpuprofileid }">{{ ' (' + resource.vgpuprofilename + ')' }}</router-link>
                   <span v-else-if="resource.vgpuprofilename !== 'passthrough' &&resource.vgpuprofilename">{{ ' (' + resource.vgpuprofilename + ')' }}</span>
                   <span v-if="resource.videoram || (resource.maxresolutionx || resource.maxresolutiony)">
                     <br/>{{ ' [' + (resource.videoram ? (resource.videoram + 'MB') : '') +  ((resource.videoram && resource.maxresolutionx && resource.maxresolutiony) ? ', ' : '') +
@@ -1039,6 +1040,7 @@ import ResourceLabel from '@/components/widgets/ResourceLabel'
 import ImageDeployInstanceButton from '@/components/view/ImageDeployInstanceButton'
 import LeaseCountdown from '@/components/view/LeaseCountdown'
 import { isHourLease, remainingLeaseDaysText } from '@/utils/lease'
+import { showCpuSpeed } from '@/utils/uiConfig'
 import { FileTextOutlined } from '@ant-design/icons-vue'
 
 export default {
@@ -1139,6 +1141,9 @@ export default {
     this.updateResourceAdditionalData()
   },
   computed: {
+    cpuSpeedShown () {
+      return showCpuSpeed(this.$config)
+    },
     tagsSupportingResourceTypes () {
       return ['UserVm', 'Template', 'ISO', 'Volume', 'Snapshot', 'Backup', 'Network',
         'LoadBalancer', 'PortForwardingRule', 'FirewallRule', 'SecurityGroup', 'SecurityGroupRule',
@@ -1251,6 +1256,10 @@ export default {
     },
     fetchAccount () {
       return new Promise((resolve, reject) => {
+        if (!('listAccounts' in this.$store.getters.apis)) {
+          resolve()
+          return
+        }
         getAPI('listAccounts', {
           name: this.resource.account,
           domainid: this.resource.domainid,
@@ -1264,7 +1273,7 @@ export default {
       })
     },
     fetchResourceIcon (resourceid, type) {
-      if (resourceid) {
+      if (resourceid && 'listResourceIcon' in this.$store.getters.apis) {
         return new Promise((resolve, reject) => {
           getAPI('listResourceIcon', {
             resourceids: resourceid,

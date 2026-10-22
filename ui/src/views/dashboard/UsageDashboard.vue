@@ -51,7 +51,7 @@
         </template>
         <a-divider style="margin: 6px 0px; border-width: 0px"/>
         <a-row :gutter="[10, 10]">
-          <a-col :span="12" v-if="'listVirtualMachines' in $store.getters.apis">
+          <a-col :span="12" v-if="countShown('instances', 'listVirtualMachines')">
             <router-link :to="{ path: '/vm' }">
               <a-statistic
                 :title="$t('label.instances')"
@@ -63,7 +63,7 @@
               </a-statistic>
             </router-link>
           </a-col>
-          <a-col :span="12" v-if="'listVirtualMachines' in $store.getters.apis && isLeaseFeatureEnabled">
+          <a-col :span="12" v-if="countShown('leasedinstances', 'listVirtualMachines') && isLeaseFeatureEnabled">
             <router-link :to="{ path: '/vm', query: { leased: true } }">
               <a-statistic
                 :title="$t('label.leasedinstances')"
@@ -75,7 +75,7 @@
               </a-statistic>
             </router-link>
           </a-col>
-          <a-col :span="12" v-if="'listKubernetesClusters' in $store.getters.apis">
+          <a-col :span="12" v-if="countShown('kubernetes', 'listKubernetesClusters')">
             <router-link :to="{ path: '/kubernetes' }">
               <a-statistic
                 :title="$t('label.kubernetes.cluster')"
@@ -87,7 +87,7 @@
               </a-statistic>
             </router-link>
           </a-col>
-          <a-col :span="12" v-if="'listVolumes' in $store.getters.apis">
+          <a-col :span="12" v-if="countShown('volumes', 'listVolumes')">
             <router-link :to="{ path: '/volume' }">
               <a-statistic
                 :title="$t('label.volumes')"
@@ -99,7 +99,7 @@
               </a-statistic>
             </router-link>
           </a-col>
-          <a-col :span="12" v-if="'listSnapshots' in $store.getters.apis">
+          <a-col :span="12" v-if="countShown('snapshots', 'listSnapshots')">
             <router-link :to="{ path: '/snapshot' }">
               <a-statistic
                 :title="$t('label.snapshots')"
@@ -111,7 +111,7 @@
               </a-statistic>
             </router-link>
           </a-col>
-          <a-col :span="12" v-if="'listNetworks' in $store.getters.apis">
+          <a-col :span="12" v-if="countShown('networks', 'listNetworks')">
             <router-link :to="{ path: '/guestnetwork' }">
               <a-statistic
                 :title="$t('label.guest.networks')"
@@ -123,7 +123,7 @@
               </a-statistic>
             </router-link>
           </a-col>
-          <a-col :span="12" v-if="'listVPCs' in $store.getters.apis">
+          <a-col :span="12" v-if="countShown('vpcs', 'listVPCs')">
             <router-link :to="{ path: '/vpc' }">
               <a-statistic
                 :title="$t('label.vpcs')"
@@ -135,7 +135,7 @@
               </a-statistic>
             </router-link>
           </a-col>
-          <a-col :span="12" v-if="'listPublicIpAddresses' in $store.getters.apis">
+          <a-col :span="12" v-if="countShown('ips', 'listPublicIpAddresses')">
             <router-link :to="{ path: '/publicip' }">
               <a-statistic
                 :title="$t('label.public.ips')"
@@ -147,7 +147,7 @@
               </a-statistic>
             </router-link>
           </a-col>
-          <a-col :span="12" v-if="'listTemplates' in $store.getters.apis">
+          <a-col :span="12" v-if="countShown('templates', 'listTemplates')">
             <router-link :to="{ path: '/template', query: { templatefilter: 'self', filter: 'self' } }">
               <a-statistic
                 :title="$t('label.templates')"
@@ -200,7 +200,7 @@
         </a-row>
         <a-divider style="margin: 1px 0px; border-width: 0px;"/>
         <div
-          v-for="usageType in ['vm', 'cpu', 'memory', 'gpu', 'project']"
+          v-for="usageType in shownRows(['vm', 'cpu', 'memory', 'gpu', 'project'])"
           :key="usageType">
           <div v-if="usageType + 'total' in entity">
             <div>
@@ -223,6 +223,17 @@
               {{ entity[usageType + 'available'] === 'Unlimited' ? $t('label.unlimited') : getValue(usageType, entity[usageType + 'available']) }} {{ $t('label.available') }}
               {{ entity[usageType + 'limit'] === 'Unlimited' ? '' : (' | ' + getValue(usageType, entity[usageType + 'limit']) + ' ' + $t('label.limit')) }}
             </div>
+            <div v-if="usageType === 'gpu'">
+              <div v-for="gpuType in gpuTypeUsage" :key="gpuType.tag" class="dashboard-gpu-type">
+                <span>#{{ gpuType.tag }}</span>
+                <span style="float: right">{{ gpuType.total }} / {{ gpuType.limit === -1 ? $t('label.unlimited') : gpuType.limit }}</span>
+                <a-progress
+                  :percent="parseFloat(getPercentUsed(gpuType.total, gpuType.limit === -1 ? 'Unlimited' : gpuType.limit))"
+                  :format="p => gpuType.limit !== -1 ? p.toFixed(0) + '%' : ''"
+                  :stroke-color="getStrokeColor(gpuType.available === -1 ? 1 : gpuType.available)"
+                  size="small" />
+              </div>
+            </div>
           </div>
         </div>
       </chart-card>
@@ -236,45 +247,18 @@
         </template>
         <a-divider style="margin: 6px 0px; border-width: 0px"/>
         <div
-          v-for="usageType in ['volume', 'snapshot', 'template', 'primarystorage', 'secondarystorage', 'backup', 'backupstorage', 'bucket', 'objectstorage']"
+          v-for="usageType in shownRows(storageRows)"
           :key="usageType">
-          <div>
+          <div v-if="usageType === 'storage'" class="dashboard-storage-quota">
             <div>
-              <strong>
-                {{ $t(getLabel(usageType)) }}
-              </strong>
+              <strong>{{ $t('label.storage.quota') }}</strong>
               <span style="float: right">
-              {{ getValue(usageType, entity[usageType + 'total']) }} {{ $t('label.used') }}
+                {{ entity.remainingstoragequota === -1 ? $t('label.unlimited') : entity.remainingstoragequota + ' GiB' }} {{ $t('label.available') }}
               </span>
             </div>
-            <a-progress
-            status="active"
-            :percent="parseFloat(getPercentUsed(entity[usageType + 'total'], entity[usageType + 'limit']))"
-            :format="p => entity[usageType + 'limit'] !== '-1' && entity[usageType + 'limit'] !== 'Unlimited' ? p.toFixed(0) + '%' : ''"
-            :stroke-color="getStrokeColor(entity[usageType + 'available'])"
-            size="small"
-            />
-            <br/>
-            <div style="text-align: center">
-              {{ entity[usageType + 'available'] === 'Unlimited' ? $t('label.unlimited') : getValue(usageType, entity[usageType + 'available']) }} {{ $t('label.available') }}
-              {{ entity[usageType + 'limit'] === 'Unlimited' ? '' : (' | ' + getValue(usageType, entity[usageType + 'limit']) + ' ' + $t('label.limit')) }}
-            </div>
+            <div><small>{{ $t('message.storage.quota.combined') }}</small></div>
           </div>
-        </div>
-      </chart-card>
-    </a-col>
-    <a-col :xs="{ span: 24 }" :lg="{ span: 12 }" :xl="{ span: 8 }" :xxl="{ span: 8 }" class="dashboard-card">
-      <chart-card :loading="loading" class="dashboard-card">
-        <template #title>
-          <div class="center">
-            <h3><apartment-outlined /> {{ $t('label.network') }}</h3>
-          </div>
-        </template>
-        <a-divider style="margin: 6px 0px; border-width: 0px"/>
-        <div
-          v-for="usageType in ['ip', 'network', 'vpc']"
-          :key="usageType">
-          <div>
+          <div v-else>
             <div>
               <strong>
                 {{ $t(getLabel(usageType)) }}
@@ -300,7 +284,110 @@
       </chart-card>
     </a-col>
     <a-col
-      v-if="$config.userCard.enabled ?? true"
+      v-if="shownRows(['ip', 'network', 'vpc']).length > 0"
+      :xs="{ span: 24 }"
+      :lg="{ span: 12 }"
+      :xl="{ span: 8 }"
+      :xxl="{ span: 8 }"
+      class="dashboard-card">
+      <chart-card :loading="loading" class="dashboard-card">
+        <template #title>
+          <div class="center">
+            <h3><apartment-outlined /> {{ $t('label.network') }}</h3>
+          </div>
+        </template>
+        <a-divider style="margin: 6px 0px; border-width: 0px"/>
+        <div
+          v-for="usageType in shownRows(['ip', 'network', 'vpc'])"
+          :key="usageType">
+          <div>
+            <div>
+              <strong>
+                {{ $t(getLabel(usageType)) }}
+              </strong>
+              <span style="float: right">
+              {{ getValue(usageType, entity[usageType + 'total']) }} {{ $t('label.used') }}
+              </span>
+            </div>
+            <a-progress
+            status="active"
+            :percent="parseFloat(getPercentUsed(entity[usageType + 'total'], entity[usageType + 'limit']))"
+            :format="p => entity[usageType + 'limit'] !== '-1' && entity[usageType + 'limit'] !== 'Unlimited' ? p.toFixed(0) + '%' : ''"
+            :stroke-color="getStrokeColor(entity[usageType + 'available'])"
+            size="small"
+            />
+            <br/>
+            <div style="text-align: center">
+              {{ entity[usageType + 'available'] === 'Unlimited' ? $t('label.unlimited') : getValue(usageType, entity[usageType + 'available']) }} {{ $t('label.available') }}
+              {{ entity[usageType + 'limit'] === 'Unlimited' ? '' : (' | ' + getValue(usageType, entity[usageType + 'limit']) + ' ' + $t('label.limit')) }}
+            </div>
+          </div>
+        </div>
+      </chart-card>
+    </a-col>
+    <a-col v-if="showGpuSlotsCard" :xs="{ span: 24 }" :lg="{ span: 12 }" :xl="{ span: 8 }" :xxl="{ span: 8 }">
+      <chart-card :loading="loading" class="dashboard-card">
+        <template #title>
+          <div class="center">
+            <h3><appstore-outlined /> {{ $t('label.gpu.slots') }}</h3>
+          </div>
+        </template>
+        <a-divider style="margin: 6px 0px; border-width: 0px"/>
+        <div><small>{{ $t('message.gpu.slots') }}</small></div>
+        <div v-for="offering in gpuOfferings" :key="offering.id" class="dashboard-gpu-slot">
+          <strong>{{ offering.displaytext || offering.name }}</strong>
+          <span style="float: right">{{ offering.gpuslotsavailable }} / {{ offering.gpuslotstotal }}</span>
+        </div>
+      </chart-card>
+    </a-col>
+    <a-col v-if="showLeasesCard" :xs="{ span: 24 }" :lg="{ span: 12 }" :xl="{ span: 8 }" :xxl="{ span: 8 }">
+      <chart-card :loading="loading" class="dashboard-card dashboard-leases">
+        <template #title>
+          <div class="center">
+            <h3><field-time-outlined /> {{ $t('label.gpu.leases') }}</h3>
+          </div>
+        </template>
+        <a-divider style="margin: 6px 0px; border-width: 0px"/>
+        <div v-if="leasedVms.length === 0">{{ $t('message.gpu.leases.none') }}</div>
+        <div v-for="vm in leasedVms" :key="vm.id" class="dashboard-lease">
+          <router-link :to="{ path: '/vm/' + vm.id }"><strong>{{ vm.displayname || vm.name }}</strong></router-link>
+          <div>
+            <lease-countdown :resource="vm" />
+            <a-button
+              v-if="canRenewLease(vm, $store.getters.apis)"
+              size="small"
+              style="float: right"
+              :loading="renewing === vm.id"
+              @click="renewLease(vm)">
+              {{ $t('label.lease.renew') }}
+            </a-button>
+          </div>
+        </div>
+      </chart-card>
+    </a-col>
+    <a-col v-if="showRequestsCard" :xs="{ span: 24 }" :lg="{ span: 12 }" :xl="{ span: 8 }" :xxl="{ span: 8 }">
+      <chart-card :loading="loading" class="dashboard-card dashboard-requests">
+        <template #title>
+          <div class="center">
+            <h3><file-done-outlined /> {{ $t('label.resource.limit.requests') }}</h3>
+          </div>
+        </template>
+        <a-divider style="margin: 6px 0px; border-width: 0px"/>
+        <div v-if="latestRequest">
+          {{ $t('label.resource.limit.request.latest') }}:
+          <a-tag>{{ $t('label.resource.limit.request.state.' + String(latestRequest.state).toLowerCase()) }}</a-tag>
+          <small>{{ $toLocaleDate(latestRequest.created) }}</small>
+        </div>
+        <div v-else>{{ $t('message.resource.limit.request.none') }}</div>
+        <div style="margin-top: 12px">
+          <router-link :to="{ path: '/resourcelimitrequest' }">
+            <a-button type="primary">{{ $t('label.resource.limit.request.new') }}</a-button>
+          </router-link>
+        </div>
+      </chart-card>
+    </a-col>
+    <a-col
+      v-if="($config.userCard.enabled ?? true) && !$isHidden('dashboard', 'help')"
       :xs="{ span: 24 }"
       :lg="{ span: 12 }"
       :xl="{ span: 8 }"
@@ -334,7 +421,7 @@
         </a-list>
       </chart-card>
     </a-col>
-    <a-col :xs="{ span: 24 }" :lg="{ span: 12 }" :xl="{ span: 8 }" :xxl="{ span: 8 }" v-if="'listEvents' in $store.getters.apis">
+    <a-col :xs="{ span: 24 }" :lg="{ span: 12 }" :xl="{ span: 8 }" :xxl="{ span: 8 }" v-if="'listEvents' in $store.getters.apis && !$isHidden('dashboard', 'events')">
       <chart-card :loading="loading" class="dashboard-card dashboard-event">
         <template #title>
           <div class="center">
@@ -366,13 +453,20 @@
 </template>
 
 <script>
-import { getAPI } from '@/api'
+import { getAPI, postAPI } from '@/api'
 import store from '@/store'
 
 import ChartCard from '@/components/widgets/ChartCard'
 import UsageDashboardChart from '@/views/dashboard/UsageDashboardChart'
 import ResourceLabel from '@/components/widgets/ResourceLabel'
 import Status from '@/components/widgets/Status'
+import LeaseCountdown from '@/components/view/LeaseCountdown'
+import { canRenewLease, RENEW_LEASE_API } from '@/utils/lease'
+import { requestsAllowed } from '@/utils/resourceLimitRequest'
+import { showGpuSlots } from '@/utils/uiConfig'
+
+// the resource type of the GPU limits in taggedresources (Resource.ResourceType.gpu)
+const GPU_RESOURCE_TYPE = 16
 
 export default {
   name: 'UsageDashboard',
@@ -380,7 +474,8 @@ export default {
     ChartCard,
     UsageDashboardChart,
     ResourceLabel,
-    Status
+    Status,
+    LeaseCountdown
   },
   props: {
     resource: {
@@ -415,7 +510,11 @@ export default {
         templates: 0,
         leasedinstances: 0
       },
-      isLeaseFeatureEnabled: this.$store.getters.features.instanceleaseenabled
+      isLeaseFeatureEnabled: this.$store.getters.features.instanceleaseenabled,
+      gpuOfferings: [],
+      leasedVms: [],
+      latestRequest: null,
+      renewing: null
     }
   },
   computed: {
@@ -424,6 +523,32 @@ export default {
         return this.project
       }
       return this.account
+    },
+    // the limit of each GPU type: the GPU limits tagged with the type
+    gpuTypeUsage () {
+      return (this.entity.taggedresources || [])
+        .filter(row => row.resourcetype === GPU_RESOURCE_TYPE || row.resourcetypename === 'gpu')
+        .slice()
+        .sort((a, b) => String(a.tag).localeCompare(String(b.tag)))
+    },
+    // volumes and snapshots count against one storage quota whose remainder the server reports
+    storageRows () {
+      if ('remainingstoragequota' in this.entity) {
+        return ['volume', 'snapshot', 'template', 'storage', 'backup', 'backupstorage', 'bucket', 'objectstorage']
+      }
+      return ['volume', 'snapshot', 'template', 'primarystorage', 'secondarystorage', 'backup', 'backupstorage', 'bucket', 'objectstorage']
+    },
+    showGpuSlotsCard () {
+      return showGpuSlots(this.$config) && 'listServiceOfferings' in this.$store.getters.apis && !this.$isHidden('dashboard', 'gpuslots')
+    },
+    showLeasesCard () {
+      return !!this.$store.getters.features.instanceleaseenabled && 'listVirtualMachines' in this.$store.getters.apis &&
+        !this.$isHidden('dashboard', 'leases')
+    },
+    showRequestsCard () {
+      const apis = this.$store.getters.apis
+      return requestsAllowed(this.$store.getters.features) && 'listResourceLimitRequests' in apis && 'createResourceLimitRequest' in apis &&
+        !this.$isHidden('dashboard', 'requests')
     }
   },
   created () {
@@ -475,7 +600,7 @@ export default {
     },
     listAccount () {
       this.loading = true
-      getAPI('listAccounts', { id: this.$store.getters.userInfo.accountid }).then(json => {
+      getAPI('listAccounts', { id: this.$store.getters.userInfo.accountid, details: 'all,storagequota' }).then(json => {
         this.loading = false
         if (json && json.listaccountsresponse && json.listaccountsresponse.account) {
           this.account = json.listaccountsresponse.account[0]
@@ -510,55 +635,110 @@ export default {
       }
       this.listInstances()
       this.listEvents()
-      if ('listKubernetesClusters' in this.$store.getters.apis) {
+      this.fetchGpuSlots()
+      this.fetchLeases()
+      this.fetchLatestRequest()
+      if (this.countShown('kubernetes', 'listKubernetesClusters')) {
         this.loading = true
         getAPI('listKubernetesClusters', { listall: true, page: 1, pagesize: 1 }).then(json => {
           this.loading = false
           this.data.kubernetes = json?.listkubernetesclustersresponse?.count
         })
       }
-      if ('listVolumes' in this.$store.getters.apis) {
+      if (this.countShown('volumes', 'listVolumes')) {
         this.loading = true
         getAPI('listVolumes', { listall: true, page: 1, pagesize: 1 }).then(json => {
           this.loading = false
           this.data.volumes = json?.listvolumesresponse?.count
         })
       }
-      if ('listSnapshots' in this.$store.getters.apis) {
+      if (this.countShown('snapshots', 'listSnapshots')) {
         this.loading = true
         getAPI('listSnapshots', { listall: true, page: 1, pagesize: 1 }).then(json => {
           this.loading = false
           this.data.snapshots = json?.listsnapshotsresponse?.count
         })
       }
-      if ('listNetworks' in this.$store.getters.apis) {
+      if (this.countShown('networks', 'listNetworks')) {
         this.loading = true
         getAPI('listNetworks', { listall: true, page: 1, pagesize: 1 }).then(json => {
           this.loading = false
           this.data.networks = json?.listnetworksresponse?.count
         })
       }
-      if ('listVPCs' in this.$store.getters.apis) {
+      if (this.countShown('vpcs', 'listVPCs')) {
         this.loading = true
         getAPI('listVPCs', { listall: true, page: 1, pagesize: 1 }).then(json => {
           this.loading = false
           this.data.vpcs = json?.listvpcsresponse?.count
         })
       }
-      if ('listPublicIpAddresses' in this.$store.getters.apis) {
+      if (this.countShown('ips', 'listPublicIpAddresses')) {
         this.loading = true
         getAPI('listPublicIpAddresses', { listall: true, page: 1, pagesize: 1 }).then(json => {
           this.loading = false
           this.data.ips = json?.listpublicipaddressesresponse?.count
         })
       }
-      if ('listTemplates' in this.$store.getters.apis) {
+      if (this.countShown('templates', 'listTemplates')) {
         this.loading = true
         getAPI('listTemplates', { templatefilter: 'self', listall: true, page: 1, pagesize: 1 }).then(json => {
           this.loading = false
           this.data.templates = json?.listtemplatesresponse?.count
         })
       }
+    },
+    countShown (key, api) {
+      return api in this.$store.getters.apis && !this.$isHidden('dashboard', key)
+    },
+    shownRows (rows) {
+      return rows.filter(row => !this.$isHidden('dashboard', row))
+    },
+    canRenewLease,
+    fetchGpuSlots () {
+      this.gpuOfferings = []
+      if (!this.showGpuSlotsCard) {
+        return
+      }
+      getAPI('listServiceOfferings', { gpuenabled: true }).then(json => {
+        const offerings = json?.listserviceofferingsresponse?.serviceoffering || []
+        this.gpuOfferings = offerings.filter(offering => offering.gpuslotstotal !== undefined)
+      }).catch(error => {
+        this.$notifyError(error)
+      })
+    },
+    fetchLeases () {
+      this.leasedVms = []
+      if (!this.showLeasesCard) {
+        return
+      }
+      getAPI('listVirtualMachines', { leased: true, listall: true }).then(json => {
+        this.leasedVms = json?.listvirtualmachinesresponse?.virtualmachine || []
+      }).catch(error => {
+        this.$notifyError(error)
+      })
+    },
+    renewLease (vm) {
+      this.renewing = vm.id
+      postAPI(RENEW_LEASE_API, { id: vm.id }).then(() => {
+        this.$message.success(this.$t('label.lease.renew') + ' - ' + (vm.displayname || vm.name))
+        this.fetchLeases()
+      }).catch(error => {
+        this.$notifyError(error)
+      }).finally(() => {
+        this.renewing = null
+      })
+    },
+    fetchLatestRequest () {
+      this.latestRequest = null
+      if (!this.showRequestsCard) {
+        return
+      }
+      getAPI('listResourceLimitRequests', { page: 1, pagesize: 1 }).then(json => {
+        this.latestRequest = json?.listresourcelimitrequestsresponse?.resourcelimitrequest?.[0] || null
+      }).catch(error => {
+        this.$notifyError(error)
+      })
     },
     listInstances () {
       if (!('listVirtualMachines' in this.$store.getters.apis)) {

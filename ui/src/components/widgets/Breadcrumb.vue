@@ -54,7 +54,7 @@
           <a
             v-if="item.meta.docHelp"
             style="margin-right: 12px"
-            :href="$config.docBase + '/' + $route.meta.docHelp"
+            :href="$docHelpUrl($route.meta.docHelp)"
             target="_blank">
             <QuestionCircleOutlined />
           </a>

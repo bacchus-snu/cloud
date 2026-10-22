@@ -32,7 +32,7 @@
       <a
         v-if="message.docHelp || $route.meta.docHelp"
         style="margin-left: 5px"
-        :href="$config.docBase + '/' + (message.docHelp || $route.meta.docHelp)"
+        :href="$docHelpUrl(message.docHelp || $route.meta.docHelp)"
         target="_blank">
         <question-circle-outlined />
       </a>

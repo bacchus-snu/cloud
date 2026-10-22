@@ -73,6 +73,7 @@ export default {
         },
         {
           name: 'comments',
+          api: 'listAnnotations',
           component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue'))),
           show: (record, route, user) => { return ['Admin', 'DomainAdmin'].includes(user.roletype) }
         }
@@ -178,6 +179,7 @@ export default {
         },
         {
           name: 'comments',
+          api: 'listAnnotations',
           component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue'))),
           show: (record, route, user) => { return ['Admin', 'DomainAdmin'].includes(user.roletype) }
         }
@@ -284,6 +286,7 @@ export default {
         },
         {
           name: 'comments',
+          api: 'listAnnotations',
           component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue'))),
           show: (record, route, user) => { return ['Admin', 'DomainAdmin'].includes(user.roletype) }
         }
@@ -463,6 +466,7 @@ export default {
         },
         {
           name: 'comments',
+          api: 'listAnnotations',
           component: shallowRef(defineAsyncComponent(() => import('@/components/view/AnnotationsTab.vue'))),
           show: (record, route, user) => { return ['Admin', 'DomainAdmin'].includes(user.roletype) }
         }

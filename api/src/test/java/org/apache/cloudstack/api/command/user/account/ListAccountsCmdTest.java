@@ -16,6 +16,8 @@
 // under the License.
 package org.apache.cloudstack.api.command.user.account;
 
+import java.lang.reflect.Field;
+import java.util.EnumSet;
 import java.util.List;
 
 import org.apache.cloudstack.api.ApiConstants;
@@ -28,13 +30,24 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnitRunner;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import com.cloud.configuration.Resource;
+import com.cloud.exception.InvalidParameterValueException;
+import com.cloud.serializer.Param;
+import com.cloud.user.Account;
+import com.cloud.user.AccountService;
 import com.cloud.user.ResourceLimitService;
+import com.google.gson.annotations.SerializedName;
 
 @RunWith(MockitoJUnitRunner.class)
 public class ListAccountsCmdTest {
 
+    private static final long GIB = 1024L * 1024 * 1024;
+
     @Mock
     ResourceLimitService resourceLimitService;
+
+    @Mock
+    AccountService accountService;
 
 
     @Test
@@ -83,5 +96,71 @@ public class ListAccountsCmdTest {
         ReflectionTestUtils.setField(cmd, "tag", "abc");
         cmd.updateAccountResponse(List.of(Mockito.mock(AccountResponse.class)));
         Mockito.verify(resourceLimitService, Mockito.never()).updateTaggedResourceLimitsAndCountsForAccounts(Mockito.any(), Mockito.any());
+    }
+
+    private AccountResponse accountResponse(String uuid) {
+        AccountResponse response = new AccountResponse();
+        response.setId(uuid);
+        return response;
+    }
+
+    @Test
+    public void remainingStorageQuotaOnlyWhenRequested() {
+        ListAccountsCmd cmd = new ListAccountsCmd();
+        cmd._resourceLimitService = resourceLimitService;
+        cmd._accountService = accountService;
+        AccountResponse plain = accountResponse("a-1");
+
+        // the default and every stock details value leave it out, so listing many accounts costs no quota computation
+        cmd.updateAccountResponse(List.of(plain));
+        ReflectionTestUtils.setField(cmd, "viewDetails", List.of("all", "resource", "min"));
+        cmd.updateAccountResponse(List.of(plain));
+        Assert.assertNull(plain.getRemainingStorageQuota());
+        Mockito.verify(resourceLimitService, Mockito.never()).getRemainingStorageQuota(Mockito.any());
+        Assert.assertFalse(cmd.isRemainingStorageQuotaRequested());
+    }
+
+    @Test
+    public void remainingStorageQuotaExposedOnListAccounts() {
+        ListAccountsCmd cmd = new ListAccountsCmd();
+        cmd._resourceLimitService = resourceLimitService;
+        cmd._accountService = accountService;
+        ReflectionTestUtils.setField(cmd, "viewDetails", List.of("all", "storagequota"));
+        Account account = Mockito.mock(Account.class);
+        Mockito.when(accountService.getAccountByUuid("a-1")).thenReturn(account);
+        AccountResponse response = accountResponse("a-1");
+
+        Mockito.when(resourceLimitService.getRemainingStorageQuota(account)).thenReturn(85 * GIB + GIB / 2);
+        cmd.updateAccountResponse(List.of(response));
+        Assert.assertEquals("whole GiB, rounded down", Long.valueOf(85), response.getRemainingStorageQuota());
+
+        Mockito.when(resourceLimitService.getRemainingStorageQuota(account)).thenReturn(GIB - 1);
+        cmd.updateAccountResponse(List.of(response));
+        Assert.assertEquals(Long.valueOf(0), response.getRemainingStorageQuota());
+
+        Mockito.when(resourceLimitService.getRemainingStorageQuota(account)).thenReturn((long) Resource.RESOURCE_UNLIMITED);
+        cmd.updateAccountResponse(List.of(response));
+        Assert.assertEquals(Long.valueOf(Resource.RESOURCE_UNLIMITED), response.getRemainingStorageQuota());
+
+        // the extra value does not change the stock details it comes with
+        Assert.assertEquals(EnumSet.of(ApiConstants.DomainDetails.all), cmd.getDetails());
+        ReflectionTestUtils.setField(cmd, "viewDetails", List.of("storagequota"));
+        Assert.assertEquals(EnumSet.of(ApiConstants.DomainDetails.min), cmd.getDetails());
+        Assert.assertTrue(cmd.isRemainingStorageQuotaRequested());
+    }
+
+    @Test(expected = InvalidParameterValueException.class)
+    public void unknownDetailsStillRefused() {
+        ListAccountsCmd cmd = new ListAccountsCmd();
+        ReflectionTestUtils.setField(cmd, "viewDetails", List.of("all", "quota"));
+        cmd.getDetails();
+    }
+
+    @Test
+    public void remainingStorageQuotaIsAFieldOfTheAccountResponse() throws NoSuchFieldException {
+        Field field = AccountResponse.class.getDeclaredField("remainingStorageQuota");
+        Assert.assertEquals(ApiConstants.REMAINING_STORAGE_QUOTA, field.getAnnotation(SerializedName.class).value());
+        Assert.assertEquals("remainingstoragequota", ApiConstants.REMAINING_STORAGE_QUOTA);
+        Assert.assertEquals("4.23.0.100", field.getAnnotation(Param.class).since());
     }
 }

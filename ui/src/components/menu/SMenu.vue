@@ -72,6 +72,8 @@
 </template>
 
 <script>
+import { visibleMenu } from '@/store/modules/permission'
+import { hiddenKeys } from '@/utils/uiConfig'
 
 export default {
   name: 'SMenu',
@@ -111,7 +113,7 @@ export default {
       return keys
     },
     menuData () {
-      return this.menu.filter(item => !item.hidden)
+      return visibleMenu(this.menu, hiddenKeys('sidebar', this.$store.getters.userInfo?.roletype, this.$config))
     }
   },
   created () {

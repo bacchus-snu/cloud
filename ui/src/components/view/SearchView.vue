@@ -293,9 +293,29 @@ export default {
     initFields () {
       const arrayField = []
       this.fields = []
+      // a filter whose choices come from a list the caller may not call is left out
+      const filterListApis = {
+        zoneid: 'listZones',
+        extensionid: 'listExtensions',
+        hypervisor: 'listHypervisors',
+        imagestoreid: 'listImageStores',
+        storageid: 'listStoragePools',
+        managementserverid: 'listManagementServers',
+        serviceofferingid: 'listServiceOfferings',
+        diskofferingid: 'listDiskOfferings',
+        networkid: 'listNetworks',
+        oscategoryid: 'listOsCategories',
+        gpucardid: 'listGpuCards',
+        vgpuprofileid: 'listVgpuProfiles',
+        virtualmachineid: 'listVirtualMachines',
+        tags: 'listTags'
+      }
       this.searchFilters.forEach(item => {
         let type = 'input'
 
+        if (item in filterListApis && !(filterListApis[item] in this.$store.getters.apis)) {
+          return true
+        }
         if (item === 'domainid' && !('listDomains' in this.$store.getters.apis)) {
           return true
         }

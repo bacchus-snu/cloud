@@ -19,9 +19,18 @@
   <a-list
     size="small"
     :loading="loading"
-    :dataSource="usageList" >
+    :dataSource="shownUsage" >
     <template #renderItem="{ item }">
-      <a-list-item class="list-item" v-if="!($route.meta.name === 'project' && item === 'project')">
+      <a-list-item class="list-item storage-quota" v-if="item === 'storage'">
+        <div class="list-item__container">
+          <strong>{{ $t('label.storage.quota') }}</strong>
+          ({{ resource.remainingstoragequota === -1 ? $t('label.unlimited') : resource.remainingstoragequota + ' GiB' }} {{ $t('label.available') }})
+          <div class="list-item__vals">
+            <div class="list-item__data">{{ $t('message.storage.quota.combined') }}</div>
+          </div>
+        </div>
+      </a-list-item>
+      <a-list-item class="list-item" v-else-if="!($route.meta.name === 'project' && item === 'project')">
         <div class="list-item__container">
           <strong>
             {{ $t('label.' + item + 'limit') }}
@@ -110,6 +119,14 @@ export default {
     }
   },
   computed: {
+    // with the remaining storage quota reported, volumes and snapshots count against one storage quota
+    shownUsage () {
+      let list = this.usageList
+      if (this.resource && 'remainingstoragequota' in this.resource) {
+        list = list.filter(item => item !== 'secondarystorage').map(item => item === 'primarystorage' ? 'storage' : item)
+      }
+      return list.filter(item => !this.$isHidden('dashboard', item))
+    },
     resourceTypeToNameMap () {
       return {
         0: 'vm',

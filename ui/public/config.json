@@ -58,42 +58,17 @@
     "es-latam": "Spanish Latin American Keyboard"
   },
   "userCard": {
-    "enabled": true,
+    "enabled": false,
     "title": "label.help",
     "icon": "question-circle-outlined",
-    "links": [
-      {
-        "title": "Documentation",
-        "text": "CloudStack documentation website",
-        "link": "https://docs.cloudstack.apache.org/en/latest/",
-        "icon": "read-outlined"
-      },
-      {
-        "title": "API Documentation",
-        "text": "Refer to API documentation",
-        "link": "https://cloudstack.apache.org/api.html",
-        "icon": "api-outlined"
-      },
-      {
-        "title": "Email Support",
-        "text": "Join CloudStack users mailing list to seek and provide support",
-        "link": "mailto:users-subscribe@cloudstack.apache.org",
-        "icon": "mail-outlined"
-      },
-      {
-        "title": "Report Issue",
-        "text": "Submit a bug or improvement request",
-        "link": "https://github.com/apache/cloudstack/issues/new",
-        "icon": "bug-outlined"
-      }
-    ]
+    "links": []
   },
   "plugins": [],
   "allowMakingRouterRedundant": false,
   "apidocs": true,
   "basicZoneEnabled": true,
   "multipleServer": false,
-  "allowSettingTheme": true,
+  "allowSettingTheme": false,
   "displayProjectFieldOnLogin": false,
   "foldPasswordLogin": true,
   "imageSelectionInterface": "modern",
@@ -112,5 +87,83 @@
     "startDate": "2025-06-01T00:00:00Z",
     "endDate": "2025-07-16T00:00:00Z"
   },
-  "defaultLanguage": "en"
+  "defaultLanguage": "en",
+  "showGpuSlots": true,
+  "showCpuSpeed": false,
+  "hidden": {
+    "User": {
+      "sidebar": [
+        "template",
+        "snapshotpolicy",
+        "event",
+        "account",
+        "zones",
+        "computeoffering",
+        "diskoffering",
+        "apidocs"
+      ],
+      "header": [],
+      "dashboard": [
+        "project",
+        "template",
+        "templates",
+        "snapshot",
+        "backup",
+        "backupstorage",
+        "bucket",
+        "objectstorage",
+        "ip",
+        "network",
+        "vpc"
+      ],
+      "deploy": [
+        "imagetype.snapshotid",
+        "dynamicscalingenabled",
+        "keyboard"
+      ],
+      "actions": [
+        "vm.createSnapshot"
+      ],
+      "details": [
+        "vm.isdynamicallyscalable",
+        "vm.haenable",
+        "vm.hypervisor",
+        "vm.arch",
+        "vm.boottype",
+        "vm.bootmode",
+        "vm.account",
+        "vm.domain",
+        "vm.userdataid",
+        "vm.userdataname",
+        "vm.userdataparams",
+        "vm.userdatadetails",
+        "vm.userdatapolicy",
+        "vm.hostcontrolstate",
+        "vm.securitygroup"
+      ],
+      "columns": [
+        "volume.vmstate",
+        "volume.zonename"
+      ],
+      "languages": [
+        "hi",
+        "te",
+        "ja_JP",
+        "zh_CN",
+        "ar",
+        "ca",
+        "de_DE",
+        "es",
+        "fr_FR",
+        "it_IT",
+        "hu",
+        "nl_NL",
+        "nb_NO",
+        "pl",
+        "pt_BR",
+        "ru_RU",
+        "el_GR"
+      ]
+    }
+  }
 }

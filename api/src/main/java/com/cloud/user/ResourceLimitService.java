@@ -47,6 +47,12 @@ public interface ResourceLimitService {
             "A comma-separated list of tags for host resource limits", true);
     static final ConfigKey<String> ResourceLimitStorageTags = new ConfigKey<>("Advanced", String.class, "resource.limit.storage.tags", "",
             "A comma-separated list of tags for storage resource limits", true);
+    static final ConfigKey<Boolean> ResourceLimitStorageCombined = new ConfigKey<>("Advanced", Boolean.class, "resource.limit.storage.combined", "true",
+            "Whether primary and secondary storage share one quota. When true, the checks of an account's or domain's primary_storage and " +
+                    "secondary_storage limits compare the sum of both usages (resource counts and reservations) with its primary_storage limit, " +
+                    "and its secondary_storage limit is not consulted. When false, the two limits are checked separately. " +
+                    "Storage limits with a tag are always checked separately.",
+            true, List.of(ConfigKey.Scope.Account, ConfigKey.Scope.Domain));
     static final ConfigKey<Long> DefaultMaxAccountProjects = new ConfigKey<>("Account Defaults",Long.class,"max.account.projects","10",
                 "The default maximum number of projects that can be created for an account",false);
     static final ConfigKey<Long> DefaultMaxDomainProjects = new ConfigKey<>("Domain Defaults",Long.class,"max.domain.projects","50",
@@ -152,6 +158,9 @@ public interface ResourceLimitService {
 
     /**
      * Finds the resource limit for a specified account, domain and type.
+     * For a type under the account's combined storage quota ({@link #ResourceLimitStorageCombined}) it is instead the
+     * bound that the account's usage of that type may reach: {@link #getRemainingStorageQuota(Account)} plus the current
+     * usage of that type, or {@link com.cloud.configuration.Resource#RESOURCE_UNLIMITED}.
      *
      * @param domain
      * @param type
@@ -159,6 +168,26 @@ public interface ResourceLimitService {
      * @return resource limit
      */
     public long findCorrectResourceLimitForAccountAndDomain(Account account, Domain domain, ResourceType type, String tag);
+
+    /**
+     * @return true for the untagged primary_storage and secondary_storage types, which share one quota where
+     * {@link #ResourceLimitStorageCombined} is set
+     */
+    static boolean isStorageQuotaType(ResourceType type, String tag) {
+        return (tag == null || tag.isEmpty()) && (type == ResourceType.primary_storage || type == ResourceType.secondary_storage);
+    }
+
+    /**
+     * Where {@link #ResourceLimitStorageCombined} is set for an owner, its primary and secondary storage share one quota,
+     * its untagged primary_storage limit, and the usage is the sum of both resource counts and both reservations; where it
+     * is not set, the quota and usage are primary storage alone.
+     *
+     * @param account the owner; for a project account, the project's domain chain applies
+     * @return the bytes that the account can still add: the smallest of the account's remaining quota and that of every
+     *         limited domain up its domain chain, never below 0; or {@link com.cloud.configuration.Resource#RESOURCE_UNLIMITED}
+     *         when neither the account nor any of those domains limits storage
+     */
+    long getRemainingStorageQuota(Account account);
 
     /**
      * Increments the resource count

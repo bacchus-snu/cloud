@@ -695,6 +695,7 @@ public class KubernetesClusterManagerImpl extends ManagerBase implements Kuberne
 
     private DeployDestination plan(final long nodesCount, final DataCenter zone, final ServiceOffering offering,
                                    final Long domainId, final Long accountId, Hypervisor.HypervisorType hypervisorType) throws InsufficientServerCapacityException {
+        final boolean hostCapacityExempt = CapacityManager.isHostCapacityExempt(offering);
         final int cpu_requested = offering.getCpu() * offering.getSpeed();
         final long ram_requested = offering.getRamSize() * 1024L * 1024L;
         boolean useDedicatedHosts = false;
@@ -744,7 +745,7 @@ public class KubernetesClusterManagerImpl extends ManagerBase implements Kuberne
                 if (logger.isDebugEnabled()) {
                     logger.debug("Checking host: {} for capacity already reserved {}", hostVO, reserved);
                 }
-                if (capacityManager.checkIfHostHasCapacity(hostVO, cpu_requested * reserved, ram_requested * reserved, false, cpuOvercommitRatio, memoryOvercommitRatio, true)) {
+                if (hostCapacityExempt || capacityManager.checkIfHostHasCapacity(hostVO, cpu_requested * reserved, ram_requested * reserved, false, cpuOvercommitRatio, memoryOvercommitRatio, true)) {
                     logger.debug("Found host {} to have enough capacity, CPU={} RAM={}", hostVO, cpu_requested * reserved, toHumanReadableSize(ram_requested * reserved));
                     hostEntry.setValue(new Pair<HostVO, Integer>(hostVO, reserved));
                     suitable_host_found = true;

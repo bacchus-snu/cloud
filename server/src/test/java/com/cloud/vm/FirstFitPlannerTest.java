@@ -67,6 +67,7 @@ import com.cloud.capacity.CapacityManager;
 import com.cloud.capacity.dao.CapacityDao;
 import com.cloud.configuration.Config;
 import com.cloud.dc.ClusterDetailsDao;
+import com.cloud.dc.ClusterVO;
 import com.cloud.dc.DataCenterVO;
 import com.cloud.dc.dao.ClusterDao;
 import com.cloud.dc.dao.DataCenterDao;
@@ -307,6 +308,90 @@ public class FirstFitPlannerTest {
                 0.05390625, clusterByCombinedCapacity.get(2L), TOLERANCE);
         Assert.assertEquals("Cluster 1 combined capacity should match expected value",
                 0.0625, clusterByCombinedCapacity.get(1L), TOLERANCE);
+    }
+
+    @Test
+    public void combinedOrderingLeavesOutZeroPoolHost() {
+        ClusterDetailsVO clusterDetailsOverCommitRatio = mock(ClusterDetailsVO.class);
+        when(clusterDetailsOverCommitRatio.getValue()).thenReturn("1.0");
+        when(clusterDetailsDao.findDetail(anyLong(), anyString())).thenReturn(clusterDetailsOverCommitRatio);
+        List<CapacityVO> capacities = Arrays.asList(
+                new CapacityVO(7L, dataCenterId, 1L, 1L, 0L, 0L, Capacity.CAPACITY_TYPE_CPU),
+                new CapacityVO(7L, dataCenterId, 1L, 1L, 0L, 0L, Capacity.CAPACITY_TYPE_MEMORY),
+                new CapacityVO(8L, dataCenterId, 1L, 1L, 8000L, 32000L, Capacity.CAPACITY_TYPE_CPU),
+                new CapacityVO(8L, dataCenterId, 1L, 1L, 2147483648L, 8589934592L, Capacity.CAPACITY_TYPE_MEMORY),
+                new CapacityVO(9L, dataCenterId, 2L, 2L, 16000L, 32000L, Capacity.CAPACITY_TYPE_CPU),
+                new CapacityVO(9L, dataCenterId, 2L, 2L, 4294967296L, 8589934592L, Capacity.CAPACITY_TYPE_MEMORY));
+
+        Map<Long, Double> clusters = planner.getClusterByCombinedCapacities(capacities, 0.5);
+        Map<Long, Double> pods = planner.getPodByCombinedCapacities(capacities, 0.5);
+
+        Assert.assertEquals(List.of(1L, 2L), new ArrayList<>(clusters.keySet()));
+        Assert.assertEquals(0.25, clusters.get(1L), TOLERANCE);
+        Assert.assertEquals(List.of(1L, 2L), new ArrayList<>(pods.keySet()));
+        Assert.assertEquals(0.25, pods.get(1L), TOLERANCE);
+    }
+
+    @Test
+    public void clusterThresholdSkippedForExemptVm() throws InsufficientServerCapacityException {
+        VirtualMachineProfileImpl vmProfile = mock(VirtualMachineProfileImpl.class);
+        DataCenterDeployment plan = mock(DataCenterDeployment.class);
+        ExcludeList avoids = mock(ExcludeList.class);
+        initializeForTest(vmProfile, plan, avoids);
+        initializeForSingleClusterAboveThreshold(vmProfile, plan);
+        when(vmProfile.getServiceOffering().getVgpuProfileId()).thenReturn(1L);
+
+        List<Long> clusterList = planner.orderClusters(vmProfile, plan, avoids);
+
+        Assert.assertEquals(List.of(3L), clusterList);
+    }
+
+    @Test
+    public void clusterThresholdStockForPoolVm() throws InsufficientServerCapacityException {
+        VirtualMachineProfileImpl vmProfile = mock(VirtualMachineProfileImpl.class);
+        DataCenterDeployment plan = mock(DataCenterDeployment.class);
+        ExcludeList avoids = mock(ExcludeList.class);
+        initializeForTest(vmProfile, plan, avoids);
+        initializeForSingleClusterAboveThreshold(vmProfile, plan);
+
+        List<Long> clusterList = planner.orderClusters(vmProfile, plan, avoids);
+
+        Assert.assertTrue(clusterList.isEmpty());
+    }
+
+    @Test
+    public void exemptVmClusterListIgnoresHostCapacityFilter() throws InsufficientServerCapacityException {
+        VirtualMachineProfileImpl vmProfile = mock(VirtualMachineProfileImpl.class);
+        DataCenterDeployment plan = mock(DataCenterDeployment.class);
+        ExcludeList avoids = mock(ExcludeList.class);
+        initializeForTest(vmProfile, plan, avoids);
+        when(vmProfile.getServiceOffering().getVgpuProfileId()).thenReturn(1L);
+        long overAllocatedZoneId = 3L;
+        when(vmProfile.getVirtualMachine().getDataCenterId()).thenReturn(overAllocatedZoneId);
+        when(dcDao.findById(overAllocatedZoneId)).thenReturn(mock(DataCenterVO.class));
+        when(plan.getDataCenterId()).thenReturn(overAllocatedZoneId);
+        when(capacityDao.listClustersInZoneOrPodByHostCapacities(Mockito.eq(overAllocatedZoneId), Mockito.anyLong(), Mockito.anyInt(), Mockito.anyLong(),
+                Mockito.anyBoolean())).thenReturn(new ArrayList<>());
+        when(capacityDao.orderClustersByAggregateCapacity(overAllocatedZoneId, 12L, Capacity.CAPACITY_TYPE_CPU, true))
+                .thenReturn(new Pair<>(new ArrayList<>(List.of(1L, 2L)), new HashMap<>()));
+
+        List<Long> clusterList = planner.orderClusters(vmProfile, plan, avoids);
+
+        Assert.assertEquals(List.of(1L, 2L), clusterList);
+    }
+
+    private void initializeForSingleClusterAboveThreshold(VirtualMachineProfileImpl vmProfile, DataCenterDeployment plan) {
+        long thresholdZoneId = 2L;
+        when(plan.getDataCenterId()).thenReturn(thresholdZoneId);
+        when(plan.getClusterId()).thenReturn(3L);
+        when(clusterDao.findById(3L)).thenReturn(mock(ClusterVO.class));
+        long thresholdVmId = 99L;
+        when(vmProfile.getVirtualMachine().getId()).thenReturn(thresholdVmId);
+        Map<String, String> details = new HashMap<>();
+        details.put("deployvm", "true");
+        when(vmDetailsDao.listDetailsKeyPairs(thresholdVmId)).thenReturn(details);
+        when(capacityDao.listClustersCrossingThreshold(Mockito.anyShort(), Mockito.eq(thresholdZoneId), Mockito.anyString(), Mockito.anyLong()))
+                .thenAnswer(invocation -> new ArrayList<>(List.of(3L)));
     }
 
     private List<Long> initializeForClusterThresholdDisabled() {

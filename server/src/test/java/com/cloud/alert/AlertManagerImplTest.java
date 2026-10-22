@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 
 import java.io.UnsupportedEncodingException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Optional;
@@ -56,6 +57,7 @@ import com.cloud.capacity.Capacity;
 import com.cloud.capacity.CapacityManager;
 import com.cloud.capacity.CapacityVO;
 import com.cloud.capacity.dao.CapacityDao;
+import com.cloud.capacity.dao.CapacityDaoImpl.SummedCapacity;
 import com.cloud.dc.ClusterVO;
 import com.cloud.dc.DataCenterVO;
 import com.cloud.dc.HostPodVO;
@@ -276,6 +278,31 @@ public class AlertManagerImplTest {
         assertEquals("System Alert: Low Available Backup Storage in availability zone zone1", capturedAlert.getSubject());
         assertEquals("Available backup storage space is low, total: 200.0 MB, used: 180.0 MB (90%)", capturedAlert.getContent());
         assertEquals(AlertManager.AlertType.ALERT_TYPE_BACKUP_STORAGE.getType(), capturedAlert.getType());
+    }
+
+    @Test
+    public void zeroPoolHostNoCapacityAlert() throws ConfigurationException {
+        long zoneId = 1L;
+        long podId = 2L;
+        long clusterId = 3L;
+        Mockito.doNothing().when(alertManagerImplMock).recalculateCapacity();
+        Mockito.when(configDao.getConfiguration("management-server", null)).thenReturn(new HashMap<>());
+        alertManagerImplMock.configure(null, null);
+        ClusterVO cluster = Mockito.mock(ClusterVO.class);
+        Mockito.when(cluster.getId()).thenReturn(clusterId);
+        Mockito.when(cluster.getDataCenterId()).thenReturn(zoneId);
+        Mockito.when(cluster.getPodId()).thenReturn(podId);
+        Mockito.when(_clusterDao.listAll()).thenReturn(List.of(cluster));
+        for (short type : new short[] {Capacity.CAPACITY_TYPE_CPU, Capacity.CAPACITY_TYPE_MEMORY}) {
+            Mockito.when(capacityDao.findCapacityBy((int) type, zoneId, null, clusterId))
+                    .thenReturn(new ArrayList<>(List.of(new SummedCapacity(12000L, 0L, 0L, type, clusterId, podId))));
+        }
+        Mockito.when(storageManager.getStoragePoolUsedStats(null, clusterId, podId, zoneId))
+                .thenReturn(new CapacityVO(null, zoneId, podId, clusterId, 1L, 100L, Capacity.CAPACITY_TYPE_STORAGE));
+
+        alertManagerImplMock.checkForAlerts();
+
+        Mockito.verify(_alertDao, Mockito.never()).persist(any());
     }
 
     @Test

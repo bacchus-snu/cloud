@@ -210,8 +210,9 @@ public class FirstFitPlanner extends AdapterBase implements DeploymentClusterPla
                           GPU.Keys.vgpuType.toString()) == null)
                  && !(hostGpuGroupsDao.listHostIds().isEmpty())) || nonUefiVMDeploy
             ) {
-                int requiredCpu = offering.getCpu() * offering.getSpeed();
-                long requiredRam = offering.getRamSize() * 1024L * 1024L;
+                boolean hostCapacityExempt = CapacityManager.isHostCapacityExempt(offering);
+                int requiredCpu = hostCapacityExempt ? 0 : offering.getCpu() * offering.getSpeed();
+                long requiredRam = hostCapacityExempt ? 0 : offering.getRamSize() * 1024L * 1024L;
                 reorderClustersBasedOnImplicitTags(clusterList, requiredCpu, requiredRam);
             }
         }
@@ -260,7 +261,9 @@ public class FirstFitPlanner extends AdapterBase implements DeploymentClusterPla
         long requiredRam = offering.getRamSize() * 1024L * 1024L;
         //list pods under this zone by cpu and ram capacity
         List<Long> prioritizedPodIds;
-        Pair<List<Long>, Map<Long, Double>> podCapacityInfo = listPodsByCapacity(plan.getDataCenterId(), requiredCpu, requiredRam);
+        Pair<List<Long>, Map<Long, Double>> podCapacityInfo = CapacityManager.isHostCapacityExempt(offering)
+                ? getOrderedPodsByCapacity(plan.getDataCenterId())
+                : listPodsByCapacity(plan.getDataCenterId(), requiredCpu, requiredRam);
         List<Long> podsWithCapacity = podCapacityInfo.first();
 
         if (!podsWithCapacity.isEmpty()) {
@@ -338,6 +341,12 @@ public class FirstFitPlanner extends AdapterBase implements DeploymentClusterPla
     protected void removeClustersCrossingThreshold(List<Long> clusterListForVmAllocation, ExcludeList avoid,
             VirtualMachineProfile vmProfile, DeploymentPlan plan) {
 
+        // The cluster thresholds are fractions of the hosts' CPU and memory capacity, from which an exempt VM takes nothing.
+        ServiceOffering offering = vmProfile.getServiceOffering();
+        if (CapacityManager.isHostCapacityExempt(offering)) {
+            return;
+        }
+
         // Check if cluster threshold for cpu/memory has to be checked or not. By default we
         // always check cluster threshold isn't crossed. However, the check may be skipped for
         // starting (not deploying) an instance.
@@ -351,7 +360,6 @@ public class FirstFitPlanner extends AdapterBase implements DeploymentClusterPla
         List<Short> capacityList = getCapacitiesForCheckingThreshold();
         List<Long> clustersCrossingThreshold = new ArrayList<>();
 
-        ServiceOffering offering = vmProfile.getServiceOffering();
         int cpu_requested = offering.getCpu() * offering.getSpeed();
         long ram_requested = offering.getRamSize() * 1024L * 1024L;
 
@@ -400,7 +408,9 @@ public class FirstFitPlanner extends AdapterBase implements DeploymentClusterPla
         long requiredRam = offering.getRamSize() * 1024L * 1024L;
 
         //list clusters under this zone by cpu and ram capacity
-        Pair<List<Long>, Map<Long, Double>> clusterCapacityInfo = listClustersByCapacity(id, vmProfile.getId(), requiredCpu, requiredRam, avoid, isZone);
+        Pair<List<Long>, Map<Long, Double>> clusterCapacityInfo = CapacityManager.isHostCapacityExempt(offering)
+                ? getOrderedClustersByCapacity(id, vmProfile.getId(), isZone)
+                : listClustersByCapacity(id, vmProfile.getId(), requiredCpu, requiredRam, avoid, isZone);
         List<Long> prioritizedClusterIds = clusterCapacityInfo.first();
         if (!prioritizedClusterIds.isEmpty()) {
             if (avoid.getClustersToAvoid() != null) {
@@ -543,8 +553,9 @@ public class FirstFitPlanner extends AdapterBase implements DeploymentClusterPla
             String overCommitRatioParam = isCPUCapacity ? ApiConstants.CPU_OVERCOMMIT_RATIO : ApiConstants.MEMORY_OVERCOMMIT_RATIO;
             ClusterDetailsVO overCommitRatioVO = clusterDetailsDao.findDetail(capacityVO.getClusterId(), overCommitRatioParam);
             float overCommitRatio = Float.parseFloat(overCommitRatioVO.getValue());
-            double capacityMetric = applicableWeight *
-                    (capacityVO.getUsedCapacity() + capacityVO.getReservedCapacity())/(capacityVO.getTotalCapacity() * overCommitRatio);
+            long totalCapacity = capacityVO.getTotalCapacity();
+            double capacityMetric = totalCapacity <= 0 ? 0 : applicableWeight *
+                    (capacityVO.getUsedCapacity() + capacityVO.getReservedCapacity())/(totalCapacity * overCommitRatio);
             podByCombinedCapacity.merge(podId, capacityMetric, Double::sum);
         }
         return podByCombinedCapacity.entrySet()
@@ -591,8 +602,9 @@ public class FirstFitPlanner extends AdapterBase implements DeploymentClusterPla
             String overCommitRatioParam = isCPUCapacity ? ApiConstants.CPU_OVERCOMMIT_RATIO : ApiConstants.MEMORY_OVERCOMMIT_RATIO;
             ClusterDetailsVO overCommitRatioVO = clusterDetailsDao.findDetail(clusterId, overCommitRatioParam);
             float overCommitRatio = Float.parseFloat(overCommitRatioVO.getValue());
-            double capacityMetric = applicableWeight *
-                    (capacityVO.getUsedCapacity() + capacityVO.getReservedCapacity())/(capacityVO.getTotalCapacity() * overCommitRatio);
+            long totalCapacity = capacityVO.getTotalCapacity();
+            double capacityMetric = totalCapacity <= 0 ? 0 : applicableWeight *
+                    (capacityVO.getUsedCapacity() + capacityVO.getReservedCapacity())/(totalCapacity * overCommitRatio);
             clusterByCombinedCapacity.merge(clusterId, capacityMetric, Double::sum);
         }
         return clusterByCombinedCapacity.entrySet()

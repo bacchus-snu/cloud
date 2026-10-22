@@ -94,4 +94,19 @@ public class ClusterDrsAlgorithmTest extends TestCase {
             }
         }
     }
+
+    @Test
+    public void testGetMetricValueLeavesOutHostWithoutCapacity() {
+        for (boolean useRatio : new boolean[] {true, false}) {
+            for (String metricType : List.of("free", "used")) {
+                try (MockedStatic<ClusterDrsAlgorithm> ignored = Mockito.mockStatic(ClusterDrsAlgorithm.class)) {
+                    Mockito.lenient().when(ClusterDrsAlgorithm.getDrsMetricUseRatio(1L)).thenReturn(useRatio);
+                    Mockito.lenient().when(ClusterDrsAlgorithm.getDrsMetricType(1L)).thenReturn(metricType);
+                    when(ClusterDrsAlgorithm.getMetricValue(anyLong(), anyLong(), anyLong(), anyLong(), any())).thenCallRealMethod();
+
+                    assertNull(getMetricValue(1, 0, 0, 0, null));
+                }
+            }
+        }
+    }
 }

@@ -52,6 +52,7 @@ import org.apache.cloudstack.api.command.admin.domain.MoveDomainCmd;
 import org.apache.cloudstack.api.command.admin.domain.UpdateDomainCmd;
 import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.engine.orchestration.service.NetworkOrchestrationService;
+import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.messagebus.MessageBus;
 import org.apache.cloudstack.framework.messagebus.PublishScope;
 import org.apache.cloudstack.network.RoutedIpv4Manager;
@@ -1029,8 +1030,13 @@ public class DomainManagerImpl extends ManagerBase implements DomainManager, Dom
             Resource.ResourceType resourceType, String tag) throws ResourceAllocationException {
         long domainToBeMovedId = domainToBeMoved.getId();
         long newParentDomainId = newParentDomain.getId();
-        long currentDomainResourceCount = _resourceCountDao.getResourceCount(domainToBeMovedId, ResourceOwnerType.Domain, resourceType, tag);
-        long newParentDomainResourceCount = _resourceCountDao.getResourceCount(newParentDomainId, ResourceOwnerType.Domain, resourceType, tag);
+        boolean combinedStorage = ResourceLimitService.isStorageQuotaType(resourceType, tag)
+                && ResourceLimitService.ResourceLimitStorageCombined.valueInScope(ConfigKey.Scope.Domain, newParentDomainId);
+        if (combinedStorage && resourceType == Resource.ResourceType.secondary_storage) {
+            return;
+        }
+        long currentDomainResourceCount = getDomainResourceCountForLimit(domainToBeMovedId, resourceType, tag, combinedStorage);
+        long newParentDomainResourceCount = getDomainResourceCountForLimit(newParentDomainId, resourceType, tag, combinedStorage);
         long newParentDomainResourceLimit = resourceLimitService.findCorrectResourceLimitForDomain(newParentDomain, resourceType, tag);
 
         if (newParentDomainResourceLimit == Resource.RESOURCE_UNLIMITED) {
@@ -1047,6 +1053,14 @@ public class DomainManagerImpl extends ManagerBase implements DomainManager, Dom
         }
     }
 
+
+    private long getDomainResourceCountForLimit(long domainId, Resource.ResourceType resourceType, String tag, boolean combinedStorage) {
+        if (combinedStorage) {
+            return _resourceCountDao.getResourceCount(domainId, ResourceOwnerType.Domain, Resource.ResourceType.primary_storage, null)
+                    + _resourceCountDao.getResourceCount(domainId, ResourceOwnerType.Domain, Resource.ResourceType.secondary_storage, null);
+        }
+        return _resourceCountDao.getResourceCount(domainId, ResourceOwnerType.Domain, resourceType, tag);
+    }
 
     protected void validateNewParentDomainResourceLimits(DomainVO domainToBeMoved, DomainVO newParentDomain) throws ResourceAllocationException {
         List<String> hostTags = resourceLimitService.getResourceLimitHostTags();

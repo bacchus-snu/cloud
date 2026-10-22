@@ -214,7 +214,9 @@ public class CheckedReservation implements Reserver {
 
     @NotNull
     private void setGlobalLock() {
-        String lockName = String.format("CheckedReservation-%s/%d", this.domainId, resourceType.getOrdinal());
+        // Types that share one limit must be reserved under one lock, or concurrent reservations of each could pass the check together.
+        ResourceType lockType = ResourceLimitService.isStorageQuotaType(resourceType, null) ? ResourceType.primary_storage : resourceType;
+        String lockName = String.format("CheckedReservation-%s/%d", this.domainId, lockType.getOrdinal());
         setQuotaLimitLock(GlobalLock.getInternLock(lockName));
     }
 

@@ -636,6 +636,7 @@ public class RollingMaintenanceManagerImpl extends ManagerBase implements Rollin
             }
 
             ServiceOfferingVO serviceOffering = serviceOfferingDao.findById(runningVM.getServiceOfferingId());
+            boolean hostCapacityExempt = CapacityManager.isHostCapacityExempt(serviceOffering);
             for (Host hostInCluster : hostsInCluster) {
                 if (!checkHostTags(hostTags, hostTagsDao.getHostTags(hostInCluster.getId()), serviceOffering.getHostTag())) {
                     logger.debug("Host tags mismatch between {} and {} Skipping it from the capacity check", host, hostInCluster);
@@ -652,14 +653,14 @@ public class RollingMaintenanceManagerImpl extends ManagerBase implements Rollin
                     continue;
                 }
                 boolean maxGuestLimit = capacityManager.checkIfHostReachMaxGuestLimit(host);
-                boolean hostHasCPUCapacity = capacityManager.checkIfHostHasCpuCapability(hostInCluster, cpu, speed);
+                boolean hostHasCPUCapacity = hostCapacityExempt || capacityManager.checkIfHostHasCpuCapability(hostInCluster, cpu, speed);
                 int cpuRequested = cpu * speed;
                 long ramRequested = ramSize * 1024L * 1024L;
                 ClusterDetailsVO clusterDetailsCpuOvercommit = clusterDetailsDao.findDetail(cluster.getId(), "cpuOvercommitRatio");
                 ClusterDetailsVO clusterDetailsRamOvercommmt = clusterDetailsDao.findDetail(cluster.getId(), "memoryOvercommitRatio");
                 Float cpuOvercommitRatio = Float.parseFloat(clusterDetailsCpuOvercommit.getValue());
                 Float memoryOvercommitRatio = Float.parseFloat(clusterDetailsRamOvercommmt.getValue());
-                boolean hostHasCapacity = capacityManager.checkIfHostHasCapacity(hostInCluster, cpuRequested, ramRequested, false,
+                boolean hostHasCapacity = hostCapacityExempt || capacityManager.checkIfHostHasCapacity(hostInCluster, cpuRequested, ramRequested, false,
                         cpuOvercommitRatio, memoryOvercommitRatio, false);
                 if (!maxGuestLimit && hostHasCPUCapacity && hostHasCapacity) {
                     canMigrateVm = true;

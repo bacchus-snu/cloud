@@ -21,6 +21,7 @@ import static com.cloud.deploy.DeploymentPlanner.AllocationAlgorithm.random;
 import static com.cloud.deploy.DeploymentPlanner.AllocationAlgorithm.userdispersing;
 
 import com.cloud.capacity.Capacity;
+import com.cloud.capacity.CapacityManager;
 import com.cloud.capacity.CapacityVO;
 import com.cloud.capacity.dao.CapacityDao;
 import com.cloud.configuration.Config;
@@ -202,6 +203,9 @@ public class FirstFitAllocator extends BaseAllocator {
 
     protected List<Host> allocateTo(VirtualMachineProfile vmProfile, DeploymentPlan plan, ServiceOffering offering, VMTemplateVO template, ExcludeList avoid, List<? extends Host> hosts, int returnUpTo,
                                     boolean considerReservedCapacity, Account account) {
+        if (!CapacityManager.isHostCapacityExempt(offering)) {
+            hosts = removeHostsWithNoComputeCapacity(hosts, avoid);
+        }
         String vmAllocationAlgorithm = DeploymentClusterPlanner.VmAllocationAlgorithm.value();
         if (random.toString().equals(vmAllocationAlgorithm)) {
             Collections.shuffle(hosts);
@@ -219,6 +223,19 @@ public class FirstFitAllocator extends BaseAllocator {
         logger.debug("Host Allocator returning {} suitable hosts.", suitableHosts.size());
 
         return suitableHosts;
+    }
+
+    protected List<Host> removeHostsWithNoComputeCapacity(List<? extends Host> hosts, ExcludeList avoid) {
+        List<Host> hostsWithCapacity = new ArrayList<>();
+        for (Host host : hosts) {
+            if (capacityManager.hasNoComputeCapacity(host)) {
+                logger.debug("Adding host [{}] to the avoid set because it reports no CPU or memory capacity.", host);
+                avoid.addHost(host.getId());
+            } else {
+                hostsWithCapacity.add(host);
+            }
+        }
+        return hostsWithCapacity;
     }
 
     protected List<Host> checkHostsCompatibilities(ServiceOffering offering, VirtualMachineProfile vmProfile, ExcludeList avoid, List<? extends Host> hosts, int returnUpTo, boolean considerReservedCapacity) {
@@ -305,7 +322,9 @@ public class FirstFitAllocator extends BaseAllocator {
         for (CapacityVO capacityVO : capacities) {
             long hostId = capacityVO.getHostOrPoolId();
             double applicableWeight = capacityVO.getCapacityType() == Capacity.CAPACITY_TYPE_CPU ? cpuToMemoryWeight : 1 - cpuToMemoryWeight;
-            double capacityMetric = applicableWeight * (capacityVO.getTotalCapacity() - (capacityVO.getUsedCapacity() + capacityVO.getReservedCapacity()))/capacityVO.getTotalCapacity();
+            long totalCapacity = capacityVO.getTotalCapacity();
+            double capacityMetric = totalCapacity <= 0 ? 0 :
+                    applicableWeight * (totalCapacity - (capacityVO.getUsedCapacity() + capacityVO.getReservedCapacity())) / totalCapacity;
             hostByComputedCapacity.merge(hostId, capacityMetric, Double::sum);
         }
 

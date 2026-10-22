@@ -200,6 +200,7 @@ public class KubernetesClusterResourceModifierActionWorker extends KubernetesClu
     protected DeployDestination plan(final long nodesCount, final DataCenter zone, final ServiceOffering offering,
             final Long domainId, final Long accountId, final Hypervisor.HypervisorType hypervisorType,
             CPU.CPUArch arch, KubernetesClusterNodeType nodeType) throws InsufficientServerCapacityException {
+        final boolean hostCapacityExempt = CapacityManager.isHostCapacityExempt(offering);
         final int cpu_requested = offering.getCpu() * offering.getSpeed();
         final long ram_requested = offering.getRamSize() * 1024L * 1024L;
         boolean useDedicatedHosts = false;
@@ -267,7 +268,7 @@ public class KubernetesClusterResourceModifierActionWorker extends KubernetesClu
                 if (logger.isDebugEnabled()) {
                     logger.debug(String.format("Checking host : %s for capacity already reserved %d", h.getName(), reserved));
                 }
-                if (capacityManager.checkIfHostHasCapacity(h, cpu_requested * reserved, ram_requested * reserved, false, cpuOvercommitRatio, memoryOvercommitRatio, true)) {
+                if (hostCapacityExempt || capacityManager.checkIfHostHasCapacity(h, cpu_requested * reserved, ram_requested * reserved, false, cpuOvercommitRatio, memoryOvercommitRatio, true)) {
                     logger.debug("Found host {} with enough capacity: CPU={} RAM={}", h.getName(), cpu_requested * reserved, toHumanReadableSize(ram_requested * reserved));
                     hostEntry.setValue(new Pair<HostVO, Integer>(h, reserved));
                     suitable_host_found = true;

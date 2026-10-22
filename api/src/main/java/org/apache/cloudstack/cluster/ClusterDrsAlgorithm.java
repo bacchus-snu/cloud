@@ -223,6 +223,9 @@ public interface ClusterDrsAlgorithm extends Adapter {
     }
 
     static Double getMetricValue(long clusterId, long used, long free, long total, Float skipThreshold) {
+        if (total <= 0) {
+            return null;
+        }
         boolean useRatio = getDrsMetricUseRatio(clusterId);
         switch (getDrsMetricType(clusterId)) {
             case "free":

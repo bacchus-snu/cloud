@@ -107,6 +107,11 @@ public class MockResourceLimitManagerImpl extends ManagerBase implements Resourc
         return 0;
     }
 
+    @Override
+    public long getRemainingStorageQuota(Account account) {
+        return 0;
+    }
+
     /* (non-Javadoc)
      * @see com.cloud.user.ResourceLimitService#incrementResourceCount(long, com.cloud.configuration.Resource.ResourceType, java.lang.Long[])
      */

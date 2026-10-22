@@ -52,6 +52,7 @@ import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnitRunner;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import com.cloud.api.query.dao.UserVmJoinDao;
 import com.cloud.api.query.vo.UserVmJoinVO;
@@ -87,6 +88,8 @@ import com.cloud.user.dao.AccountDao;
 import com.cloud.utils.Pair;
 import com.cloud.utils.StringUtils;
 import com.cloud.utils.db.EntityManager;
+import com.cloud.utils.db.Transaction;
+import com.cloud.utils.db.TransactionCallbackWithException;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.VirtualMachineManager;
 import com.cloud.vm.dao.UserVmDao;
@@ -1378,5 +1381,170 @@ public class ResourceLimitManagerImplTest {
 
         Assert.assertEquals(EnumSet.allOf(Resource.ResourceType.class).size(), result.size());
         Assert.assertEquals(25L, result.get(0).getMax().longValue());
+    }
+
+    private static final long GIB = 1024L * 1024L * 1024L;
+    private static final long STORAGE_ACCOUNT_ID = 7L;
+    private static final long STORAGE_DOMAIN_ID = 2L;
+
+    private AccountVO mockStorageAccount() {
+        AccountVO account = Mockito.mock(AccountVO.class);
+        Mockito.lenient().when(account.getId()).thenReturn(STORAGE_ACCOUNT_ID);
+        Mockito.lenient().when(account.getDomainId()).thenReturn(STORAGE_DOMAIN_ID);
+        Mockito.lenient().when(account.getType()).thenReturn(Account.Type.NORMAL);
+        Mockito.lenient().when(accountManager.isRootAdmin(STORAGE_ACCOUNT_ID)).thenReturn(false);
+        DomainVO domain = Mockito.mock(DomainVO.class);
+        Mockito.lenient().when(domain.getId()).thenReturn(STORAGE_DOMAIN_ID);
+        Mockito.lenient().when(domain.getParent()).thenReturn(Domain.ROOT_DOMAIN);
+        Mockito.lenient().when(domainDao.findById(STORAGE_DOMAIN_ID)).thenReturn(domain);
+        DomainVO rootDomain = Mockito.mock(DomainVO.class);
+        Mockito.lenient().when(rootDomain.getParent()).thenReturn(null);
+        Mockito.lenient().when(domainDao.findById(Domain.ROOT_DOMAIN)).thenReturn(rootDomain);
+        Mockito.lenient().doReturn(new ArrayList<ResourceCountVO>()).when(resourceLimitManager)
+                .lockAccountAndOwnerDomainRows(Mockito.anyLong(), Mockito.any(Resource.ResourceType.class), Mockito.nullable(String.class));
+        return account;
+    }
+
+    private void mockStorageLimit(long ownerId, Resource.ResourceOwnerType ownerType, Resource.ResourceType type, long max) {
+        Mockito.lenient().when(resourceLimitDao.findByOwnerIdAndTypeAndTag(ownerId, ownerType, type, null))
+                .thenReturn(new ResourceLimitVO(type, max, ownerId, ownerType));
+    }
+
+    private void mockStorageCounts(long ownerId, Resource.ResourceOwnerType ownerType, long primaryBytes, long secondaryBytes) {
+        Mockito.lenient().when(resourceCountDao.getResourceCount(ownerId, ownerType, Resource.ResourceType.primary_storage, null)).thenReturn(primaryBytes);
+        Mockito.lenient().when(resourceCountDao.getResourceCount(ownerId, ownerType, Resource.ResourceType.secondary_storage, null)).thenReturn(secondaryBytes);
+    }
+
+    private boolean storageCheckPasses(Account account, Resource.ResourceType type, long bytes) {
+        try (MockedStatic<Transaction> transaction = Mockito.mockStatic(Transaction.class)) {
+            transaction.when(() -> Transaction.execute(Mockito.any(TransactionCallbackWithException.class))).thenAnswer(invocation -> {
+                ((TransactionCallbackWithException<?, ?>) invocation.getArgument(0)).doInTransaction(null);
+                return null;
+            });
+            resourceLimitManager.checkResourceLimit(account, type, bytes);
+            return true;
+        } catch (ResourceAllocationException e) {
+            return false;
+        }
+    }
+
+    @Test
+    public void combinedStorageLimitBlocksSnapshotWhenDisksUseQuota() {
+        Account account = mockStorageAccount();
+        mockStorageLimit(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, Resource.ResourceType.primary_storage, 20 * GIB);
+        mockStorageCounts(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, 20 * GIB, 0L);
+
+        Assert.assertFalse(storageCheckPasses(account, Resource.ResourceType.secondary_storage, GIB));
+    }
+
+    @Test
+    public void combinedStorageLimitBlocksVolumeWhenSnapshotsUseQuota() {
+        Account account = mockStorageAccount();
+        mockStorageLimit(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, Resource.ResourceType.primary_storage, 20 * GIB);
+        mockStorageCounts(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, 0L, 15 * GIB);
+
+        Assert.assertFalse(storageCheckPasses(account, Resource.ResourceType.primary_storage, 10 * GIB));
+        Assert.assertTrue(storageCheckPasses(account, Resource.ResourceType.primary_storage, 5 * GIB));
+    }
+
+    @Test
+    public void secondaryStorageLimitIgnored() {
+        AccountVO account = mockStorageAccount();
+        mockStorageLimit(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, Resource.ResourceType.primary_storage, 20 * GIB);
+        mockStorageLimit(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, Resource.ResourceType.secondary_storage, 0L);
+        mockStorageCounts(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, 5 * GIB, 5 * GIB);
+
+        Assert.assertTrue(storageCheckPasses(account, Resource.ResourceType.secondary_storage, GIB));
+    }
+
+    @Test
+    public void uploadLimitIsRemainingQuotaPlusSecondaryUsage() {
+        AccountVO account = mockStorageAccount();
+        mockStorageLimit(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, Resource.ResourceType.primary_storage, 20 * GIB);
+        mockStorageLimit(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, Resource.ResourceType.secondary_storage, 0L);
+        mockStorageCounts(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, 8 * GIB, 5 * GIB);
+        Mockito.when(reservationDao.getAccountReservation(STORAGE_ACCOUNT_ID, Resource.ResourceType.primary_storage, null)).thenReturn(GIB);
+        Domain domain = domainDao.findById(STORAGE_DOMAIN_ID);
+
+        Assert.assertEquals(6 * GIB + 5 * GIB, resourceLimitManager.findCorrectResourceLimitForAccountAndDomain(account, domain,
+                Resource.ResourceType.secondary_storage, null));
+
+        mockStorageLimit(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, Resource.ResourceType.primary_storage, Resource.RESOURCE_UNLIMITED);
+        Assert.assertEquals(Resource.RESOURCE_UNLIMITED, resourceLimitManager.findCorrectResourceLimitForAccountAndDomain(account, domain,
+                Resource.ResourceType.secondary_storage, null));
+    }
+
+    @Test
+    public void combinedStorageUsageMatchesRecalculation() {
+        AccountVO account = mockStorageAccount();
+        mockStorageLimit(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, Resource.ResourceType.primary_storage, 20 * GIB);
+        Map<Resource.ResourceType, ResourceCountVO> rows = new HashMap<>();
+        for (Resource.ResourceType type : List.of(Resource.ResourceType.primary_storage, Resource.ResourceType.secondary_storage)) {
+            ResourceCountVO row = new ResourceCountVO(type, 0L, STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account);
+            ReflectionTestUtils.setField(row, "id", (long) type.getOrdinal());
+            rows.put(type, row);
+            Mockito.when(resourceCountDao.findByOwnerAndTypeAndTag(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, type, null)).thenReturn(row);
+            Mockito.when(resourceCountDao.getResourceCount(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, type, null))
+                    .thenAnswer(invocation -> row.getCount());
+        }
+        Mockito.doReturn(7 * GIB).when(resourceLimitManager).calculatePrimaryStorageForAccount(STORAGE_ACCOUNT_ID, null);
+        Mockito.doReturn(5 * GIB).when(resourceLimitManager).calculateSecondaryStorageForAccount(STORAGE_ACCOUNT_ID);
+
+        long primary = resourceLimitManager.recalculateAccountResourceCount(STORAGE_ACCOUNT_ID, Resource.ResourceType.primary_storage, null);
+        long secondary = resourceLimitManager.recalculateAccountResourceCount(STORAGE_ACCOUNT_ID, Resource.ResourceType.secondary_storage, null);
+
+        long remaining = resourceLimitManager.getRemainingStorageQuota(account);
+        Assert.assertEquals(20 * GIB - (primary + secondary), remaining);
+        Assert.assertTrue(storageCheckPasses(account, Resource.ResourceType.secondary_storage, remaining));
+        Assert.assertFalse(storageCheckPasses(account, Resource.ResourceType.primary_storage, remaining + 1));
+    }
+
+    @Test
+    public void remainingStorageQuotaIsSmallestOverAccountAndDomains() {
+        AccountVO account = mockStorageAccount();
+        mockStorageLimit(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, Resource.ResourceType.primary_storage, 100 * GIB);
+        mockStorageCounts(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, 6 * GIB, 4 * GIB);
+        Mockito.when(reservationDao.getAccountReservation(STORAGE_ACCOUNT_ID, Resource.ResourceType.secondary_storage, null)).thenReturn(GIB);
+        mockStorageLimit(STORAGE_DOMAIN_ID, Resource.ResourceOwnerType.Domain, Resource.ResourceType.primary_storage, 50 * GIB);
+        mockStorageCounts(STORAGE_DOMAIN_ID, Resource.ResourceOwnerType.Domain, 20 * GIB, 10 * GIB);
+        Mockito.when(reservationDao.getDomainReservation(STORAGE_DOMAIN_ID, Resource.ResourceType.primary_storage, null)).thenReturn(2 * GIB);
+
+        Assert.assertEquals(18 * GIB, resourceLimitManager.getRemainingStorageQuota(account));
+
+        mockStorageLimit(STORAGE_DOMAIN_ID, Resource.ResourceOwnerType.Domain, Resource.ResourceType.primary_storage, 500 * GIB);
+        Assert.assertEquals(89 * GIB, resourceLimitManager.getRemainingStorageQuota(account));
+    }
+
+    @Test
+    public void remainingStorageQuotaUnlimitedOrNotBelowZero() {
+        AccountVO account = mockStorageAccount();
+        mockStorageCounts(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, 12 * GIB, 0L);
+
+        Assert.assertEquals(Resource.RESOURCE_UNLIMITED, resourceLimitManager.getRemainingStorageQuota(account));
+
+        mockStorageLimit(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, Resource.ResourceType.primary_storage, 10 * GIB);
+        Assert.assertEquals(0L, resourceLimitManager.getRemainingStorageQuota(account));
+
+        Mockito.when(accountManager.isRootAdmin(STORAGE_ACCOUNT_ID)).thenReturn(true);
+        Assert.assertEquals(Resource.RESOURCE_UNLIMITED, resourceLimitManager.getRemainingStorageQuota(account));
+    }
+
+    @Test
+    public void storageLimitsSeparateWhenCombinedQuotaOff() throws Exception {
+        overrideDefaultConfigValue(ResourceLimitService.ResourceLimitStorageCombined, "_defaultValue", "false");
+        try {
+            AccountVO account = mockStorageAccount();
+            mockStorageLimit(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, Resource.ResourceType.primary_storage, 20 * GIB);
+            mockStorageLimit(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, Resource.ResourceType.secondary_storage, 0L);
+            mockStorageCounts(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, 15 * GIB, 5 * GIB);
+
+            Assert.assertTrue(storageCheckPasses(account, Resource.ResourceType.primary_storage, 5 * GIB));
+            Assert.assertFalse(storageCheckPasses(account, Resource.ResourceType.secondary_storage, GIB));
+            Assert.assertEquals(5 * GIB, resourceLimitManager.getRemainingStorageQuota(account));
+            Assert.assertEquals(0L, resourceLimitManager.findCorrectResourceLimitForAccountAndDomain(account,
+                    domainDao.findById(STORAGE_DOMAIN_ID), Resource.ResourceType.secondary_storage, null));
+        } finally {
+            overrideDefaultConfigValue(ResourceLimitService.ResourceLimitStorageCombined, "_defaultValue", "true");
+        }
     }
 }

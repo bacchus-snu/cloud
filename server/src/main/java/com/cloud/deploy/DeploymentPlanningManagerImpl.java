@@ -496,10 +496,11 @@ StateListener<State, VirtualMachine.Event, VirtualMachine>, Configurable {
                 float cpuOvercommitRatio = Float.parseFloat(cluster_detail_cpu.getValue());
                 float memoryOvercommitRatio = Float.parseFloat(cluster_detail_ram.getValue());
 
-                boolean hostHasCpuCapability, hostHasCapacity = false;
-                hostHasCpuCapability = _capacityMgr.checkIfHostHasCpuCapability(lastHost, offering.getCpu(), offering.getSpeed());
+                boolean hostCapacityExempt = CapacityManager.isHostCapacityExempt(offering);
+                boolean hostHasCpuCapability, hostHasCapacity = hostCapacityExempt;
+                hostHasCpuCapability = hostCapacityExempt || _capacityMgr.checkIfHostHasCpuCapability(lastHost, offering.getCpu(), offering.getSpeed());
 
-                if (hostHasCpuCapability) {
+                if (!hostCapacityExempt && hostHasCpuCapability) {
                     // first check from reserved capacity
                     hostHasCapacity = _capacityMgr.checkIfHostHasCapacity(lastHost, cpuRequested, ramRequested, true, cpuOvercommitRatio, memoryOvercommitRatio, true);
 

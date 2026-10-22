@@ -863,6 +863,56 @@ public class ClusterDrsServiceImplTest {
     }
 
     @Test
+    public void drsIgnoresGpuVmsInHostUsage() throws ConfigurationException {
+        ClusterVO cluster = Mockito.mock(ClusterVO.class);
+        Mockito.when(cluster.getId()).thenReturn(1L);
+        HostVO destHost = Mockito.mock(HostVO.class);
+        Mockito.when(destHost.getId()).thenReturn(1L);
+        Mockito.when(destHost.getClusterId()).thenReturn(1L);
+        VMInstanceVO gpuVm = Mockito.mock(VMInstanceVO.class);
+        Mockito.when(gpuVm.getId()).thenReturn(1L);
+        VMInstanceVO cpuVm = Mockito.mock(VMInstanceVO.class);
+        Mockito.when(cpuVm.getId()).thenReturn(2L);
+        List<VirtualMachine> vmList = List.of(gpuVm, cpuVm);
+
+        ServiceOffering gpuOffering = Mockito.mock(ServiceOffering.class);
+        Mockito.when(gpuOffering.getVgpuProfileId()).thenReturn(1L);
+        Mockito.lenient().when(gpuOffering.getCpu()).thenReturn(1);
+        Mockito.lenient().when(gpuOffering.getSpeed()).thenReturn(100);
+        Mockito.lenient().when(gpuOffering.getRamSize()).thenReturn(128);
+        ServiceOffering cpuOffering = Mockito.mock(ServiceOffering.class);
+        Mockito.when(cpuOffering.getCpu()).thenReturn(1);
+        Mockito.when(cpuOffering.getSpeed()).thenReturn(100);
+        Mockito.when(cpuOffering.getRamSize()).thenReturn(128);
+        Map<Long, ServiceOffering> vmIdServiceOfferingMap = Map.of(1L, gpuOffering, 2L, cpuOffering);
+
+        Map<Long, List<? extends Host>> vmToCompatibleHostsCache = Map.of(1L, List.of(destHost), 2L, List.of(destHost));
+        Map<Long, Map<Host, Boolean>> vmToStorageMotionCache = Map.of(1L, Map.of(destHost, false), 2L, Map.of(destHost, false));
+        Map<Long, Ternary<Long, Long, Long>> hostCpuCapacityMap = new HashMap<>();
+        hostCpuCapacityMap.put(1L, new Ternary<>(1000L, 0L, 2000L));
+        hostCpuCapacityMap.put(2L, new Ternary<>(2000L, 0L, 3000L));
+        Map<Long, Ternary<Long, Long, Long>> hostMemoryCapacityMap = new HashMap<>();
+        hostMemoryCapacityMap.put(1L, new Ternary<>(1024L * 1024L * 1024L, 0L, 2L * 1024L * 1024L * 1024L));
+        hostMemoryCapacityMap.put(2L, new Ternary<>(2L * 1024L * 1024L * 1024L, 0L, 3L * 1024L * 1024L * 1024L));
+
+        Mockito.lenient().doReturn(new Ternary<>(1.0, 0.5, 1.5)).when(balancedAlgorithm).getMetrics(
+                Mockito.eq(cluster), Mockito.eq(gpuVm), Mockito.any(ServiceOffering.class),
+                Mockito.eq(destHost), Mockito.anyMap(), Mockito.anyMap(), Mockito.any(Boolean.class),
+                Mockito.any(Double.class), Mockito.any(double[].class), Mockito.any(Map.class));
+        Mockito.doReturn(new Ternary<>(0.5, 0.0, 1.0)).when(balancedAlgorithm).getMetrics(
+                Mockito.eq(cluster), Mockito.eq(cpuVm), Mockito.any(ServiceOffering.class),
+                Mockito.eq(destHost), Mockito.anyMap(), Mockito.anyMap(), Mockito.any(Boolean.class),
+                Mockito.any(Double.class), Mockito.any(double[].class), Mockito.any(Map.class));
+
+        Pair<VirtualMachine, Host> bestMigration = clusterDrsService.getBestMigration(cluster, balancedAlgorithm,
+                vmList, vmIdServiceOfferingMap, hostCpuCapacityMap, hostMemoryCapacityMap,
+                vmToCompatibleHostsCache, vmToStorageMotionCache, new HashMap<>());
+
+        assertEquals(cpuVm, bestMigration.first());
+        assertEquals(destHost, bestMigration.second());
+    }
+
+    @Test
     public void testGetBestMigrationDifferentCluster() throws ConfigurationException {
         ClusterVO cluster = Mockito.mock(ClusterVO.class);
         Mockito.when(cluster.getId()).thenReturn(1L);

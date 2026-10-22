@@ -22,6 +22,7 @@ package org.apache.cloudstack.cluster;
 import com.cloud.api.ApiGsonHelper;
 import com.cloud.api.query.dao.HostJoinDao;
 import com.cloud.api.query.vo.HostJoinVO;
+import com.cloud.capacity.CapacityManager;
 import com.cloud.dc.ClusterVO;
 import com.cloud.dc.dao.ClusterDao;
 import com.cloud.deploy.DataCenterDeployment;
@@ -615,7 +616,8 @@ public class ClusterDrsServiceImpl extends ManagerBase implements ClusterDrsServ
             ExcludeList excludes = vmToExcludesMap.get(vm.getId());
 
             ServiceOffering serviceOffering = vmIdServiceOfferingMap.get(vm.getId());
-            if (CollectionUtils.isEmpty(compatibleHosts) || serviceOffering == null) {
+            // Moving a VM that takes nothing from host capacity cannot change the balance of host usage.
+            if (CollectionUtils.isEmpty(compatibleHosts) || serviceOffering == null || CapacityManager.isHostCapacityExempt(serviceOffering)) {
                 continue;
             }
 

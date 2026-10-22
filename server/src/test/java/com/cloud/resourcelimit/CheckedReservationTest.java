@@ -169,4 +169,15 @@ public class CheckedReservationTest {
             Assert.assertTrue("All persisted reservations are not removed", persistedReservations.isEmpty());
         }
     }
+
+    @Test
+    public void storageReservationsShareOneQuotaLock() throws Exception {
+        when(account.getDomainId()).thenReturn(4L);
+        Mockito.when(reservationDao.persist(Mockito.any())).thenReturn(reservation);
+        try (CheckedReservation primary = new CheckedReservation(account, Resource.ResourceType.primary_storage, 1L, reservationDao, resourceLimitService);
+             CheckedReservation secondary = new CheckedReservation(account, Resource.ResourceType.secondary_storage, 1L, reservationDao, resourceLimitService)) {
+            String lockName = String.format("CheckedReservation-%d/%d", 4L, Resource.ResourceType.primary_storage.getOrdinal());
+            globalLockMocked.verify(() -> GlobalLock.getInternLock(lockName), Mockito.times(2));
+        }
+    }
 }

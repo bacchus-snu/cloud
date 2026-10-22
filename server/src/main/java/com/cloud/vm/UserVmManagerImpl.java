@@ -2223,8 +2223,10 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         int currentMemory = currentServiceOffering.getRamSize();
         int currentSpeed = currentServiceOffering.getSpeed();
         boolean cpuCapEnabledForTheCurrentOffering = currentServiceOffering.getLimitCpuUse();
-        int memoryDiff = newMemory - currentMemory;
-        int cpuDiff = newCpu * newSpeed - currentCpu * currentSpeed;
+        boolean newOfferingHostCapacityExempt = CapacityManager.isHostCapacityExempt(newServiceOffering);
+        boolean currentOfferingHostCapacityExempt = CapacityManager.isHostCapacityExempt(currentServiceOffering);
+        int memoryDiff = (newOfferingHostCapacityExempt ? 0 : newMemory) - (currentOfferingHostCapacityExempt ? 0 : currentMemory);
+        int cpuDiff = (newOfferingHostCapacityExempt ? 0 : newCpu * newSpeed) - (currentOfferingHostCapacityExempt ? 0 : currentCpu * currentSpeed);
 
         boolean scalingDown = newSpeed < currentSpeed || newMemory < currentMemory || newCpu < currentCpu;
         if (scalingDown) {
@@ -2280,7 +2282,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             // Check disable threshold for cluster is not crossed
             HostVO host = _hostDao.findById(vmInstance.getHostId());
             _hostDao.loadDetails(host);
-            if (_capacityMgr.checkIfClusterCrossesThreshold(host.getClusterId(), cpuDiff, memoryDiff)) {
+            if (!newOfferingHostCapacityExempt && _capacityMgr.checkIfClusterCrossesThreshold(host.getClusterId(), cpuDiff, memoryDiff)) {
                 throw new CloudRuntimeException(String.format("Unable to scale %s due to insufficient resources.", vmInstance));
             }
 
@@ -2295,10 +2297,10 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
                     // #1 Check existing host has capacity & and the correct tags
                     if (!excludes.shouldAvoid(ApiDBUtils.findHostById(vmInstance.getHostId()))) {
-                        existingHostHasCapacity = _capacityMgr.checkIfHostHasCpuCapability(host, newCpu, newSpeed)
+                        existingHostHasCapacity = (newOfferingHostCapacityExempt || _capacityMgr.checkIfHostHasCpuCapability(host, newCpu, newSpeed)
                                 && _capacityMgr.checkIfHostHasCapacity(host, cpuDiff, ByteScaleUtils.mebibytesToBytes(memoryDiff), false,
                                         _capacityMgr.getClusterOverProvisioningFactor(host.getClusterId(), Capacity.CAPACITY_TYPE_CPU),
-                                        _capacityMgr.getClusterOverProvisioningFactor(host.getClusterId(), Capacity.CAPACITY_TYPE_MEMORY), false)
+                                        _capacityMgr.getClusterOverProvisioningFactor(host.getClusterId(), Capacity.CAPACITY_TYPE_MEMORY), false))
                                 && checkEnforceStrictHostTagCheck(vmInstance, host);
                         excludes.addHost(vmInstance.getHostId());
                     }

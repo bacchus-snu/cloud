@@ -147,6 +147,67 @@ public interface CapacityManager {
                     "'<vcpu />' element of domain XMLs. If it is set to a value less than or equal to '0', then the host's CPU cores capacity will be considered.",
             true, ConfigKey.Scope.Cluster);
 
+    /**
+     * Free compute capacity of a host: total × cluster overprovisioning factor − used − reserved, from the host's
+     * CPU and memory capacity entries. The values are negative when used and reserved exceed the total.
+     */
+    final class HostFreeCapacity {
+        private final long freeCpuMhz;
+        private final long freeMemoryBytes;
+        private final int cpus;
+        private final int speedMhz;
+
+        public HostFreeCapacity(long freeCpuMhz, long freeMemoryBytes, int cpus, int speedMhz) {
+            this.freeCpuMhz = freeCpuMhz;
+            this.freeMemoryBytes = freeMemoryBytes;
+            this.cpus = cpus;
+            this.speedMhz = speedMhz;
+        }
+
+        public long getFreeCpuMhz() {
+            return freeCpuMhz;
+        }
+
+        public long getFreeMemoryBytes() {
+            return freeMemoryBytes;
+        }
+
+        public int getCpus() {
+            return cpus;
+        }
+
+        public int getSpeedMhz() {
+            return speedMhz;
+        }
+    }
+
+    /**
+     * A VM whose offering has a vGPU profile runs on CPU and memory that its host sets aside for the GPU devices
+     * outside the capacity the host reports, so its CPU and memory are neither counted in nor checked against the
+     * host's CPU and memory capacity.
+     */
+    static boolean isHostCapacityExempt(ServiceOffering offering) {
+        if (offering == null) {
+            return false;
+        }
+        Long vgpuProfileId = offering.getVgpuProfileId();
+        return vgpuProfileId != null && vgpuProfileId > 0;
+    }
+
+    /**
+     * @return true when the host reports no CPU or no memory capacity; such a host can run only VMs that are
+     * exempt from host capacity
+     */
+    boolean hasNoComputeCapacity(Host host);
+
+    /**
+     * Free capacity by the same formula the admission checks use, with the cluster's overprovisioning factors and
+     * the reserved capacity counted as taken.
+     * @return null when the host has no CPU or memory capacity entry; the free capacity is then unknown and the host
+     *         admits nothing, as the admission checks treat it, so callers must not read null as free
+     */
+    HostFreeCapacity getFreeCapacity(Host host);
+
     public boolean releaseVmCapacity(VirtualMachine vm, boolean moveFromReserved, boolean moveToReservered, Long hostId);
 
     void allocateVmCapacity(VirtualMachine vm, boolean fromLastHost);

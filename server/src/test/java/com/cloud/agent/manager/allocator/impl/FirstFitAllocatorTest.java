@@ -22,6 +22,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.cloud.agent.manager.allocator.HostAllocator;
+import com.cloud.capacity.Capacity;
 import com.cloud.capacity.CapacityManager;
 import com.cloud.capacity.CapacityVO;
 import com.cloud.deploy.DeploymentPlan;
@@ -582,6 +583,60 @@ public class FirstFitAllocatorTest {
         0.9515625, hostByCombinedCapacity.get(2L), TOLERANCE);
     Assert.assertEquals("Host 1 combined capacity should match expected value after change",
         0.9484375, hostByCombinedCapacity.get(1L), TOLERANCE);
+  }
+
+  @Test
+  public void zeroPoolHostNeverChosenForCpuOnly() {
+    HostVO zeroPoolHost = mock(HostVO.class);
+    when(zeroPoolHost.getId()).thenReturn(7L);
+    List<Host> inputHosts = Arrays.asList(zeroPoolHost, host1);
+    when(capacityMgr.hasNoComputeCapacity(zeroPoolHost)).thenReturn(true);
+    when(capacityMgr.hasNoComputeCapacity(host1)).thenReturn(false);
+    Mockito.lenient().when(avoid.shouldAvoid(zeroPoolHost)).thenReturn(false);
+    Mockito.lenient().when(capacityMgr.checkIfHostHasCpuCapabilityAndCapacity(zeroPoolHost, offering, true)).thenReturn(new Pair<>(true, true));
+    Mockito.lenient().when(resourceManagerMock.isGPUDeviceAvailable(offering, zeroPoolHost, virtualMachineProfile.getId())).thenReturn(true);
+    when(avoid.shouldAvoid(host1)).thenReturn(false);
+    when(capacityMgr.checkIfHostReachMaxGuestLimit(Mockito.any(Host.class))).thenReturn(false);
+    when(capacityMgr.checkIfHostHasCpuCapabilityAndCapacity(host1, offering, true)).thenReturn(new Pair<>(true, true));
+    when(resourceManagerMock.isGPUDeviceAvailable(offering, host1, virtualMachineProfile.getId())).thenReturn(true);
+
+    List<Host> result = firstFitAllocatorSpy.allocateTo(virtualMachineProfile, deploymentPlan, offering, null, avoid, inputHosts, 2, true, account);
+
+    Assert.assertEquals(List.of(host1), result);
+    Mockito.verify(avoid).addHost(7L);
+  }
+
+  @Test
+  public void zeroPoolHostStillTakesGpuVm() {
+    HostVO zeroPoolHost = mock(HostVO.class);
+    ServiceOffering gpuOffering = mock(ServiceOffering.class);
+    when(gpuOffering.getVgpuProfileId()).thenReturn(1L);
+    when(avoid.shouldAvoid(zeroPoolHost)).thenReturn(false);
+    when(capacityMgr.checkIfHostReachMaxGuestLimit(zeroPoolHost)).thenReturn(false);
+    when(resourceManagerMock.isGPUDeviceAvailable(gpuOffering, zeroPoolHost, virtualMachineProfile.getId())).thenReturn(true);
+    when(capacityMgr.checkIfHostHasCpuCapabilityAndCapacity(zeroPoolHost, gpuOffering, true)).thenReturn(new Pair<>(true, true));
+
+    List<Host> result = firstFitAllocatorSpy.allocateTo(virtualMachineProfile, deploymentPlan, gpuOffering, null, avoid, Arrays.asList(zeroPoolHost), 1, true, account);
+
+    Assert.assertEquals(List.of(zeroPoolHost), result);
+  }
+
+  @Test
+  public void zeroPoolHostOrderingNoNaN() {
+    List<CapacityVO> capacities = List.of(
+        new CapacityVO(7L, dcId, podId, clusterId, 0L, 0L, Capacity.CAPACITY_TYPE_CPU),
+        new CapacityVO(7L, dcId, podId, clusterId, 0L, 0L, Capacity.CAPACITY_TYPE_MEMORY),
+        new CapacityVO(8L, dcId, podId, clusterId, 24000L, 32000L, Capacity.CAPACITY_TYPE_CPU),
+        new CapacityVO(8L, dcId, podId, clusterId, 6442450944L, 8589934592L, Capacity.CAPACITY_TYPE_MEMORY));
+
+    Map<Long, Double> hostByCombinedCapacity = FirstFitAllocator.getHostByCombinedCapacities(capacities, 0.5);
+
+    Assert.assertEquals(List.of(8L, 7L), new ArrayList<>(hostByCombinedCapacity.keySet()));
+    for (Double value : hostByCombinedCapacity.values()) {
+      Assert.assertFalse(value.isNaN());
+    }
+    Assert.assertEquals(0.25, hostByCombinedCapacity.get(8L), TOLERANCE);
+    Assert.assertEquals(0.0, hostByCombinedCapacity.get(7L), TOLERANCE);
   }
 
   List<CapacityVO> getHostCapacities() {

@@ -150,6 +150,7 @@ import com.cloud.vm.dao.VMInstanceDao;
 public class ResourceLimitManagerImpl extends ManagerBase implements ResourceLimitService, Configurable {
 
     public static final String CHECKING_IF = "Checking if {}";
+    private static final String STORAGE_QUOTA_TYPE_NAME = ResourceType.primary_storage.getName() + " + " + ResourceType.secondary_storage.getName();
     @Inject
     private AccountManager _accountMgr;
     @Inject
@@ -526,9 +527,12 @@ public class ResourceLimitManagerImpl extends ManagerBase implements ResourceLim
             DomainVO domain = _domainDao.findById(domainId);
             // no limit check if it is ROOT domain
             if (domainId != Domain.ROOT_DOMAIN) {
-                long domainResourceLimit = findCorrectResourceLimitForDomain(domain, type, tag);
-                long currentDomainResourceCount = _resourceCountDao.getResourceCount(domainId, ResourceOwnerType.Domain, type, tag);
-                long currentResourceReservation = reservationDao.getDomainReservation(domainId, type, tag);
+                boolean storageQuota = isCombinedStorageCheck(type, tag, ConfigKey.Scope.Domain, domainId);
+                long domainResourceLimit = findCorrectResourceLimitForDomain(domain, storageQuota ? ResourceType.primary_storage : type, tag);
+                long currentDomainResourceCount = storageQuota ? getStorageQuotaCount(domainId, ResourceOwnerType.Domain)
+                        : _resourceCountDao.getResourceCount(domainId, ResourceOwnerType.Domain, type, tag);
+                long currentResourceReservation = storageQuota ? getStorageQuotaReservation(domainId, ResourceOwnerType.Domain)
+                        : reservationDao.getDomainReservation(domainId, type, tag);
                 long requestedDomainResourceCount = currentDomainResourceCount + currentResourceReservation + numResources;
 
                 String convDomainResourceLimit = String.valueOf(domainResourceLimit);
@@ -543,7 +547,7 @@ public class ResourceLimitManagerImpl extends ManagerBase implements ResourceLim
                     convNumResources = toHumanReadableSize(numResources);
                 }
 
-                String typeString = type.getName();
+                String typeString = storageQuota ? STORAGE_QUOTA_TYPE_NAME : type.getName();
                 if (StringUtils.isNotEmpty(tag)) {
                     typeString = String.format("%s (tag: %s)", typeString, tag);
                 }
@@ -569,9 +573,12 @@ public class ResourceLimitManagerImpl extends ManagerBase implements ResourceLim
 
     protected void checkAccountResourceLimit(final Account account, final Project project, final ResourceType type, String tag, long numResources) throws ResourceAllocationException {
         // Check account limits
-        long accountResourceLimit = findCorrectResourceLimitForAccount(account, type, tag);
-        long currentResourceCount = _resourceCountDao.getResourceCount(account.getId(), ResourceOwnerType.Account, type, tag);
-        long currentResourceReservation = reservationDao.getAccountReservation(account.getId(), type, tag);
+        boolean storageQuota = isCombinedStorageCheck(type, tag, ConfigKey.Scope.Account, account.getId());
+        long accountResourceLimit = findCorrectResourceLimitForAccount(account, storageQuota ? ResourceType.primary_storage : type, tag);
+        long currentResourceCount = storageQuota ? getStorageQuotaCount(account.getId(), ResourceOwnerType.Account)
+                : _resourceCountDao.getResourceCount(account.getId(), ResourceOwnerType.Account, type, tag);
+        long currentResourceReservation = storageQuota ? getStorageQuotaReservation(account.getId(), ResourceOwnerType.Account)
+                : reservationDao.getAccountReservation(account.getId(), type, tag);
         long requestedResourceCount = currentResourceCount + currentResourceReservation + numResources;
 
         String convertedAccountResourceLimit = String.valueOf(accountResourceLimit);
@@ -589,7 +596,7 @@ public class ResourceLimitManagerImpl extends ManagerBase implements ResourceLim
         String messageSuffix = String.format(
                 " amount of resources of Type = '%s', tag = '%s' for %s in Domain Id = %s is exceeded: " +
                 "Account Resource Limit = %s, Current Account Resource Amount = %s, Current Account Resource Reservation = %s, Requested Resource Amount = %s.",
-                type, tag, (project == null ? "Account Name = " + account.getAccountName() : "Project Name = " + project.getName()), account.getDomainId(),
+                storageQuota ? STORAGE_QUOTA_TYPE_NAME : type, tag, (project == null ? "Account Name = " + account.getAccountName() : "Project Name = " + project.getName()), account.getDomainId(),
                 convertedAccountResourceLimit, convertedCurrentResourceCount, convertedCurrentResourceReservation, convertedNumResources
         );
 
@@ -601,6 +608,34 @@ public class ResourceLimitManagerImpl extends ManagerBase implements ResourceLim
             logger.error(message, e);
             throw e;
         }
+    }
+
+    protected boolean isCombinedStorageCheck(ResourceType type, String tag, ConfigKey.Scope ownerScope, long ownerId) {
+        return ResourceLimitService.isStorageQuotaType(type, tag) && ResourceLimitStorageCombined.valueInScope(ownerScope, ownerId);
+    }
+
+    protected long getStorageQuotaCount(long ownerId, ResourceOwnerType ownerType) {
+        return _resourceCountDao.getResourceCount(ownerId, ownerType, ResourceType.primary_storage, null)
+                + _resourceCountDao.getResourceCount(ownerId, ownerType, ResourceType.secondary_storage, null);
+    }
+
+    protected long getStorageQuotaReservation(long ownerId, ResourceOwnerType ownerType) {
+        if (ownerType == ResourceOwnerType.Account) {
+            return reservationDao.getAccountReservation(ownerId, ResourceType.primary_storage, null)
+                    + reservationDao.getAccountReservation(ownerId, ResourceType.secondary_storage, null);
+        }
+        return reservationDao.getDomainReservation(ownerId, ResourceType.primary_storage, null)
+                + reservationDao.getDomainReservation(ownerId, ResourceType.secondary_storage, null);
+    }
+
+    private long getStorageUsage(long ownerId, ResourceOwnerType ownerType, boolean combined) {
+        if (combined) {
+            return getStorageQuotaCount(ownerId, ownerType) + getStorageQuotaReservation(ownerId, ownerType);
+        }
+        long reservation = ownerType == ResourceOwnerType.Account
+                ? reservationDao.getAccountReservation(ownerId, ResourceType.primary_storage, null)
+                : reservationDao.getDomainReservation(ownerId, ResourceType.primary_storage, null);
+        return _resourceCountDao.getResourceCount(ownerId, ownerType, ResourceType.primary_storage, null) + reservation;
     }
 
     protected List<ResourceCountVO> lockAccountAndOwnerDomainRows(long accountId, final ResourceType type, String tag) {
@@ -626,6 +661,13 @@ public class ResourceLimitManagerImpl extends ManagerBase implements ResourceLim
 
     @Override
     public long findCorrectResourceLimitForAccountAndDomain(Account account, Domain domain, ResourceType type, String tag) {
+        if (isCombinedStorageCheck(type, tag, ConfigKey.Scope.Account, account.getId())) {
+            long remaining = getRemainingStorageQuota(account);
+            if (remaining == Resource.RESOURCE_UNLIMITED) {
+                return remaining;
+            }
+            return remaining + _resourceCountDao.getResourceCount(account.getId(), ResourceOwnerType.Account, type, null);
+        }
         long maxSecondaryStorageForAccount = findCorrectResourceLimitForAccount(account, type, tag);
         long maxSecondaryStorageForDomain = findCorrectResourceLimitForDomain(domain, type, tag);
 
@@ -634,6 +676,39 @@ public class ResourceLimitManagerImpl extends ManagerBase implements ResourceLim
         }
 
         return Math.min(maxSecondaryStorageForDomain, maxSecondaryStorageForAccount);
+    }
+
+    @Override
+    public long getRemainingStorageQuota(Account account) {
+        if (_accountMgr.isRootAdmin(account.getId())) {
+            return Resource.RESOURCE_UNLIMITED;
+        }
+        Long remaining = null;
+        long accountLimit = findCorrectResourceLimitForAccount(account, ResourceType.primary_storage, null);
+        if (accountLimit != Resource.RESOURCE_UNLIMITED) {
+            remaining = accountLimit - getStorageUsage(account.getId(), ResourceOwnerType.Account,
+                    ResourceLimitStorageCombined.valueInScope(ConfigKey.Scope.Account, account.getId()));
+        }
+        Long domainId = account.getDomainId();
+        if (account.getType() == Account.Type.PROJECT) {
+            Project project = _projectDao.findByProjectAccountId(account.getId());
+            if (project != null) {
+                domainId = project.getDomainId();
+            }
+        }
+        while (domainId != null) {
+            DomainVO domain = _domainDao.findById(domainId);
+            if (domainId != Domain.ROOT_DOMAIN) {
+                long domainLimit = findCorrectResourceLimitForDomain(domain, ResourceType.primary_storage, null);
+                if (domainLimit != Resource.RESOURCE_UNLIMITED) {
+                    long domainRemaining = domainLimit - getStorageUsage(domainId, ResourceOwnerType.Domain,
+                            ResourceLimitStorageCombined.valueInScope(ConfigKey.Scope.Domain, domainId));
+                    remaining = remaining == null ? domainRemaining : Math.min(remaining, domainRemaining);
+                }
+            }
+            domainId = domain.getParent();
+        }
+        return remaining == null ? Resource.RESOURCE_UNLIMITED : Math.max(0, remaining);
     }
 
     @Override
@@ -673,7 +748,12 @@ public class ResourceLimitManagerImpl extends ManagerBase implements ResourceLim
             @Override
             public void doInTransactionWithoutResult(TransactionStatus status) throws ResourceAllocationException {
                 // Lock all rows first so nobody else can read it
-                lockAccountAndOwnerDomainRows(account.getId(), type, tag);
+                if (ResourceLimitService.isStorageQuotaType(type, tag)) {
+                    lockAccountAndOwnerDomainRows(account.getId(), ResourceType.primary_storage, null);
+                    lockAccountAndOwnerDomainRows(account.getId(), ResourceType.secondary_storage, null);
+                } else {
+                    lockAccountAndOwnerDomainRows(account.getId(), type, tag);
+                }
                 // Check account limits
                 checkAccountResourceLimit(account, projectFinal, type, tag, numResources);
                 // check all domains in the account's domain hierarchy
@@ -2255,6 +2335,7 @@ public class ResourceLimitManagerImpl extends ManagerBase implements ResourceLim
                 MaxProjectSecondaryStorage,
                 ResourceLimitHostTags,
                 ResourceLimitStorageTags,
+                ResourceLimitStorageCombined,
                 DefaultMaxAccountProjects,
                 DefaultMaxDomainProjects,
                 DefaultMaxAccountGpus,

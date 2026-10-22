@@ -46,6 +46,7 @@ import com.cloud.api.query.dao.NetworkOfferingJoinDao;
 import com.cloud.api.query.dao.ServiceOfferingJoinDao;
 import com.cloud.api.query.dao.VpcOfferingJoinDao;
 import com.cloud.configuration.ConfigurationManager;
+import com.cloud.configuration.Resource;
 import com.cloud.configuration.Resource.ResourceOwnerType;
 import com.cloud.configuration.ResourceLimit;
 import com.cloud.configuration.dao.ResourceCountDao;
@@ -58,6 +59,7 @@ import com.cloud.domain.dao.DomainDao;
 import com.cloud.domain.dao.DomainDetailsDao;
 import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.PermissionDeniedException;
+import com.cloud.exception.ResourceAllocationException;
 import com.cloud.network.dao.NetworkDomainDao;
 import com.cloud.projects.ProjectManager;
 import com.cloud.projects.dao.ProjectDao;
@@ -113,6 +115,8 @@ public class DomainManagerImplTest {
     AnnotationDao annotationDao;
     @Mock
     RoutedIpv4Manager routedIpv4Manager;
+    @Mock
+    ResourceLimitService resourceLimitService;
 
     @Spy
     @InjectMocks
@@ -416,4 +420,23 @@ public class DomainManagerImplTest {
         }
     }
 
+    @Test
+    public void domainMoveChecksStorageTogetherAgainstStorageQuota() throws ResourceAllocationException {
+        long gib = 1024L * 1024L * 1024L;
+        DomainVO domainToBeMoved = Mockito.mock(DomainVO.class);
+        Mockito.when(domainToBeMoved.getId()).thenReturn(10L);
+        DomainVO newParentDomain = Mockito.mock(DomainVO.class);
+        Mockito.when(newParentDomain.getId()).thenReturn(11L);
+        Mockito.when(_resourceCountDao.getResourceCount(10L, ResourceOwnerType.Domain, Resource.ResourceType.primary_storage, null)).thenReturn(5 * gib);
+        Mockito.when(_resourceCountDao.getResourceCount(10L, ResourceOwnerType.Domain, Resource.ResourceType.secondary_storage, null)).thenReturn(5 * gib);
+        Mockito.when(_resourceCountDao.getResourceCount(11L, ResourceOwnerType.Domain, Resource.ResourceType.primary_storage, null)).thenReturn(5 * gib);
+        Mockito.when(_resourceCountDao.getResourceCount(11L, ResourceOwnerType.Domain, Resource.ResourceType.secondary_storage, null)).thenReturn(4 * gib, 6 * gib);
+        Mockito.when(resourceLimitService.findCorrectResourceLimitForDomain(newParentDomain, Resource.ResourceType.primary_storage, null)).thenReturn(20 * gib);
+        Mockito.lenient().when(resourceLimitService.findCorrectResourceLimitForDomain(newParentDomain, Resource.ResourceType.secondary_storage, null)).thenReturn(0L);
+
+        domainManager.validateNewParentDomainResourceLimit(domainToBeMoved, newParentDomain, Resource.ResourceType.secondary_storage, null);
+        domainManager.validateNewParentDomainResourceLimit(domainToBeMoved, newParentDomain, Resource.ResourceType.primary_storage, null);
+        Assert.assertThrows(ResourceAllocationException.class,
+                () -> domainManager.validateNewParentDomainResourceLimit(domainToBeMoved, newParentDomain, Resource.ResourceType.primary_storage, null));
+    }
 }

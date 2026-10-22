@@ -37,7 +37,9 @@ import com.cloud.exception.VirtualMachineMigrationException;
 import com.cloud.hypervisor.Hypervisor.HypervisorType;
 import com.cloud.offering.ServiceOffering;
 import com.cloud.service.ServiceOfferingVO;
+import com.cloud.storage.DiskOfferingVO;
 import com.cloud.storage.Storage.StoragePoolType;
+import com.cloud.storage.VMTemplateVO;
 import com.cloud.template.VirtualMachineTemplate;
 import com.cloud.uservm.UserVm;
 import com.cloud.utils.Pair;
@@ -232,4 +234,16 @@ public interface UserVmManager extends UserVmService {
     boolean isVMPartOfAnyCKSCluster(VMInstanceVO vm);
 
     UserVm allocateVMForValidation(long backupId, HypervisorType hypervisor) throws InsufficientCapacityException, ResourceAllocationException, ResourceUnavailableException;
+
+    /**
+     * @throws com.cloud.exception.InvalidParameterValueException when a user Instance without a vGPU profile would get a vCPU
+     *         count that is not a multiple of the domain's {@link #VmPoolVcpuStep}
+     */
+    void validatePoolVcpuStep(VirtualMachine.Type vmType, ServiceOffering offering, Integer vcpus, long domainId);
+
+    /**
+     * @return the size in bytes of the root volume a deployment from the template creates; sets the root disk size in
+     *         the custom parameters when the root disk offering fixes it
+     */
+    long configureCustomRootDiskSize(Map<String, String> customParameters, VMTemplateVO template, HypervisorType hypervisorType, DiskOfferingVO rootDiskOffering);
 }

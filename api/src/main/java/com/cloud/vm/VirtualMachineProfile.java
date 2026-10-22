@@ -79,6 +79,8 @@ public interface VirtualMachineProfile {
         public static final Param PreserveNics = new Param("PreserveNics");
         public static final Param ConsiderLastHost = new Param("ConsiderLastHost");
         public static final Param ReturnAfterVolumePrepare = new Param("ReturnAfterVolumePrepare");
+        /** The planner may choose a host that does not hold the VM's ready local volumes; the start itself never moves them. */
+        public static final Param AllowVolumeMove = new Param("AllowVolumeMove");
 
         private String name;
 

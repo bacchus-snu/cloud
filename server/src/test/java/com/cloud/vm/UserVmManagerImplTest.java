@@ -19,6 +19,7 @@ package com.cloud.vm;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -67,6 +68,7 @@ import org.apache.cloudstack.api.ApiCommandResourceType;
 import org.apache.cloudstack.api.ApiConstants;
 import org.apache.cloudstack.api.BaseCmd.HTTPMethod;
 import org.apache.cloudstack.api.command.admin.vm.AssignVMCmd;
+import org.apache.cloudstack.api.command.admin.vm.DeployVMCmdByAdmin;
 import org.apache.cloudstack.api.command.user.vm.CreateVMFromBackupCmd;
 import org.apache.cloudstack.api.command.user.vm.DeployVMCmd;
 import org.apache.cloudstack.api.command.user.vm.DeployVnfApplianceCmd;
@@ -74,6 +76,7 @@ import org.apache.cloudstack.api.command.user.vm.DestroyVMCmd;
 import org.apache.cloudstack.api.command.user.vm.ResetVMSSHKeyCmd;
 import org.apache.cloudstack.api.command.user.vm.ResetVMUserDataCmd;
 import org.apache.cloudstack.api.command.user.vm.RestoreVMCmd;
+import org.apache.cloudstack.api.command.user.vm.StartVMCmd;
 import org.apache.cloudstack.api.command.user.vm.UpdateVMCmd;
 import org.apache.cloudstack.api.command.user.vm.UpdateVmNicCmd;
 import org.apache.cloudstack.api.command.user.volume.ResizeVolumeCmd;
@@ -84,6 +87,7 @@ import org.apache.cloudstack.backup.dao.BackupDao;
 import org.apache.cloudstack.backup.dao.BackupScheduleDao;
 import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.engine.orchestration.service.NetworkOrchestrationService;
+import org.apache.cloudstack.engine.orchestration.service.VolumeOrchestrationService;
 import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStore;
 import org.apache.cloudstack.engine.subsystem.api.storage.Scope;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeDataFactory;
@@ -103,6 +107,8 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedConstruction;
@@ -112,6 +118,7 @@ import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnitRunner;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import com.cloud.alert.AlertManager;
 import com.cloud.api.query.dao.ServiceOfferingJoinDao;
 import com.cloud.api.query.vo.ServiceOfferingJoinVO;
 import com.cloud.configuration.Resource;
@@ -123,6 +130,9 @@ import com.cloud.deploy.DataCenterDeployment;
 import com.cloud.deploy.DeployDestination;
 import com.cloud.deploy.DeploymentPlanner;
 import com.cloud.deploy.DeploymentPlanningManager;
+import com.cloud.deploy.PlacementRequest;
+import com.cloud.deploy.PlacementService;
+import com.cloud.deploy.PlacementVerdict;
 import com.cloud.domain.Domain;
 import com.cloud.domain.DomainVO;
 import com.cloud.domain.dao.DomainDao;
@@ -135,6 +145,7 @@ import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.PermissionDeniedException;
 import com.cloud.exception.ResourceAllocationException;
 import com.cloud.exception.ResourceUnavailableException;
+import com.cloud.exception.VolumeMoveRequiredException;
 import com.cloud.host.Host;
 import com.cloud.host.HostVO;
 import com.cloud.host.dao.HostDao;
@@ -219,6 +230,15 @@ public class UserVmManagerImplTest {
     @Spy
     @InjectMocks
     private UserVmManagerImpl userVmManagerImpl = new UserVmManagerImpl();
+
+    @Mock
+    private PlacementService placementService;
+
+    @Mock
+    private VolumeOrchestrationService volumeOrchestrationService;
+
+    @Mock
+    private AlertManager alertManager;
 
     @Mock
     private ServiceOfferingDao _serviceOfferingDao;
@@ -4031,14 +4051,14 @@ public class UserVmManagerImplTest {
         when(entityManager.findById(DataCenter.class, zoneId)).thenReturn(_dcMock);
         when(entityManager.findById(ServiceOffering.class, serviceOfferingId)).thenReturn(serviceOffering);
         when(volumeDataFactory.getVolume(volumeId)).thenReturn(volumeInfo);
-        // Volume lives on HOST-scoped (local) storage
+        // Volume lives on cluster-scoped storage
         when(volumeInfo.getDataStore()).thenReturn(primaryDataStore);
         when(primaryDataStore.getScope()).thenReturn(scopeMock);
-        when(scopeMock.getScopeType()).thenReturn(ScopeType.HOST);
+        when(scopeMock.getScopeType()).thenReturn(ScopeType.CLUSTER);
 
         InvalidParameterValueException ex = assertThrows(InvalidParameterValueException.class,
                 () -> userVmManagerImpl.createVirtualMachine(deployVMCmd));
-        assertEquals("Deployment of virtual machine is supported only for Zone-wide storage pools", ex.getMessage());
+        assertEquals("Deployment of virtual machine is supported only for Zone-wide and host-local storage pools", ex.getMessage());
     }
 
     @Test
@@ -4054,7 +4074,7 @@ public class UserVmManagerImplTest {
 
         InvalidParameterValueException ex = assertThrows(InvalidParameterValueException.class,
                 () -> userVmManagerImpl.createVirtualMachine(deployVMCmd));
-        assertEquals("Deployment of virtual machine is supported only for Zone-wide storage pools", ex.getMessage());
+        assertEquals("Deployment of virtual machine is supported only for Zone-wide and host-local storage pools", ex.getMessage());
     }
 
     @Test
@@ -4669,5 +4689,265 @@ public class UserVmManagerImplTest {
         } finally {
             ConfigKey.init(null);
         }
+    }
+
+    private static final long MOVING_VM_ID = 4242L;
+
+    private UserVmVO stoppedKvmVm(VirtualMachine.State state) {
+        UserVmVO vm = mock(UserVmVO.class);
+        lenient().when(vm.getId()).thenReturn(MOVING_VM_ID);
+        lenient().when(vm.getUuid()).thenReturn("moving-vm");
+        lenient().when(vm.getAccountId()).thenReturn(5L);
+        lenient().when(vm.getDataCenterId()).thenReturn(1L);
+        lenient().when(vm.getServiceOfferingId()).thenReturn(20L);
+        lenient().when(vm.getTemplateId()).thenReturn(30L);
+        lenient().when(vm.getState()).thenReturn(state);
+        lenient().when(vm.getHypervisorType()).thenReturn(Hypervisor.HypervisorType.KVM);
+        AccountVO vmOwner = mock(AccountVO.class);
+        lenient().when(vmOwner.getState()).thenReturn(Account.State.ENABLED);
+        lenient().when(accountDao.findById(5L)).thenReturn(vmOwner);
+        return vm;
+    }
+
+    private PlacementVerdict approvedMoveToHostB() {
+        List<PlacementVerdict.MovedVolume> volumes = Arrays.asList(new PlacementVerdict.MovedVolume(201L, "root-uuid", "ROOT-4242", 10L << 30, 4L << 30),
+                new PlacementVerdict.MovedVolume(202L, "data-uuid", "DATA-202", 50L << 30, 20L << 30));
+        HostVO hostB = mock(HostVO.class);
+        lenient().when(hostB.getId()).thenReturn(2L);
+        lenient().when(hostB.getDataCenterId()).thenReturn(1L);
+        lenient().when(hostB.getPodId()).thenReturn(3L);
+        lenient().when(hostB.getClusterId()).thenReturn(4L);
+        lenient().when(hostB.getName()).thenReturn("hostB");
+        lenient().when(hostDao.findById(2L)).thenReturn(hostB);
+        return PlacementVerdict.move(volumes, 300, true, "approval", 2L, 12L);
+    }
+
+    private StartVMCmd startCmd(boolean migrateVolumes, String token) {
+        StartVMCmd cmd = mock(StartVMCmd.class);
+        lenient().when(cmd.getId()).thenReturn(MOVING_VM_ID);
+        lenient().when(cmd.isMigrateVolumes()).thenReturn(migrateVolumes);
+        lenient().when(cmd.getPlacementToken()).thenReturn(token);
+        lenient().when(cmd.getPodId()).thenReturn(null);
+        lenient().when(cmd.getClusterId()).thenReturn(null);
+        lenient().when(cmd.getHostId()).thenReturn(null);
+        lenient().when(cmd.getBootIntoSetup()).thenReturn(null);
+        return cmd;
+    }
+
+    @Test
+    public void approvedStartRelocatesAsOwnQueueStepThenStartsPinned() throws Exception {
+        UserVmVO vm = stoppedKvmVm(VirtualMachine.State.Stopped);
+        when(userVmDao.findById(MOVING_VM_ID)).thenReturn(vm);
+        PlacementVerdict move = approvedMoveToHostB();
+        when(placementService.approvedMove(any(PlacementRequest.class), eq(true), eq("approval"))).thenReturn(move);
+        doReturn(new Pair<>(vm, new HashMap<>())).when(userVmManagerImpl).startVirtualMachine(eq(MOVING_VM_ID), isNull(), isNull(), isNull(),
+                any(DataCenterDeployment.class), anyMap(), nullable(String.class), eq(false), eq(false));
+
+        userVmManagerImpl.startVirtualMachine(startCmd(true, "approval"));
+
+        ArgumentCaptor<PlacementRequest> request = ArgumentCaptor.forClass(PlacementRequest.class);
+        ArgumentCaptor<DataCenterDeployment> plan = ArgumentCaptor.forClass(DataCenterDeployment.class);
+        InOrder order = Mockito.inOrder(placementService, virtualMachineManager, userVmManagerImpl);
+        order.verify(placementService).approvedMove(request.capture(), eq(true), eq("approval"));
+        order.verify(virtualMachineManager).relocateStoppedVm("moving-vm", Arrays.asList(201L, 202L), 12L);
+        order.verify(userVmManagerImpl).startVirtualMachine(eq(MOVING_VM_ID), isNull(), isNull(), isNull(), plan.capture(), anyMap(), nullable(String.class),
+                eq(false), eq(false));
+        assertEquals(PlacementRequest.Kind.START, request.getValue().getKind());
+        assertEquals(Long.valueOf(MOVING_VM_ID), request.getValue().getApprovalInstanceId());
+        assertEquals("the start is pinned to the host the volumes moved to", Long.valueOf(2L), plan.getValue().getHostId());
+        assertEquals(Long.valueOf(4L), plan.getValue().getClusterId());
+    }
+
+    @Test
+    public void startWithoutMoveStartsAsBefore() throws Exception {
+        UserVmVO vm = stoppedKvmVm(VirtualMachine.State.Stopped);
+        when(userVmDao.findById(MOVING_VM_ID)).thenReturn(vm);
+        when(placementService.approvedMove(any(PlacementRequest.class), eq(false), isNull())).thenReturn(null);
+        doReturn(new Pair<>(vm, new HashMap<>())).when(userVmManagerImpl).startVirtualMachine(eq(MOVING_VM_ID), isNull(), isNull(), isNull(), anyMap(),
+                nullable(String.class), eq(false));
+
+        userVmManagerImpl.startVirtualMachine(startCmd(false, null));
+
+        verify(virtualMachineManager, never()).relocateStoppedVm(anyString(), anyList(), anyLong());
+    }
+
+    @Test
+    public void relocateFailureLeavesVmStoppedVolumesUnchanged() throws Exception {
+        UserVmVO vm = stoppedKvmVm(VirtualMachine.State.Stopped);
+        when(userVmDao.findById(MOVING_VM_ID)).thenReturn(vm);
+        PlacementVerdict approved = approvedMoveToHostB();
+        when(placementService.approvedMove(any(PlacementRequest.class), eq(true), eq("approval"))).thenReturn(approved);
+        doThrow(new CloudRuntimeException("Host hostB does not have the capacity to start Instance moving-vm.")).when(virtualMachineManager)
+                .relocateStoppedVm("moving-vm", Arrays.asList(201L, 202L), 12L);
+
+        CloudRuntimeException e = assertThrows(CloudRuntimeException.class, () -> userVmManagerImpl.startVirtualMachine(startCmd(true, "approval")));
+
+        assertTrue(e.getMessage(), e.getMessage().contains("failed, and nothing was moved"));
+        assertFalse("a user is not told the hosts", e.getMessage().contains("hostB"));
+        verify(userVmManagerImpl, never()).startVirtualMachine(Mockito.anyLong(), any(), any(), any(), any(DataCenterDeployment.class), anyMap(), any(),
+                Mockito.anyBoolean(), Mockito.anyBoolean());
+    }
+
+    @Test
+    public void startFailureAfterRelocateLeavesVmStoppedOnDestination() throws Exception {
+        UserVmVO vm = stoppedKvmVm(VirtualMachine.State.Stopped);
+        when(userVmDao.findById(MOVING_VM_ID)).thenReturn(vm);
+        PlacementVerdict approved = approvedMoveToHostB();
+        when(placementService.approvedMove(any(PlacementRequest.class), eq(true), eq("approval"))).thenReturn(approved);
+        doThrow(new InsufficientServerCapacityException("Unable to create a deployment for VM instance", DataCenter.class, 1L)).when(userVmManagerImpl)
+                .startVirtualMachine(eq(MOVING_VM_ID), isNull(), isNull(), isNull(), any(DataCenterDeployment.class), anyMap(), nullable(String.class), eq(false),
+                        eq(false));
+
+        InsufficientServerCapacityException e = assertThrows(InsufficientServerCapacityException.class,
+                () -> userVmManagerImpl.startVirtualMachine(startCmd(true, "approval")));
+
+        assertTrue(e.getMessage(), e.getMessage().contains("were moved to another host and are kept there, but the Instance did not start"));
+        assertTrue(e.getMessage(), e.getMessage().contains("Unable to create a deployment"));
+        verify(virtualMachineManager, times(1)).relocateStoppedVm("moving-vm", Arrays.asList(201L, 202L), 12L);
+        verifyNoMoreInteractions(virtualMachineManager);
+    }
+
+    private DeployVMCmd deployFromVolumeCmd() {
+        DeployVMCmd cmd = mock(DeployVMCmd.class);
+        lenient().when(cmd.getEntityId()).thenReturn(MOVING_VM_ID);
+        lenient().when(cmd.getStartVm()).thenReturn(true);
+        lenient().when(cmd.getVolumeId()).thenReturn(201L);
+        lenient().when(cmd.isMigrateVolumes()).thenReturn(true);
+        lenient().when(cmd.getPlacementToken()).thenReturn("approval");
+        lenient().when(cmd.getDataDiskTemplateToDiskOfferingMap()).thenReturn(new HashMap<>());
+        lenient().when(cmd.getHostId()).thenReturn(null);
+        lenient().when(cmd.getBootIntoSetup()).thenReturn(null);
+        return cmd;
+    }
+
+    @Test
+    public void deployFromVolumeWithTokenRelocatesThenDeploys() throws Exception {
+        UserVmVO stopped = stoppedKvmVm(VirtualMachine.State.Stopped);
+        UserVmVO running = stoppedKvmVm(VirtualMachine.State.Running);
+        when(userVmDao.findById(MOVING_VM_ID)).thenReturn(stopped, running);
+        PlacementVerdict approved = approvedMoveToHostB();
+        when(placementService.approvedMove(any(PlacementRequest.class), eq(true), eq("approval"))).thenReturn(approved);
+        doReturn(new Pair<>(running, new HashMap<>())).when(userVmManagerImpl).startVirtualMachine(eq(MOVING_VM_ID), isNull(), isNull(), isNull(),
+                any(DataCenterDeployment.class), anyMap(), nullable(String.class), eq(false), eq(false));
+        VMTemplateVO template = mock(VMTemplateVO.class);
+        when(templateDao.findByIdIncludingRemoved(30L)).thenReturn(template);
+
+        userVmManagerImpl.startVirtualMachine(deployFromVolumeCmd());
+
+        ArgumentCaptor<PlacementRequest> request = ArgumentCaptor.forClass(PlacementRequest.class);
+        InOrder order = Mockito.inOrder(placementService, virtualMachineManager, userVmManagerImpl);
+        order.verify(placementService).approvedMove(request.capture(), eq(true), eq("approval"));
+        order.verify(virtualMachineManager).relocateStoppedVm("moving-vm", Arrays.asList(201L, 202L), 12L);
+        order.verify(userVmManagerImpl).startVirtualMachine(eq(MOVING_VM_ID), isNull(), isNull(), isNull(), any(DataCenterDeployment.class), anyMap(),
+                nullable(String.class), eq(false), eq(false));
+        assertNull("the move was approved before the Instance existed", request.getValue().getApprovalInstanceId());
+        verify(volumeDaoMock, never()).detachVolume(Mockito.anyLong());
+    }
+
+    @Test
+    public void failedDeployFromVolumeKeepsTheVolume() throws Exception {
+        UserVmVO stopped = stoppedKvmVm(VirtualMachine.State.Stopped);
+        when(userVmDao.findById(MOVING_VM_ID)).thenReturn(stopped);
+        PlacementVerdict verdict = approvedMoveToHostB();
+        when(placementService.approvedMove(any(PlacementRequest.class), eq(true), eq("approval")))
+                .thenThrow(new VolumeMoveRequiredException("The approved move has expired", 1L, verdict));
+        VolumeVO kept = mock(VolumeVO.class);
+        lenient().when(kept.getId()).thenReturn(201L);
+        lenient().when(kept.getState()).thenReturn(Volume.State.Ready);
+        VolumeVO data = mock(VolumeVO.class);
+        lenient().when(data.getId()).thenReturn(203L);
+        lenient().when(data.getState()).thenReturn(Volume.State.Allocated);
+        when(volumeDaoMock.findUsableVolumesForInstance(MOVING_VM_ID)).thenReturn(Arrays.asList(kept, data));
+
+        assertThrows(VolumeMoveRequiredException.class, () -> userVmManagerImpl.startVirtualMachine(deployFromVolumeCmd()));
+
+        verify(volumeDaoMock).detachVolume(201L);
+        verify(volumeOrchestrationService, never()).destroyVolume(kept);
+        verify(volumeOrchestrationService).destroyVolume(data);
+        verify(virtualMachineManager, never()).relocateStoppedVm(anyString(), anyList(), anyLong());
+    }
+
+    @Test
+    public void startRefusesItsOwnParametersBeforeAnyVolumeMoves() throws Exception {
+        UserVmVO vm = stoppedKvmVm(VirtualMachine.State.Stopped);
+        when(userVmDao.findById(MOVING_VM_ID)).thenReturn(vm);
+        PlacementVerdict approved = approvedMoveToHostB();
+        lenient().when(placementService.approvedMove(any(PlacementRequest.class), eq(true), eq("approval"))).thenReturn(approved);
+        StartVMCmd cmd = startCmd(true, "approval");
+        when(cmd.getBootIntoSetup()).thenReturn(true);
+
+        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> userVmManagerImpl.startVirtualMachine(cmd));
+
+        assertTrue(e.getMessage(), e.getMessage().contains(ApiConstants.BOOT_INTO_SETUP));
+        verify(placementService, never()).approvedMove(any(), Mockito.anyBoolean(), any());
+        verify(virtualMachineManager, never()).relocateStoppedVm(anyString(), anyList(), anyLong());
+    }
+
+    @Test
+    public void startRefusesTheOwnersRunningLimitsBeforeAnyVolumeMoves() throws Exception {
+        UserVmVO vm = stoppedKvmVm(VirtualMachine.State.Stopped);
+        when(userVmDao.findById(MOVING_VM_ID)).thenReturn(vm);
+        PlacementVerdict approved = approvedMoveToHostB();
+        lenient().when(placementService.approvedMove(any(PlacementRequest.class), eq(true), eq("approval"))).thenReturn(approved);
+        ServiceOfferingVO offering = mock(ServiceOfferingVO.class);
+        when(offering.getCpu()).thenReturn(4);
+        lenient().when(offering.getRamSize()).thenReturn(8192);
+        when(_serviceOfferingDao.findById(MOVING_VM_ID, 20L)).thenReturn(offering);
+        AccountVO owner = accountDao.findById(5L);
+        doThrow(new ResourceAllocationException("Maximum number of resources of type 'cpu' for account has been exceeded.", Resource.ResourceType.cpu))
+                .when(resourceLimitMgr).checkResourceLimitWithTag(owner, Resource.ResourceType.cpu, null, 4L);
+        updateDefaultConfigValue(VirtualMachineManager.ResourceCountRunningVMsonly, true, false);
+
+        assertThrows(ResourceAllocationException.class, () -> userVmManagerImpl.startVirtualMachine(startCmd(true, "approval")));
+
+        verify(placementService, never()).approvedMove(any(), Mockito.anyBoolean(), any());
+        verify(virtualMachineManager, never()).relocateStoppedVm(anyString(), anyList(), anyLong());
+    }
+
+    @Test
+    public void deploymentFromVolumeMovesOnlyWhenPlanningPlacesIt() {
+        assertTrue(UserVmManagerImpl.startsFromVolumeByPlacement(201L, true, null, null, null));
+        assertFalse("no volume", UserVmManagerImpl.startsFromVolumeByPlacement(null, true, null, null, null));
+        assertFalse("not started", UserVmManagerImpl.startsFromVolumeByPlacement(201L, false, null, null, null));
+        assertFalse("a given pod", UserVmManagerImpl.startsFromVolumeByPlacement(201L, true, 3L, null, null));
+        assertFalse("a given cluster", UserVmManagerImpl.startsFromVolumeByPlacement(201L, true, null, 4L, null));
+        assertFalse("a given host", UserVmManagerImpl.startsFromVolumeByPlacement(201L, true, null, null, 2L));
+    }
+
+    @Test
+    public void deploymentFromVolumeOnAGivenPodStartsWithoutPlacement() throws Exception {
+        UserVmVO stopped = stoppedKvmVm(VirtualMachine.State.Stopped);
+        UserVmVO running = stoppedKvmVm(VirtualMachine.State.Running);
+        when(userVmDao.findById(MOVING_VM_ID)).thenReturn(stopped, running);
+        DeployVMCmdByAdmin cmd = mock(DeployVMCmdByAdmin.class);
+        when(cmd.getEntityId()).thenReturn(MOVING_VM_ID);
+        when(cmd.getStartVm()).thenReturn(true);
+        when(cmd.getVolumeId()).thenReturn(201L);
+        when(cmd.getPodId()).thenReturn(3L);
+        when(cmd.getClusterId()).thenReturn(null);
+        when(cmd.getHostId()).thenReturn(null);
+        when(cmd.getBootIntoSetup()).thenReturn(null);
+        when(cmd.getDataDiskTemplateToDiskOfferingMap()).thenReturn(new HashMap<>());
+        doReturn(new Pair<>(running, new HashMap<>())).when(userVmManagerImpl).startVirtualMachine(eq(MOVING_VM_ID), eq(3L), isNull(), isNull(), anyMap(),
+                nullable(String.class), eq(false));
+        when(templateDao.findByIdIncludingRemoved(30L)).thenReturn(mock(VMTemplateVO.class));
+
+        userVmManagerImpl.startVirtualMachine(cmd);
+
+        verify(placementService, never()).approvedMove(any(), Mockito.anyBoolean(), any());
+    }
+
+    @Test
+    public void approvedMoveToAHostThatIsGoneMovesNothing() throws Exception {
+        UserVmVO vm = stoppedKvmVm(VirtualMachine.State.Stopped);
+        when(userVmDao.findById(MOVING_VM_ID)).thenReturn(vm);
+        PlacementVerdict approved = approvedMoveToHostB();
+        when(hostDao.findById(2L)).thenReturn(null);
+        when(placementService.approvedMove(any(PlacementRequest.class), eq(true), eq("approval"))).thenReturn(approved);
+
+        CloudRuntimeException e = assertThrows(CloudRuntimeException.class, () -> userVmManagerImpl.startVirtualMachine(startCmd(true, "approval")));
+
+        assertTrue(e.getMessage(), e.getMessage().contains("nothing was moved"));
+        verify(virtualMachineManager, never()).relocateStoppedVm(anyString(), anyList(), anyLong());
     }
 }

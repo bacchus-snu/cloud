@@ -1384,6 +1384,16 @@ public class ApiConstants {
     public static final String GROUPS = "groups";
     public static final String GPU_SLOTS_AVAILABLE = "gpuslotsavailable";
     public static final String GPU_SLOTS_TOTAL = "gpuslotstotal";
+    public static final String MIGRATE_VOLUMES = "migratevolumes";
+    public static final String MIGRATE_VOLUME = "migratevolume";
+    public static final String PLACEMENT_TOKEN = "placementtoken";
+    public static final String VERDICT = "verdict";
+    public static final String BYTES_TO_MOVE = "bytestomove";
+    public static final String ESTIMATED_SECONDS = "estimatedseconds";
+    public static final String PREVIOUS_COPY_KEPT = "previouscopykept";
+    public static final String REASON = "reason";
+    public static final String DATA_DISK_SIZES = "datadisksizes";
+    public static final String MBPS = "mbps";
 
     // Object Storage related
     public static final String BUCKET_AVAILABLE = "bucketavailable";

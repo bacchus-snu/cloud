@@ -18,6 +18,7 @@ package com.cloud.deploy;
 
 
 import com.cloud.agent.AgentManager;
+import com.cloud.agent.manager.allocator.HostAllocator;
 import com.cloud.capacity.CapacityManager;
 import com.cloud.capacity.dao.CapacityDao;
 import com.cloud.configuration.ConfigurationManagerImpl;
@@ -91,6 +92,7 @@ import org.apache.cloudstack.engine.cloud.entity.api.db.dao.VMReservationDao;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreManager;
 import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStore;
+import org.apache.cloudstack.engine.subsystem.api.storage.Scope;
 import org.apache.cloudstack.engine.subsystem.api.storage.StoragePoolAllocator;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
@@ -1370,5 +1372,135 @@ public class DeploymentPlanningManagerImplTest {
         Assert.assertTrue(CollectionUtils.isNotEmpty(avoidedClusters));
         Assert.assertEquals(allClusters.size() - 1, avoidedClusters.size());
         Assert.assertFalse(avoidedClusters.contains(allClusters.get(0)));
+    }
+
+    @Test
+    public void listHostsAdmittingVmIsTheHostAllocatorsAnswer() throws Exception {
+        VirtualMachineProfile profile = Mockito.mock(VirtualMachineProfile.class);
+        VMInstanceVO vm = Mockito.mock(VMInstanceVO.class);
+        Mockito.when(vm.getType()).thenReturn(Type.User);
+        Mockito.when(vm.getId()).thenReturn(77L);
+        Mockito.when(vm.getLastHostId()).thenReturn(null);
+        Mockito.when(profile.getVirtualMachine()).thenReturn(vm);
+        Mockito.when(profile.getServiceOffering()).thenReturn(new ServiceOfferingVO("test", 1, 256, 1, 1, 1, false, "vm", false, Type.User, false));
+        VMTemplateVO template = Mockito.mock(VMTemplateVO.class);
+        Mockito.when(template.getArch()).thenReturn(CPU.CPUArch.amd64);
+        Mockito.when(profile.getTemplate()).thenReturn(template);
+        DataCenterDeployment plan = new DataCenterDeployment(dataCenterId);
+        Mockito.doNothing().when(_dpm).checkForNonDedicatedResources(Mockito.eq(profile), Mockito.eq(dc), Mockito.any(ExcludeList.class));
+        Mockito.doNothing().when(_dpm).avoidDisabledResources(Mockito.eq(profile), Mockito.eq(dc), Mockito.any(ExcludeList.class));
+        Host first = Mockito.mock(Host.class);
+        Host second = Mockito.mock(Host.class);
+        HostAllocator allocator = Mockito.mock(HostAllocator.class);
+        Mockito.when(allocator.allocateTo(Mockito.eq(profile), Mockito.eq(plan), Mockito.eq(Host.Type.Routing), Mockito.any(ExcludeList.class),
+                Mockito.eq(HostAllocator.RETURN_UPTO_ALL))).thenReturn(new ArrayList<>(Arrays.asList(second, first)));
+        List<HostAllocator> previous = _dpm.getHostAllocators();
+        _dpm.setHostAllocators(Arrays.asList(allocator));
+        try {
+            List<Host> admitting = _dpm.listHostsAdmittingVm(profile, plan);
+
+            Assert.assertEquals("the hosts and order of the planner's host allocators", Arrays.asList(second, first), admitting);
+            Mockito.verify(_dpm).checkForNonDedicatedResources(Mockito.eq(profile), Mockito.eq(dc), Mockito.any(ExcludeList.class));
+            Mockito.verify(_dpm).avoidDisabledResources(Mockito.eq(profile), Mockito.eq(dc), Mockito.any(ExcludeList.class));
+            Mockito.verify(_plannerHostReserveDao, Mockito.never()).persist(Mockito.any(PlannerHostReservationVO.class));
+        } finally {
+            _dpm.setHostAllocators(previous);
+        }
+    }
+
+    /**
+     * Planning takes a VM's last host first, from capacity reserved for the VM there or from free capacity; the hosts
+     * admitting the VM are the same answer, for each combination of the two.
+     */
+    @Test
+    public void lastHostAdmissionAgreesWithPlanning() throws Exception {
+        HostVO host = Mockito.spy(new HostVO("host"));
+        Mockito.when(host.getStatus()).thenReturn(Status.Up);
+        VolumeVO vol1 = new VolumeVO("vol1", dataCenterId, podId, 1L, 1L, instanceId, "folder", "path", Storage.ProvisioningType.THIN, (long) 10 << 30, Volume.Type.ROOT);
+        setupMocksForLastHostTests(host, vol1);
+        Mockito.doCallRealMethod().when(_dpm).lastHostHasCapacity(ArgumentMatchers.any(Host.class), ArgumentMatchers.any(), ArgumentMatchers.anyInt(),
+                ArgumentMatchers.anyLong(), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyFloat());
+        Mockito.doReturn(new Pair<Host, Map<Volume, StoragePool>>(host, new HashMap<>())).when(_dpm).findPotentialDeploymentResources(ArgumentMatchers.anyList(),
+                ArgumentMatchers.anyMap(), ArgumentMatchers.any(ExcludeList.class), ArgumentMatchers.any(), ArgumentMatchers.anyList(),
+                ArgumentMatchers.any(), ArgumentMatchers.any());
+        Mockito.doNothing().when(_dpm).avoidDisabledResources(Mockito.eq(vmProfile), Mockito.eq(dc), Mockito.any(ExcludeList.class));
+        DataCenterDeployment plan = new DataCenterDeployment(dataCenterId);
+        try {
+            for (boolean fromReserved : new boolean[] {true, false}) {
+                for (boolean fromFree : new boolean[] {true, false}) {
+                    Mockito.when(capacityMgr.checkIfHostHasCapacity(ArgumentMatchers.eq(host), ArgumentMatchers.anyInt(), ArgumentMatchers.anyLong(),
+                            ArgumentMatchers.eq(true), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyBoolean())).thenReturn(fromReserved);
+                    Mockito.when(capacityMgr.checkIfHostHasCapacity(ArgumentMatchers.eq(host), ArgumentMatchers.anyInt(), ArgumentMatchers.anyLong(),
+                            ArgumentMatchers.eq(false), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyBoolean())).thenReturn(fromFree);
+
+                    DeployDestination dest = _dpm.planDeployment(vmProfile, plan, avoids, null);
+                    List<Host> admitting = _dpm.listHostsAdmittingVm(vmProfile, plan);
+
+                    String combination = String.format("reserved capacity fits: %s, free capacity fits: %s", fromReserved, fromFree);
+                    Assert.assertEquals(combination, fromReserved || fromFree, dest != null && dest.getHost() == host);
+                    Assert.assertEquals(combination, dest != null && dest.getHost() == host, admitting.contains(host));
+                }
+            }
+        } finally {
+            Mockito.when(capacityMgr.checkIfHostHasCapacity(ArgumentMatchers.any(), ArgumentMatchers.anyInt(), ArgumentMatchers.anyLong(), ArgumentMatchers.anyBoolean(),
+                    ArgumentMatchers.anyFloat(), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyBoolean())).thenReturn(true);
+            Mockito.when(resourceManager.isGPUDeviceAvailable(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.anyLong())).thenReturn(false);
+        }
+    }
+
+    @Test
+    public void aLastHostThatIsGoneIsSkipped() throws Exception {
+        HostVO host = Mockito.spy(new HostVO("host"));
+        Mockito.when(host.getStatus()).thenReturn(Status.Up);
+        VolumeVO vol1 = new VolumeVO("vol1", dataCenterId, podId, 1L, 1L, instanceId, "folder", "path", Storage.ProvisioningType.THIN, (long) 10 << 30, Volume.Type.ROOT);
+        setupMocksForLastHostTests(host, vol1);
+        Mockito.doNothing().when(_dpm).avoidDisabledResources(Mockito.eq(vmProfile), Mockito.eq(dc), Mockito.any(ExcludeList.class));
+        Mockito.when(vmProfile.getVirtualMachine().getLastHostId()).thenReturn(77L);
+        Mockito.when(hostDao.findById(77L)).thenReturn(null);
+        // as the host DAO does when there is no host to load the details of
+        Mockito.doThrow(new NullPointerException("no host")).when(hostDao).loadDetails(ArgumentMatchers.isNull());
+        DataCenterDeployment plan = new DataCenterDeployment(dataCenterId);
+        try {
+            Assert.assertNull(_dpm.planDeployment(vmProfile, plan, avoids, null));
+            Assert.assertTrue(_dpm.listHostsAdmittingVm(vmProfile, plan).isEmpty());
+        } finally {
+            Mockito.doNothing().when(hostDao).loadDetails(ArgumentMatchers.isNull());
+            Mockito.when(resourceManager.isGPUDeviceAvailable(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.anyLong())).thenReturn(false);
+        }
+    }
+
+    @Test
+    public void listPoolsForDiskIsTheStorageAllocatorsAnswer() {
+        StoragePoolAllocator none = Mockito.mock(StoragePoolAllocator.class);
+        StoragePoolAllocator local = Mockito.mock(StoragePoolAllocator.class);
+        StoragePool pool = Mockito.mock(StoragePool.class);
+        DiskProfile disk = Mockito.mock(DiskProfile.class);
+        DataCenterDeployment plan = new DataCenterDeployment(dataCenterId, podId, clusterId, 5L, null, null);
+        Mockito.when(local.allocateToPool(Mockito.eq(disk), Mockito.eq(vmProfile), Mockito.eq(plan), Mockito.any(ExcludeList.class),
+                Mockito.eq(StoragePoolAllocator.RETURN_UPTO_ALL))).thenReturn(Arrays.asList(pool));
+        _dpm.setStoragePoolAllocators(Arrays.asList(none, local));
+
+        Assert.assertEquals(Arrays.asList(pool), _dpm.listPoolsForDisk(disk, vmProfile, plan));
+        Mockito.verify(none).allocateToPool(Mockito.eq(disk), Mockito.eq(vmProfile), Mockito.eq(plan), Mockito.any(ExcludeList.class),
+                Mockito.eq(StoragePoolAllocator.RETURN_UPTO_ALL));
+    }
+
+    @Test
+    public void allowVolumeMoveLetsPlanningPlaceLocalVolumesElsewhere() {
+        VirtualMachineProfile profile = Mockito.mock(VirtualMachineProfile.class);
+        VolumeVO volume = Mockito.mock(VolumeVO.class);
+        Mockito.when(volume.getState()).thenReturn(Volume.State.Ready);
+        Mockito.when(volume.getPoolId()).thenReturn(11L);
+        DataStore store = Mockito.mock(DataStore.class);
+        Scope scope = Mockito.mock(Scope.class);
+        Mockito.when(scope.getScopeType()).thenReturn(ScopeType.HOST);
+        Mockito.when(store.getScope()).thenReturn(scope);
+        Mockito.when(_dataStoreManager.getPrimaryDataStore(11L)).thenReturn(store);
+
+        Assert.assertFalse("a ready local volume ties planning to its host", _dpm.isLocalVolumeFreeToMove(profile, volume));
+        Mockito.when(profile.getParameter(VirtualMachineProfile.Param.AllowVolumeMove)).thenReturn(Boolean.TRUE);
+        Assert.assertTrue(_dpm.isLocalVolumeFreeToMove(profile, volume));
+        Mockito.when(scope.getScopeType()).thenReturn(ScopeType.CLUSTER);
+        Assert.assertFalse("a volume on shared storage is reused as before", _dpm.isLocalVolumeFreeToMove(profile, volume));
     }
 }

@@ -91,6 +91,7 @@ import com.cloud.user.AccountManagerImpl;
 import com.cloud.utils.Pair;
 import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.vm.DiskProfile;
+import com.cloud.storage.dao.VMTemplateDao;
 import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.dao.VMInstanceDao;
 
@@ -438,6 +439,42 @@ public class StorageManagerImplTest {
                 Mockito.anyLong(), Mockito.anyLong());
         assertTrue(storageManagerImpl.storagePoolHasEnoughSpace(1000L, pool));
         Assert.assertFalse(storageManagerImpl.storagePoolHasEnoughSpace(2200L, pool));
+    }
+
+    @Test
+    public void poolSpaceCheckCountsDisksNotCreatedYet() {
+        StoragePoolVO pool = Mockito.mock(StoragePoolVO.class);
+        Mockito.when(pool.getId()).thenReturn(1L);
+        Mockito.when(pool.getStorageProviderName()).thenReturn("DefaultPrimary");
+        Mockito.when(pool.getPoolType()).thenReturn(Storage.StoragePoolType.Filesystem);
+        Mockito.when(pool.getCapacityBytes()).thenReturn(1000L);
+        Mockito.when(pool.getUsedBytes()).thenReturn(0L);
+        Mockito.when(storagePoolDao.findById(1L)).thenReturn(pool);
+        Mockito.doReturn(BigDecimal.ONE).when(storageManagerImpl).getStorageOverProvisioningFactor(1L);
+        Mockito.when(capacityManager.getAllocatedPoolCapacity(pool, null)).thenReturn(500L);
+        VMTemplateVO template = Mockito.mock(VMTemplateVO.class);
+        Mockito.when(template.getFormat()).thenReturn(Storage.ImageFormat.QCOW2);
+        VMTemplateDao templates = Mockito.mock(VMTemplateDao.class);
+        Mockito.when(templates.findByIdIncludingRemoved(30L)).thenReturn(template);
+        Mockito.when(capacityManager.getAllocatedPoolCapacity(pool, template)).thenReturn(600L);
+        Object previous = ReflectionTestUtils.getField(storageManagerImpl, "_templateDao");
+        ReflectionTestUtils.setField(storageManagerImpl, "_templateDao", templates);
+        try {
+            DiskProfile data = new DiskProfile(Volume.DISK_OFFERING_SUITABILITY_CHECK_VOLUME_ID, Volume.Type.DATADISK, "DATA", 4L, 350L, null, true, false, null);
+            Assert.assertTrue("500 allocated and 350 asked stay at the 0.85 threshold",
+                    storageManagerImpl.storagePoolHasEnoughSpace(Arrays.asList(new Pair<>(null, data)), pool, 1L));
+            DiskProfile larger = new DiskProfile(Volume.DISK_OFFERING_SUITABILITY_CHECK_VOLUME_ID, Volume.Type.DATADISK, "DATA", 4L, 351L, null, true, false, null);
+            Assert.assertFalse(storageManagerImpl.storagePoolHasEnoughSpace(Arrays.asList(new Pair<>(null, larger)), pool, 1L));
+            DiskProfile root = new DiskProfile(Volume.DISK_OFFERING_SUITABILITY_CHECK_VOLUME_ID, Volume.Type.ROOT, "ROOT", 4L, 250L, null, true, false, 30L);
+            Assert.assertTrue("a template base the pool lacks counts as allocated",
+                    storageManagerImpl.storagePoolHasEnoughSpace(Arrays.asList(new Pair<>(null, root)), pool, 1L));
+            Assert.assertFalse(storageManagerImpl.storagePoolHasEnoughSpace(Arrays.asList(new Pair<>(null, root), new Pair<>(null, data)), pool, 1L));
+            Mockito.when(pool.getUsedBytes()).thenReturn(850L);
+            Assert.assertFalse("the used threshold applies to new disks too",
+                    storageManagerImpl.storagePoolHasEnoughSpace(Arrays.asList(new Pair<>(null, data)), pool, 1L));
+        } finally {
+            ReflectionTestUtils.setField(storageManagerImpl, "_templateDao", previous);
+        }
     }
 
     @Test

@@ -420,6 +420,26 @@ public class VolumeOrchestratorRelocationTest {
     }
 
     @Test
+    public void moveKeepsSourceCopyAsStandaloneVolume() throws Exception {
+        vmIn(VirtualMachine.State.Migrating);
+        VolumeVO root = volume(100L, "ROOT-500", Volume.Type.ROOT, VM, KEEPING_DOMAIN);
+
+        orchestrator.relocateVolumes(List.of(root), destPool(), null);
+
+        VolumeVO moved = db.get(100L);
+        VolumeVO previous = copyOf(100L);
+        assertEquals("the Instance's volume is on the destination", Long.valueOf(DEST_POOL), moved.getPoolId());
+        assertEquals(Long.valueOf(VM), moved.getInstanceId());
+        assertTrue(previous.getName().matches("ROOT-500-previous-\\d{8}"));
+        assertEquals("the previous copy stays on the source", Long.valueOf(SRC_POOL), previous.getPoolId());
+        assertNull("detached", previous.getInstanceId());
+        assertEquals("of the same account", ACCOUNT, previous.getAccountId());
+        assertEquals(Volume.State.Ready, previous.getState());
+        verify(resourceLimitMgr).checkVolumeResourceLimit(any(Account.class), eq(true), eq(SIZE), any(), any());
+        assertEquals("counted in the volume count and the storage quota", List.of(SIZE), counted);
+    }
+
+    @Test
     public void usageEventOnlyForPrevious() {
         vmIn(VirtualMachine.State.Migrating);
         VolumeVO root = volume(100L, "ROOT-500", Volume.Type.ROOT, VM, KEEPING_DOMAIN);

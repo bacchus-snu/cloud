@@ -238,6 +238,9 @@ import com.cloud.deploy.DeploymentPlan;
 import com.cloud.deploy.DeploymentPlanner;
 import com.cloud.deploy.DeploymentPlanner.ExcludeList;
 import com.cloud.deploy.DeploymentPlanningManager;
+import com.cloud.deploy.PlacementRequest;
+import com.cloud.deploy.PlacementService;
+import com.cloud.deploy.PlacementVerdict;
 import com.cloud.deploy.PlannerHostReservationVO;
 import com.cloud.deploy.dao.PlannerHostReservationDao;
 import com.cloud.deployasis.UserVmDeployAsIsDetailVO;
@@ -537,6 +540,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
     private SecurityGroupDao _securityGroupDao;
     @Inject
     private CapacityManager _capacityMgr;
+    @Inject
+    PlacementService placementService;
     @Inject
     private VMInstanceDao _vmInstanceDao;
     @Inject
@@ -1347,7 +1352,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
      * A user Instance without a vGPU profile runs on whole host cores, two vCPUs per core, so its vCPU count must be a
      * multiple of the owner domain's {@code vm.pool.vcpu.step}. System VMs are not subject to it.
      */
-    protected void validatePoolVcpuStep(VirtualMachine.Type vmType, ServiceOffering offering, Integer vcpus, long domainId) {
+    @Override
+    public void validatePoolVcpuStep(VirtualMachine.Type vmType, ServiceOffering offering, Integer vcpus, long domainId) {
         if (vmType != VirtualMachine.Type.User || vcpus == null || CapacityManager.isHostCapacityExempt(offering)) {
             return;
         }
@@ -2866,7 +2872,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
     }
 
     // used for vm transitioning to error state
-    private void updateVmStateForFailedVmCreation(Long vmId, Long hostId) {
+    private void updateVmStateForFailedVmCreation(Long vmId, Long hostId, Long keptVolumeId) {
 
         UserVmVO vm = _vmDao.findById(vmId);
 
@@ -2884,6 +2890,11 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                 logger.debug("Destroying associated volumes of [{}] as it was unable to be deployed.", vm);
                 List<VolumeVO> volumesForThisVm = _volsDao.findUsableVolumesForInstance(vm.getId());
                 for (VolumeVO volume : volumesForThisVm) {
+                    if (keptVolumeId != null && volume.getId() == keptVolumeId) {
+                        logger.debug("Detaching volume [{}], from which the VM was to be deployed, so that it outlives the failed deployment.", volume);
+                        _volsDao.detachVolume(volume.getId());
+                        continue;
+                    }
                     if (volume.getState() != Volume.State.Destroy) {
                         logger.trace("Destroying volume [{}] as its VM was unable to be deployed.", volume);
                         volumeMgr.destroyVolume(volume);
@@ -3598,7 +3609,107 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             additonalParams.put(VirtualMachineProfile.Param.ConsiderLastHost, cmd.getConsiderLastHost().toString());
         }
 
+        UserVmVO vm = _vmDao.findById(cmd.getId());
+        Account vmOwner = vm == null ? null : _accountDao.findById(vm.getAccountId());
+        if (vm != null && vm.getState() == State.Stopped && vm.getHypervisorType() == HypervisorType.KVM && vmOwner != null
+                && vmOwner.getState() != Account.State.DISABLED && ObjectUtils.allNull(cmd.getPodId(), cmd.getClusterId(), cmd.getHostId())) {
+            validateStartBeforeMove(vm, additonalParams);
+            PlacementVerdict move = placementService.approvedMove(PlacementRequest.start(vm.getId(), null, vm.getAccountId()), cmd.isMigrateVolumes(),
+                    cmd.getPlacementToken());
+            if (move != null) {
+                return startAfterApprovedMove(vm, move, additonalParams, cmd.getDeploymentPlanner()).first();
+            }
+        }
         return startVirtualMachine(cmd.getId(), cmd.getPodId(), cmd.getClusterId(), cmd.getHostId(), additonalParams, cmd.getDeploymentPlanner(), false).first();
+    }
+
+    /**
+     * Moves the approved volumes of a stopped Instance as its own work item, then starts it on the host they were moved
+     * to. The start never moves volumes, so each step fails on its own: a failed move leaves the volumes where they
+     * were, and a failed start leaves the Instance stopped with its volumes kept at their new location.
+     */
+    protected Pair<UserVmVO, Map<VirtualMachineProfile.Param, Object>> startAfterApprovedMove(UserVmVO vm, PlacementVerdict move,
+            Map<VirtualMachineProfile.Param, Object> additionalParams, String deploymentPlannerToUse) throws ResourceUnavailableException,
+            InsufficientCapacityException, ConcurrentOperationException, ResourceAllocationException {
+        HostVO destination = _hostDao.findById(move.getDestinationHostId());
+        if (destination == null) {
+            throw new CloudRuntimeException(String.format("Moving the volumes of Instance %s failed, and nothing was moved; check the placement again", vm.getUuid()));
+        }
+        try {
+            _itMgr.relocateStoppedVm(vm.getUuid(), move.getVolumeIds(), move.getDestinationPoolId());
+        } catch (RuntimeException e) {
+            logger.warn("Moving volumes {} of {} to storage pool {} failed: {}", move.getVolumeIds(), vm, move.getDestinationPoolId(), e.getMessage());
+            boolean moved = move.getVolumeIds().stream().map(_volsDao::findById)
+                    .allMatch(volume -> volume != null && Objects.equals(volume.getPoolId(), move.getDestinationPoolId()));
+            String outcome = moved ? String.format("The volumes of Instance %s were moved to another host and are kept there, but the move did not finish", vm.getUuid())
+                    : String.format("Moving the volumes of Instance %s failed, and nothing was moved", vm.getUuid());
+            throw new CloudRuntimeException(outcome + placementErrorDetail(e, "; check the placement again"), e);
+        }
+        DataCenterDeployment pinned = new DataCenterDeployment(destination.getDataCenterId(), destination.getPodId(), destination.getClusterId(),
+                destination.getId(), null, null);
+        String moved = String.format("The volumes of Instance %s were moved to another host and are kept there, but the Instance did not start", vm.getUuid());
+        try {
+            return startVirtualMachine(vm.getId(), null, null, null, pinned, additionalParams, deploymentPlannerToUse, false, false);
+        } catch (InsufficientCapacityException e) {
+            throw new InsufficientServerCapacityException(moved + ": " + e.getMessage(), DataCenter.class, vm.getDataCenterId());
+        } catch (ResourceUnavailableException | ResourceAllocationException | CloudRuntimeException e) {
+            throw new CloudRuntimeException(moved + ": " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Refuses a start for the reasons the start itself refuses it, before any of its volumes move: the caller's access,
+     * the owner, the start parameters and, when only running Instances count, the owner's limits. Nothing is reserved.
+     */
+    protected void validateStartBeforeMove(UserVmVO vm, Map<VirtualMachineProfile.Param, Object> additionalParams) throws ResourceAllocationException {
+        _accountMgr.checkAccess(CallContext.current().getCallingAccount(), null, true, vm);
+        Account owner = _accountDao.findById(vm.getAccountId());
+        if (owner == null) {
+            throw new InvalidParameterValueException("The owner of " + vm + " does not exist: " + vm.getAccountId());
+        }
+        if (owner.getState() == Account.State.DISABLED) {
+            throw new PermissionDeniedException(String.format("The owner of %s is disabled: %s", vm, owner));
+        }
+        if (additionalParams.containsKey(VirtualMachineProfile.Param.BootIntoSetup)) {
+            validateBootIntoSetup(vm);
+        }
+        VMTemplateVO template = _templateDao.findByIdIncludingRemoved(vm.getTemplateId());
+        Object password = additionalParams.get(VirtualMachineProfile.Param.VmPassword);
+        if (vm.isUpdateParameters() && template != null && template.isEnablePassword() && password != null && StringUtils.isNotBlank(password.toString())
+                && !validPassword(password.toString())) {
+            throw new InvalidParameterValueException("A valid password for this virtual machine was not provided.");
+        }
+        if (VirtualMachineManager.ResourceCountRunningVMsonly.value()) {
+            ServiceOfferingVO offering = serviceOfferingDao.findById(vm.getId(), vm.getServiceOfferingId());
+            List<String> tags = new ArrayList<>();
+            tags.add(null);
+            tags.addAll(resourceLimitService.getResourceLimitHostTags(offering, template).stream().filter(Objects::nonNull).collect(Collectors.toList()));
+            for (String tag : tags) {
+                resourceLimitService.checkResourceLimitWithTag(owner, ResourceType.user_vm, tag, 1L);
+                resourceLimitService.checkResourceLimitWithTag(owner, ResourceType.cpu, tag, offering.getCpu());
+                resourceLimitService.checkResourceLimitWithTag(owner, ResourceType.memory, tag, offering.getRamSize());
+            }
+        }
+    }
+
+    private void validateBootIntoSetup(UserVmVO vm) {
+        if (!HypervisorType.VMware.equals(vm.getHypervisorType())) {
+            throw new InvalidParameterValueException(ApiConstants.BOOT_INTO_SETUP + " makes no sense for " + vm.getHypervisorType());
+        }
+    }
+
+    /**
+     * @return whether a new Instance from a detached volume starts where planning places it, so that the volume may move
+     *         to another host with its owner's approval; a start on a given pod, cluster or host never moves it
+     */
+    protected static boolean startsFromVolumeByPlacement(Long volumeId, boolean startVm, Long podId, Long clusterId, Long hostId) {
+        return volumeId != null && startVm && ObjectUtils.allNull(podId, clusterId, hostId);
+    }
+
+    /** @return the cause of a failure for an administrator; for anyone else, which may not see hosts, the given advice */
+    private String placementErrorDetail(Exception e, String advice) {
+        Account caller = CallContext.current().getCallingAccount();
+        return caller != null && _accountMgr.isRootAdmin(caller.getId()) ? ": " + e.getMessage() : advice;
     }
 
     @Override
@@ -4933,7 +5044,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
      * Configures the Root disk size via User`s custom parameters.
      * If the Service Offering has the Root Disk size field configured then the User`s root disk custom parameter is overwritten by the service offering.
      */
-    protected long configureCustomRootDiskSize(Map<String, String> customParameters, VMTemplateVO template, HypervisorType hypervisorType, DiskOfferingVO rootDiskOffering) {
+    @Override
+    public long configureCustomRootDiskSize(Map<String, String> customParameters, VMTemplateVO template, HypervisorType hypervisorType, DiskOfferingVO rootDiskOffering) {
         verifyIfHypervisorSupportsRootdiskSizeOverride(hypervisorType);
         Long rootDiskSizeCustomParam = null;
         if (customParameters.containsKey(VmDetailConstants.ROOT_DISK_SIZE)) {
@@ -5577,7 +5689,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             additionalParams.put(VirtualMachineProfile.Param.VmPassword, cmd.getPassword());
         }
 
-        UserVm userVm = startVirtualMachine(vmId, podId, clusterId, hostId, diskOfferingMap, additionalParams, cmd.getDeploymentPlanner());
+        UserVm userVm = startVirtualMachine(vmId, podId, clusterId, hostId, diskOfferingMap, additionalParams, cmd.getDeploymentPlanner(), cmd.getVolumeId(),
+                cmd.isMigrateVolumes(), cmd.getPlacementToken());
         publishVmLifecycleMessageBus(userVm, null, VirtualMachine.State.Running);
         return userVm;
     }
@@ -5586,11 +5699,33 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             , Map<VirtualMachineProfile.Param, Object> additonalParams, String deploymentPlannerToUse)
             throws ResourceUnavailableException,
             InsufficientCapacityException, ConcurrentOperationException, ResourceAllocationException {
+        return startVirtualMachine(vmId, podId, clusterId, hostId, diskOfferingMap, additonalParams, deploymentPlannerToUse, null, false, null);
+    }
+
+    /**
+     * @param keptVolumeId the detached volume the Instance was created from: it may move to another host with the owner's
+     *        approval, and a failed deployment leaves it detached rather than destroyed
+     */
+    private UserVm startVirtualMachine(long vmId, Long podId, Long clusterId, Long hostId, Map<Long, DiskOffering> diskOfferingMap
+            , Map<VirtualMachineProfile.Param, Object> additonalParams, String deploymentPlannerToUse, Long keptVolumeId, boolean migrateVolumes,
+            String placementToken)
+            throws ResourceUnavailableException,
+            InsufficientCapacityException, ConcurrentOperationException, ResourceAllocationException {
         UserVmVO vm = _vmDao.findById(vmId);
         Pair<UserVmVO, Map<VirtualMachineProfile.Param, Object>> vmParamPair = null;
 
         try {
-            vmParamPair = startVirtualMachine(vmId, podId, clusterId, hostId, additonalParams, deploymentPlannerToUse, false);
+            if (startsFromVolumeByPlacement(keptVolumeId, true, podId, clusterId, hostId)) {
+                validateStartBeforeMove(vm, additonalParams);
+                PlacementVerdict move = placementService.approvedMove(PlacementRequest.start(vmId, null, vm.getAccountId()).approvedBeforeTheInstanceExisted(),
+                        migrateVolumes, placementToken);
+                if (move != null) {
+                    vmParamPair = startAfterApprovedMove(vm, move, additonalParams, deploymentPlannerToUse);
+                }
+            }
+            if (vmParamPair == null) {
+                vmParamPair = startVirtualMachine(vmId, podId, clusterId, hostId, additonalParams, deploymentPlannerToUse, false);
+            }
             vm = vmParamPair.first();
 
             // At this point VM should be in "Running" state
@@ -5617,7 +5752,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             }
 
         } finally {
-            updateVmStateForFailedVmCreation(vm.getId(), hostId);
+            updateVmStateForFailedVmCreation(vm.getId(), hostId, keptVolumeId);
         }
 
         // Check that the password was passed in and is valid
@@ -6022,7 +6157,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
     }
 
     private Pair<UserVmVO, Map<VirtualMachineProfile.Param, Object>> startVirtualMachineUnchecked(UserVmVO vm, VMTemplateVO template, Long podId,
-            Long clusterId, Long hostId, @NotNull Map<VirtualMachineProfile.Param, Object> additionalParams, String deploymentPlannerToUse,
+            Long clusterId, Long hostId, DataCenterDeployment pinnedPlan, @NotNull Map<VirtualMachineProfile.Param, Object> additionalParams, String deploymentPlannerToUse,
             boolean isExplicitHost, boolean isRootAdmin, boolean quickRestore) throws ResourceUnavailableException, InsufficientCapacityException {
 
         // check if vm is security group enabled
@@ -6049,7 +6184,17 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         HostVO destinationHost = getDestinationHost(hostId, isRootAdmin, isExplicitHost, quickRestore);
         DataCenterDeployment plan = null;
         boolean deployOnGivenHost = false;
-        if (destinationHost != null) {
+        if (pinnedPlan != null) {
+            HostVO pinnedHost = _hostDao.findById(pinnedPlan.getHostId());
+            final ServiceOfferingVO offering = serviceOfferingDao.findById(vm.getId(), vm.getServiceOfferingId());
+            Pair<Boolean, Boolean> fits = pinnedHost == null ? null : _capacityMgr.checkIfHostHasCpuCapabilityAndCapacity(pinnedHost, offering, false);
+            if (pinnedHost == null || pinnedHost.getStatus() != Status.Up || pinnedHost.getResourceState() != ResourceState.Enabled || !fits.first() || !fits.second()) {
+                throw new InsufficientServerCapacityException(String.format("The host that holds the volumes of Instance %s has no room for it now", vm.getUuid()),
+                        Host.class, pinnedPlan.getHostId());
+            }
+            plan = pinnedPlan;
+            deployOnGivenHost = true;
+        } else if (destinationHost != null) {
             logger.debug("Destination Host to deploy the VM is specified, specifying a deployment plan to deploy the VM");
             _hostDao.loadHostTags(destinationHost);
             validateStrictHostTagCheck(vm, destinationHost);
@@ -6102,9 +6247,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         }
 
         if (additionalParams.containsKey(VirtualMachineProfile.Param.BootIntoSetup)) {
-            if (!HypervisorType.VMware.equals(vm.getHypervisorType())) {
-                throw new InvalidParameterValueException(ApiConstants.BOOT_INTO_SETUP + " makes no sense for " + vm.getHypervisorType());
-            }
+            validateBootIntoSetup(vm);
             Object paramValue = additionalParams.get(VirtualMachineProfile.Param.BootIntoSetup);
             if (logger.isTraceEnabled()) {
                 logger.trace("It was specified whether to enter setup mode: " + paramValue.toString());
@@ -6148,6 +6291,16 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
     public Pair<UserVmVO, Map<VirtualMachineProfile.Param, Object>> startVirtualMachine(long vmId, Long podId, Long clusterId, Long hostId,
             @NotNull Map<VirtualMachineProfile.Param, Object> additionalParams, String deploymentPlannerToUse, boolean isExplicitHost, boolean quickRestore)
             throws ConcurrentOperationException, ResourceUnavailableException, InsufficientCapacityException, ResourceAllocationException {
+        return startVirtualMachine(vmId, podId, clusterId, hostId, null, additionalParams, deploymentPlannerToUse, isExplicitHost, quickRestore);
+    }
+
+    /**
+     * @param pinnedPlan when given, the start takes this plan's host and no other
+     */
+    protected Pair<UserVmVO, Map<VirtualMachineProfile.Param, Object>> startVirtualMachine(long vmId, Long podId, Long clusterId, Long hostId,
+            DataCenterDeployment pinnedPlan, @NotNull Map<VirtualMachineProfile.Param, Object> additionalParams, String deploymentPlannerToUse,
+            boolean isExplicitHost, boolean quickRestore)
+            throws ConcurrentOperationException, ResourceUnavailableException, InsufficientCapacityException, ResourceAllocationException {
         // Input validation
         final Account callerAccount = CallContext.current().getCallingAccount();
 
@@ -6187,10 +6340,12 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                  CheckedReservation cpuReservation = new CheckedReservation(owner, ResourceType.cpu, resourceLimitHostTags, Long.valueOf(offering.getCpu()), reservationDao, resourceLimitService);
                  CheckedReservation memReservation = new CheckedReservation(owner, ResourceType.memory, resourceLimitHostTags, Long.valueOf(offering.getRamSize()), reservationDao, resourceLimitService);
             ) {
-                return startVirtualMachineUnchecked(vm, template, podId, clusterId, hostId, additionalParams, deploymentPlannerToUse, isExplicitHost, isRootAdmin, quickRestore);
+                return startVirtualMachineUnchecked(vm, template, podId, clusterId, hostId, pinnedPlan, additionalParams, deploymentPlannerToUse, isExplicitHost,
+                        isRootAdmin, quickRestore);
             }
         } else {
-            return startVirtualMachineUnchecked(vm, template, podId, clusterId, hostId, additionalParams, deploymentPlannerToUse, isExplicitHost, isRootAdmin, quickRestore);
+            return startVirtualMachineUnchecked(vm, template, podId, clusterId, hostId, pinnedPlan, additionalParams, deploymentPlannerToUse, isExplicitHost,
+                    isRootAdmin, quickRestore);
         }
     }
 
@@ -6747,6 +6902,12 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             throw new InvalidParameterValueException("Unable to use template " + templateId);
         }
         verifyTemplate(cmd, template, serviceOfferingId);
+        Long requestedPodId = cmd instanceof DeployVMCmdByAdmin ? ((DeployVMCmdByAdmin)cmd).getPodId() : null;
+        Long requestedClusterId = cmd instanceof DeployVMCmdByAdmin ? ((DeployVMCmdByAdmin)cmd).getClusterId() : null;
+        if (volume != null && startsFromVolumeByPlacement(volume.getId(), cmd.getStartVm() && !blankInstance, requestedPodId, requestedClusterId, cmd.getHostId())) {
+            placementService.approvedMove(PlacementRequest.deployFromVolume(volume.getId(), serviceOfferingId, volume.getAccountId())
+                    .withDetails(cmd.getDetails()), cmd.isMigrateVolumes(), cmd.getPlacementToken());
+        }
 
         Long diskOfferingId = cmd.getDiskOfferingId();
         DiskOffering diskOffering = null;
@@ -7022,8 +7183,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         if (volume != null) {
             if (!isSnapshot
                     && (volume.getDataStore() == null
-                    || !ScopeType.ZONE.equals(volume.getDataStore().getScope().getScopeType()))) {
-                throw new InvalidParameterValueException("Deployment of virtual machine is supported only for Zone-wide storage pools");
+                    || !List.of(ScopeType.ZONE, ScopeType.HOST).contains(volume.getDataStore().getScope().getScopeType()))) {
+                throw new InvalidParameterValueException("Deployment of virtual machine is supported only for Zone-wide and host-local storage pools");
             }
             checkIfVolumeTemplateIsTheSameAsTheProvided(volume, templateId);
             if (volume.getInstanceId() != null && !isSnapshot) {

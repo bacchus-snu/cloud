@@ -43,6 +43,7 @@ import java.util.concurrent.ExecutionException;
 
 import org.apache.cloudstack.acl.ControlledEntity;
 import org.apache.cloudstack.acl.SecurityChecker.AccessType;
+import org.apache.cloudstack.api.command.user.volume.AttachVolumeCmd;
 import org.apache.cloudstack.api.command.user.volume.CheckAndRepairVolumeCmd;
 import org.apache.cloudstack.api.command.user.volume.CreateVolumeCmd;
 import org.apache.cloudstack.api.command.user.volume.DetachVolumeCmd;
@@ -54,6 +55,7 @@ import org.apache.cloudstack.engine.orchestration.service.VolumeOrchestrationSer
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreManager;
 import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStore;
+import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStoreInfo;
 import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotInfo;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeDataFactory;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeInfo;
@@ -81,6 +83,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -101,11 +104,15 @@ import com.cloud.dc.HostPodVO;
 import com.cloud.dc.dao.ClusterDao;
 import com.cloud.dc.dao.DataCenterDao;
 import com.cloud.dc.dao.HostPodDao;
+import com.cloud.deploy.PlacementRequest;
+import com.cloud.deploy.PlacementService;
+import com.cloud.deploy.PlacementVerdict;
 import com.cloud.event.EventTypes;
 import com.cloud.event.UsageEventUtils;
 import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.PermissionDeniedException;
 import com.cloud.exception.ResourceAllocationException;
+import com.cloud.exception.VolumeMoveRequiredException;
 import com.cloud.host.HostVO;
 import com.cloud.host.dao.HostDao;
 import com.cloud.hypervisor.Hypervisor.HypervisorType;
@@ -160,6 +167,8 @@ public class VolumeApiServiceImplTest {
     @Spy
     @InjectMocks
     private VolumeApiServiceImpl volumeApiServiceImpl = new VolumeApiServiceImpl();
+    @Mock
+    private PlacementService placementService;
     @Mock
     private SnapshotManager snapshotManagerMock;
     @Mock
@@ -2928,5 +2937,141 @@ public class VolumeApiServiceImplTest {
 
         Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.validateDestroyVolume(copy, accountMock, true, false));
         Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.validateDestroyVolume(copy, accountMock, false, false));
+    }
+
+    private UserVmVO kvmVm(long id, State state) {
+        UserVmVO vm = Mockito.mock(UserVmVO.class);
+        Mockito.lenient().when(vm.getId()).thenReturn(id);
+        Mockito.lenient().when(vm.getUuid()).thenReturn("vm-" + id);
+        Mockito.lenient().when(vm.getState()).thenReturn(state);
+        Mockito.lenient().when(vm.getHypervisorType()).thenReturn(HypervisorType.KVM);
+        Mockito.lenient().when(userVmDaoMock.findById(id)).thenReturn(vm);
+        return vm;
+    }
+
+    private AttachVolumeCmd attachCmd(long vmId, long volumeId, boolean migrateVolume, String token) {
+        AttachVolumeCmd cmd = Mockito.mock(AttachVolumeCmd.class);
+        Mockito.lenient().when(cmd.getVirtualMachineId()).thenReturn(vmId);
+        Mockito.lenient().when(cmd.getId()).thenReturn(volumeId);
+        Mockito.lenient().when(cmd.getDeviceId()).thenReturn(null);
+        Mockito.lenient().when(cmd.isMigrateVolume()).thenReturn(migrateVolume);
+        Mockito.lenient().when(cmd.getPlacementToken()).thenReturn(token);
+        return cmd;
+    }
+
+    /** Attaches the fixture's data volume 10 to its running KVM Instance 4, as the attach command does. */
+    private Volume hotAttach(AttachVolumeCmd cmd) throws Exception {
+        try (MockedConstruction<CheckedReservation> reservation = Mockito.mockConstruction(CheckedReservation.class)) {
+            return volumeApiServiceImpl.attachVolumeToVM(cmd);
+        }
+    }
+
+    private PlacementVerdict moveOfVolume10() {
+        return PlacementVerdict.move(Collections.singletonList(new PlacementVerdict.MovedVolume(10L, "volume-10", "data", 10L << 30, 1L << 30)), 11, true,
+                "approval", 2L, 12L);
+    }
+
+    @Test
+    public void attachLocalVolumeToStoppedVmOnOtherHostRecordsOnly() throws Exception {
+        UserVmVO stopped = kvmVm(71L, State.Stopped);
+        UserVmVO running = kvmVm(72L, State.Running);
+        VolumeInfo local = Mockito.mock(VolumeInfo.class);
+        PrimaryDataStoreInfo localStore = Mockito.mock(PrimaryDataStore.class);
+        Mockito.when(localStore.isLocal()).thenReturn(true);
+        Mockito.when(local.getDataStore()).thenReturn((DataStore)localStore);
+        VolumeInfo shared = Mockito.mock(VolumeInfo.class);
+        PrimaryDataStoreInfo sharedStore = Mockito.mock(PrimaryDataStore.class);
+        Mockito.when(shared.getDataStore()).thenReturn((DataStore)sharedStore);
+
+        Assert.assertTrue(volumeApiServiceImpl.isLocalVolumeRecordedOnly(stopped, local));
+        Assert.assertFalse("a running Instance takes a local volume only on its own host", volumeApiServiceImpl.isLocalVolumeRecordedOnly(running, local));
+        Assert.assertFalse(volumeApiServiceImpl.isLocalVolumeRecordedOnly(stopped, shared));
+        Assert.assertFalse(volumeApiServiceImpl.moveVolumeForAttachIfApproved(stopped, local, attachCmd(71L, 81L, false, null)));
+        Mockito.verify(placementService, Mockito.never()).approvedMove(Mockito.any(), Mockito.anyBoolean(), Mockito.any());
+        Mockito.verify(volumeOrchestrationService, Mockito.never()).relocateVolumes(Mockito.anyList(), Mockito.any(StoragePool.class));
+    }
+
+    @Test
+    public void hotAttachAcrossHostsWithoutFlagThrowsMoveRequired() throws Exception {
+        PlacementVerdict verdict = moveOfVolume10();
+        Mockito.when(placementService.approvedMove(Mockito.any(PlacementRequest.class), Mockito.eq(false), Mockito.isNull()))
+                .thenThrow(new VolumeMoveRequiredException("Attaching volume data needs its volume moved", 1L, verdict));
+
+        VolumeMoveRequiredException e = Assert.assertThrows(VolumeMoveRequiredException.class, () -> hotAttach(attachCmd(4L, 10L, false, null)));
+
+        Assert.assertSame(verdict, e.getVerdict());
+        Mockito.verify(volumeOrchestrationService, Mockito.never()).relocateVolumes(Mockito.anyList(), Mockito.any(StoragePool.class));
+        Mockito.verify(volumeApiServiceImpl, Mockito.never()).getVolumeAttachJobResult(Mockito.anyLong(), Mockito.anyLong(), Mockito.any());
+    }
+
+    @Test
+    public void hotAttachAcrossHostsWithFlagMovesThenAttaches() throws Exception {
+        VolumeVO volume = volumeDaoMock.findById(10L);
+        PlacementVerdict move = moveOfVolume10();
+        Mockito.when(placementService.approvedMove(Mockito.any(PlacementRequest.class), Mockito.eq(true), Mockito.eq("approval"))).thenReturn(move);
+        StoragePoolVO destination = Mockito.mock(StoragePoolVO.class);
+        Mockito.when(primaryDataStoreDaoMock.findById(12L)).thenReturn(destination);
+        Mockito.doReturn(volume).when(volumeApiServiceImpl).getVolumeAttachJobResult(4L, 10L, null);
+
+        Volume attached = hotAttach(attachCmd(4L, 10L, true, "approval"));
+
+        Assert.assertSame(volume, attached);
+        ArgumentCaptor<PlacementRequest> request = ArgumentCaptor.forClass(PlacementRequest.class);
+        InOrder order = Mockito.inOrder(volumeApiServiceImpl, accountManagerMock, placementService, volumeOrchestrationService);
+        order.verify(volumeApiServiceImpl).validateIfVmHasBackups(Mockito.any(UserVmVO.class), Mockito.eq(true));
+        order.verify(accountManagerMock).checkAccess(Mockito.any(Account.class), Mockito.isNull(), Mockito.eq(true), Mockito.any(ControlledEntity.class),
+                Mockito.any(ControlledEntity.class));
+        order.verify(placementService).approvedMove(request.capture(), Mockito.eq(true), Mockito.eq("approval"));
+        order.verify(volumeOrchestrationService).relocateVolumes(Collections.singletonList(volume), destination);
+        order.verify(volumeApiServiceImpl).getVolumeAttachJobResult(4L, 10L, null);
+        Assert.assertEquals(PlacementRequest.Kind.ATTACH, request.getValue().getKind());
+        Assert.assertEquals(Long.valueOf(4L), request.getValue().getApprovalInstanceId());
+
+        Mockito.doThrow(new CloudRuntimeException("Failed to attach volume data")).when(volumeApiServiceImpl).getVolumeAttachJobResult(4L, 10L, null);
+        CloudRuntimeException e = Assert.assertThrows(CloudRuntimeException.class, () -> hotAttach(attachCmd(4L, 10L, true, "approval")));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("was moved to the host of the Instance and is kept there, but attaching it failed"));
+    }
+
+    @Test
+    public void hotAttachByACallerWithoutAccessLearnsNothingOfThePlacement() throws Exception {
+        PlacementVerdict verdict = moveOfVolume10();
+        Mockito.lenient().when(placementService.approvedMove(Mockito.any(PlacementRequest.class), Mockito.anyBoolean(), Mockito.any()))
+                .thenThrow(new VolumeMoveRequiredException("Attaching volume data needs its volume moved: it is a move of 10 GiB", 1L, verdict));
+        Mockito.doThrow(new PermissionDeniedException("The caller may not use the volume with the Instance")).when(accountManagerMock).checkAccess(
+                Mockito.any(Account.class), Mockito.isNull(), Mockito.eq(true), Mockito.any(ControlledEntity.class), Mockito.any(ControlledEntity.class));
+
+        PermissionDeniedException e = Assert.assertThrows(PermissionDeniedException.class, () -> hotAttach(attachCmd(4L, 10L, true, "approval")));
+
+        Assert.assertFalse(e.getMessage(), e.getMessage().contains("move"));
+        Mockito.verify(placementService, Mockito.never()).approvedMove(Mockito.any(), Mockito.anyBoolean(), Mockito.any());
+        Mockito.verify(volumeOrchestrationService, Mockito.never()).relocateVolumes(Mockito.anyList(), Mockito.any(StoragePool.class));
+    }
+
+    @Test
+    public void hotAttachToAnInstanceWithBackupsIsRefusedBeforeAnyMove() throws Exception {
+        PlacementVerdict move = moveOfVolume10();
+        StoragePoolVO destination = Mockito.mock(StoragePoolVO.class);
+        Mockito.lenient().when(placementService.approvedMove(Mockito.any(PlacementRequest.class), Mockito.eq(true), Mockito.eq("approval"))).thenReturn(move);
+        Mockito.lenient().when(primaryDataStoreDaoMock.findById(12L)).thenReturn(destination);
+        Mockito.doThrow(new InvalidParameterValueException("Unable to attach volume, please specify a VM that does not have any backups"))
+                .when(volumeApiServiceImpl).validateIfVmHasBackups(Mockito.any(UserVmVO.class), Mockito.eq(true));
+
+        Assert.assertThrows(InvalidParameterValueException.class, () -> hotAttach(attachCmd(4L, 10L, true, "approval")));
+
+        Mockito.verify(placementService, Mockito.never()).approvedMove(Mockito.any(), Mockito.anyBoolean(), Mockito.any());
+        Mockito.verify(volumeOrchestrationService, Mockito.never()).relocateVolumes(Mockito.anyList(), Mockito.any(StoragePool.class));
+    }
+
+    @Test
+    public void hotAttachToAPoolThatIsGoneMovesNothing() throws Exception {
+        PlacementVerdict move = moveOfVolume10();
+        Mockito.when(placementService.approvedMove(Mockito.any(PlacementRequest.class), Mockito.eq(true), Mockito.eq("approval"))).thenReturn(move);
+        Mockito.when(primaryDataStoreDaoMock.findById(12L)).thenReturn(null);
+
+        CloudRuntimeException e = Assert.assertThrows(CloudRuntimeException.class, () -> hotAttach(attachCmd(4L, 10L, true, "approval")));
+
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("nothing was moved"));
+        Mockito.verify(volumeOrchestrationService, Mockito.never()).relocateVolumes(Mockito.anyList(), Mockito.any());
+        Mockito.verify(volumeApiServiceImpl, Mockito.never()).getVolumeAttachJobResult(Mockito.anyLong(), Mockito.anyLong(), Mockito.any());
     }
 }

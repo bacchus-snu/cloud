@@ -3586,6 +3586,18 @@ public class StorageManagerImpl extends ManagerBase implements StorageManager, C
             // might be clearer that this "volume" in "volumeDiskProfilesList" still might have an old value for hv_ss_reverse.
             Volume volume = volumeDiskProfilePair.first();
             DiskProfile diskProfile = volumeDiskProfilePair.second();
+            if (volume == null || diskProfile.getVolumeId() == Volume.DISK_OFFERING_SUITABILITY_CHECK_VOLUME_ID) {
+                // a disk that does not exist yet asks for its size, and for its template's base where the pool lacks it
+                if (diskProfile.getTemplateId() != null) {
+                    VMTemplateVO tmpl = _templateDao.findByIdIncludingRemoved(diskProfile.getTemplateId());
+                    if (tmpl != null && !ImageFormat.ISO.equals(tmpl.getFormat())) {
+                        allocatedSizeWithTemplate = _capacityMgr.getAllocatedPoolCapacity(poolVO, tmpl);
+                    }
+                    totalAskingSize += getAskingSizeForTemplateBasedOnClusterAndStoragePool(diskProfile.getTemplateId(), clusterId, poolVO);
+                }
+                totalAskingSize += diskProfile.getSize();
+                continue;
+            }
             VolumeVO volumeVO = volumeDao.findById(volume.getId());
 
             if (volumeVO.getHypervisorSnapshotReserve() == null) {

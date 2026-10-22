@@ -40,6 +40,7 @@ import com.cloud.exception.InsufficientCapacityException;
 import com.cloud.exception.InsufficientServerCapacityException;
 import com.cloud.exception.ResourceAllocationException;
 import com.cloud.exception.ResourceUnavailableException;
+import com.cloud.exception.VolumeMoveRequiredException;
 import com.cloud.uservm.UserVm;
 import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.vm.VirtualMachine;
@@ -66,6 +67,15 @@ public class DeployVMCmd extends BaseDeployVMCmd {
     @Parameter(name = ApiConstants.SNAPSHOT_ID, type = CommandType.UUID, entityType = SnapshotResponse.class, since = "4.21")
     private Long snapshotId;
 
+    @Parameter(name = ApiConstants.MIGRATE_VOLUMES, type = CommandType.BOOLEAN, since = "4.23.0.100",
+            description = "With volumeid: whether the volume may be moved to another host when only another host has room for the Instance; " +
+                    "the move also needs the placementtoken that checkPlacement returned for it. False by default.")
+    private Boolean migrateVolumes;
+
+    @Parameter(name = ApiConstants.PLACEMENT_TOKEN, type = CommandType.STRING, since = "4.23.0.100",
+            description = "With volumeid: the approval of a volume move that checkPlacement returned with the verdict move")
+    private String placementToken;
+
     /////////////////////////////////////////////////////
     /////////////////// Accessors ///////////////////////
     /////////////////////////////////////////////////////
@@ -88,6 +98,14 @@ public class DeployVMCmd extends BaseDeployVMCmd {
 
     public boolean isVolumeOrSnapshotProvided() {
         return volumeId != null || snapshotId != null;
+    }
+
+    public boolean isMigrateVolumes() {
+        return Boolean.TRUE.equals(migrateVolumes);
+    }
+
+    public String getPlacementToken() {
+        return placementToken;
     }
 
     public boolean isBlankInstance() {
@@ -212,6 +230,9 @@ public class DeployVMCmd extends BaseDeployVMCmd {
             } catch (ConcurrentOperationException ex) {
                 logger.warn("Exception: ", ex);
                 throw new ServerApiException(ApiErrorCode.INTERNAL_ERROR, ex.getMessage());
+            } catch (VolumeMoveRequiredException ex) {
+                logger.info(ex.getMessage());
+                throw new ServerApiException(ApiErrorCode.INSUFFICIENT_CAPACITY_ERROR, ex.getMessage(), ex);
             } catch (InsufficientCapacityException ex) {
                 StringBuilder message = new StringBuilder(ex.getMessage());
                 if (ex instanceof InsufficientServerCapacityException) {
@@ -252,6 +273,9 @@ public class DeployVMCmd extends BaseDeployVMCmd {
             } else {
                 throw new ServerApiException(ApiErrorCode.INTERNAL_ERROR, "Failed to deploy Instance");
             }
+        } catch (VolumeMoveRequiredException ex) {
+            logger.info(ex.getMessage());
+            throw new ServerApiException(ApiErrorCode.INSUFFICIENT_CAPACITY_ERROR, ex.getMessage(), ex);
         } catch (InsufficientCapacityException ex) {
             logger.info(ex);
             logger.trace(ex.getMessage(), ex);

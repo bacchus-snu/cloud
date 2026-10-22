@@ -146,6 +146,9 @@ import com.cloud.dc.Pod;
 import com.cloud.dc.dao.ClusterDao;
 import com.cloud.dc.dao.DataCenterDao;
 import com.cloud.dc.dao.HostPodDao;
+import com.cloud.deploy.PlacementRequest;
+import com.cloud.deploy.PlacementService;
+import com.cloud.deploy.PlacementVerdict;
 import com.cloud.domain.Domain;
 import com.cloud.domain.dao.DomainDao;
 import com.cloud.event.ActionEvent;
@@ -153,6 +156,7 @@ import com.cloud.event.EventTypes;
 import com.cloud.event.UsageEventUtils;
 import com.cloud.exception.AgentUnavailableException;
 import com.cloud.exception.ConcurrentOperationException;
+import com.cloud.exception.InsufficientCapacityException;
 import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.PermissionDeniedException;
 import com.cloud.exception.ResourceAllocationException;
@@ -360,6 +364,8 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
     private ManagementService managementService;
     @Inject
     protected SnapshotHelper snapshotHelper;
+    @Inject
+    protected PlacementService placementService;
     @Inject
     protected DomainDao domainDao;
     @Inject
@@ -2665,8 +2671,45 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
 
     @Override
     @ActionEvent(eventType = EventTypes.EVENT_VOLUME_ATTACH, eventDescription = "attaching volume", async = true)
-    public Volume attachVolumeToVM(AttachVolumeCmd command) {
-        return attachVolumeToVM(command.getVirtualMachineId(), command.getId(), command.getDeviceId(), false, false);
+    public Volume attachVolumeToVM(AttachVolumeCmd command) throws InsufficientCapacityException {
+        return attachVolumeToVM(command.getVirtualMachineId(), command.getId(), command.getDeviceId(), false, false, command);
+    }
+
+    /**
+     * A running Instance never moves, so a volume on the local storage of another host is first moved to the Instance's
+     * host, as its own step of this job, and only when the owner approved exactly that move. The caller has already
+     * validated the attach, the caller's access to the volume and the Instance included.
+     *
+     * @return whether the volume was moved
+     */
+    protected boolean moveVolumeForAttachIfApproved(UserVmVO vm, VolumeInfo volumeToAttach, AttachVolumeCmd command) throws InsufficientCapacityException {
+        if (vm.getState() != State.Running || vm.getHypervisorType() != HypervisorType.KVM) {
+            return false;
+        }
+        PlacementVerdict move = placementService.approvedMove(PlacementRequest.attach(vm.getId(), volumeToAttach.getId(), volumeToAttach.getAccountId()),
+                command.isMigrateVolume(), command.getPlacementToken());
+        if (move == null) {
+            return false;
+        }
+        VolumeVO volume = _volsDao.findById(volumeToAttach.getId());
+        StoragePoolVO destination = _storagePoolDao.findById(move.getDestinationPoolId());
+        if (volume == null || destination == null) {
+            throw new CloudRuntimeException(String.format("Moving volume %s to the host of Instance %s failed, and nothing was moved; check the placement again",
+                    volumeToAttach.getUuid(), vm.getUuid()));
+        }
+        try {
+            _volumeMgr.relocateVolumes(Collections.singletonList(volume), destination);
+        } catch (RuntimeException e) {
+            logger.warn("Moving volume {} to pool {} for its attach to Instance {} failed: {}", volume, destination, vm, e.getMessage());
+            Account caller = CallContext.current().getCallingAccount();
+            String detail = _accountMgr.isRootAdmin(caller.getId()) ? ": " + e.getMessage() : "; check the placement again";
+            VolumeVO current = _volsDao.findById(volume.getId());
+            String outcome = current != null && Objects.equals(current.getPoolId(), destination.getId())
+                    ? String.format("Volume %s was moved to the host of Instance %s and is kept there, but the move did not finish", volume.getUuid(), vm.getUuid())
+                    : String.format("Moving volume %s to the host of Instance %s failed, and nothing was moved", volume.getUuid(), vm.getUuid());
+            throw new CloudRuntimeException(outcome + detail, e);
+        }
+        return true;
     }
 
     protected VolumeVO getVmExistingVolumeForVolumeAttach(UserVmVO vm, VolumeInfo volumeToAttach) {
@@ -2793,6 +2836,8 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
             newVolumeOnPrimaryStorage = executeLightweightLockMigration(
                     newVolumeOnPrimaryStorage, vm, existingVolumeOfVm,
                     "CLVM lock transfer", "same pool to different host");
+        } else if (moveVolumeNeeded && isLocalVolumeRecordedOnly(vm, newVolumeOnPrimaryStorage)) {
+            moveVolumeNeeded = false;
         } else if (moveVolumeNeeded) {
             PrimaryDataStoreInfo primaryStore = (PrimaryDataStoreInfo)newVolumeOnPrimaryStorage.getDataStore();
             if (primaryStore.isLocal()) {
@@ -2830,6 +2875,14 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
         }
         newVol = sendAttachVolumeCommand(vm, newVol, deviceId);
         return newVol;
+    }
+
+    /**
+     * A local volume on another host is attached to a stopped Instance in the database only: the Instance's next start
+     * decides, with the owner's approval, where its volumes go.
+     */
+    protected boolean isLocalVolumeRecordedOnly(UserVmVO vm, VolumeInfo volume) {
+        return vm.getState() != State.Running && volume.getDataStore() instanceof PrimaryDataStoreInfo && ((PrimaryDataStoreInfo)volume.getDataStore()).isLocal();
     }
 
     /**
@@ -3012,6 +3065,20 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
     @Override
     @ActionEvent(eventType = EventTypes.EVENT_VOLUME_ATTACH, eventDescription = "attaching volume", async = true)
     public Volume attachVolumeToVM(Long vmId, Long volumeId, Long deviceId, Boolean allowAttachForSharedFS, boolean allowAttachOnRestoring) {
+        try {
+            return attachVolumeToVM(vmId, volumeId, deviceId, allowAttachForSharedFS, allowAttachOnRestoring, null);
+        } catch (InsufficientCapacityException e) {
+            // only an approved volume move refuses for capacity, and there is none without an attach command
+            throw new CloudRuntimeException(e.getMessage(), e);
+        }
+    }
+
+    /**
+     * @param command the attach command, whose approval may move the volume to the host of a running Instance once every
+     *        check of the attach has passed; or null, when nothing moves
+     */
+    protected Volume attachVolumeToVM(Long vmId, Long volumeId, Long deviceId, Boolean allowAttachForSharedFS, boolean allowAttachOnRestoring,
+            AttachVolumeCmd command) throws InsufficientCapacityException {
         Account caller = CallContext.current().getCallingAccount();
 
         VolumeInfo volumeToAttach = getAndCheckVolumeInfo(volumeId);
@@ -3063,23 +3130,34 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
             throw new InvalidParameterValueException("Volume's disk offering has encryption enabled, but volume encryption is not supported for hypervisor type " + rootDiskHyperType);
         }
 
+        boolean moved = command != null && !asyncExecutionContext.isJobDispatchedBy(VmWorkConstants.VM_WORK_JOB_DISPATCHER)
+                && moveVolumeForAttachIfApproved(vm, volumeToAttach, command);
+
         Account owner = _accountDao.findById(volumeToAttach.getAccountId());
         List<String> resourceLimitStorageTags = _resourceLimitMgr.getResourceLimitStorageTagsForResourceCountOperation(true, diskOffering, null);
         Long requiredPrimaryStorageSpace = getRequiredPrimaryStorageSizeForVolumeAttach(resourceLimitStorageTags, volumeToAttach);
 
-        try (CheckedReservation primaryStorageReservation = new CheckedReservation(owner, ResourceType.primary_storage, resourceLimitStorageTags, requiredPrimaryStorageSpace, reservationDao, _resourceLimitMgr)) {
+        try {
+            try (CheckedReservation primaryStorageReservation = new CheckedReservation(owner, ResourceType.primary_storage, resourceLimitStorageTags, requiredPrimaryStorageSpace, reservationDao, _resourceLimitMgr)) {
 
-            _jobMgr.updateAsyncJobAttachment(job.getId(), "Volume", volumeId);
+                _jobMgr.updateAsyncJobAttachment(job.getId(), "Volume", volumeId);
 
-            if (asyncExecutionContext.isJobDispatchedBy(VmWorkConstants.VM_WORK_JOB_DISPATCHER)) {
-                return safelyOrchestrateAttachVolume(vmId, volumeId, deviceId);
-            } else {
-                return getVolumeAttachJobResult(vmId, volumeId, deviceId);
+                if (asyncExecutionContext.isJobDispatchedBy(VmWorkConstants.VM_WORK_JOB_DISPATCHER)) {
+                    return safelyOrchestrateAttachVolume(vmId, volumeId, deviceId);
+                } else {
+                    return getVolumeAttachJobResult(vmId, volumeId, deviceId);
+                }
+
+            } catch (ResourceAllocationException e) {
+                logger.error("primary storage resource limit check failed", e);
+                throw new InvalidParameterValueException(e.getMessage());
             }
-
-        } catch (ResourceAllocationException e) {
-            logger.error("primary storage resource limit check failed", e);
-            throw new InvalidParameterValueException(e.getMessage());
+        } catch (RuntimeException e) {
+            if (!moved) {
+                throw e;
+            }
+            throw new CloudRuntimeException(String.format("The volume was moved to the host of the Instance and is kept there, but attaching it failed: %s",
+                    e.getMessage()), e);
         }
     }
 

@@ -19,6 +19,11 @@ package org.apache.cloudstack.engine.orchestration;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import com.cloud.vm.VirtualMachineProfile;
+import com.cloud.storage.StoragePool;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Set;
@@ -938,6 +943,36 @@ public class VolumeOrchestratorTest {
             method.invoke(volumeOrchestrator, List.of(clvmVolume), destHostId, vmInstance);
         } catch (InvocationTargetException e) {
             throw e.getCause();
+        }
+    }
+
+    @Test
+    public void getTasksThrowsForLocalWithoutFlag() throws Exception {
+        VolumeVO volume = new VolumeVO(Volume.Type.DATADISK, "DATA-1", 1L, 1L, 1L, 4L, Storage.ProvisioningType.THIN, 10L << 30, null, null, null);
+        setField(volume, "id", 31L);
+        volume.setState(Volume.State.Ready);
+        volume.setPoolId(11L);
+        StoragePoolVO assigned = Mockito.mock(StoragePoolVO.class);
+        Mockito.when(assigned.getId()).thenReturn(12L);
+        Mockito.when(storagePoolDao.findById(12L)).thenReturn(assigned);
+        StoragePool destination = Mockito.mock(StoragePool.class);
+        Mockito.when(destination.getId()).thenReturn(12L);
+        DiskOffering local = Mockito.mock(DiskOffering.class);
+        Mockito.when(local.isUseLocalStorage()).thenReturn(true);
+        Mockito.when(entityMgr.findById(Mockito.eq(DiskOffering.class), Mockito.any())).thenReturn(local);
+        Map<Volume, StoragePool> destinations = new HashMap<>();
+        destinations.put(volume, destination);
+        VirtualMachineProfile profile = Mockito.mock(VirtualMachineProfile.class);
+        Method getTasks = VolumeOrchestrator.class.getDeclaredMethod("getTasks", List.class, Map.class, VirtualMachineProfile.class);
+        getTasks.setAccessible(true);
+
+        // a start never moves a local volume, even when planning was allowed to name a host without it
+        for (Object allowVolumeMove : new Object[] {null, Boolean.TRUE}) {
+            Mockito.lenient().when(profile.getParameter(VirtualMachineProfile.Param.AllowVolumeMove)).thenReturn(allowVolumeMove);
+            InvocationTargetException e = Assert.assertThrows(InvocationTargetException.class,
+                    () -> getTasks.invoke(volumeOrchestrator, Collections.singletonList(volume), destinations, profile));
+            assertTrue(String.valueOf(e.getCause()), e.getCause() instanceof CloudRuntimeException);
+            assertTrue(e.getCause().getMessage(), e.getCause().getMessage().contains("cannot be recreated"));
         }
     }
 

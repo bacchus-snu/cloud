@@ -139,6 +139,8 @@
 
     <bean id="hostPoolCoreManagerImpl" class="com.cloud.capacity.HostPoolCoreManagerImpl" />
 
+    <bean id="placementServiceImpl" class="com.cloud.deploy.PlacementServiceImpl" />
+
     <bean id="configurationManagerImpl" class="com.cloud.configuration.ConfigurationManagerImpl" >
         <property name="secChecker" value="#{securityCheckersRegistry.registered}" />
     </bean>

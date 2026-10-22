@@ -21,6 +21,8 @@ import com.cloud.deploy.DeploymentPlanner.ExcludeList;
 import com.cloud.exception.AffinityConflictException;
 import com.cloud.exception.InsufficientServerCapacityException;
 import com.cloud.host.Host;
+import com.cloud.storage.StoragePool;
+import com.cloud.vm.DiskProfile;
 import com.cloud.utils.component.Manager;
 import com.cloud.vm.VirtualMachineProfile;
 import org.apache.cloudstack.framework.config.ConfigKey;
@@ -66,4 +68,17 @@ public interface DeploymentPlanningManager extends Manager {
     void checkForNonDedicatedResources(VirtualMachineProfile vmProfile, DataCenter dc, ExcludeList avoids);
 
     void reorderHostsByPriority(Map<Long, Integer> priorities, List<Host> hosts);
+
+    /**
+     * The hosts on which the VM's compute is admitted now, anywhere in the plan's scope, in the order the host
+     * allocators take them, after the exclusions planning applies to the VM (dedication, disabled resources, other
+     * architectures, affinity groups). It reads only: nothing is reserved and the VM's volumes are not considered.
+     */
+    List<Host> listHostsAdmittingVm(VirtualMachineProfile vmProfile, DataCenterDeployment plan) throws AffinityConflictException;
+
+    /**
+     * The storage pools the storage allocators accept for a disk under the plan, in their order, as planning would
+     * choose among them; it reserves nothing.
+     */
+    List<StoragePool> listPoolsForDisk(DiskProfile disk, VirtualMachineProfile vmProfile, DeploymentPlan plan);
 }

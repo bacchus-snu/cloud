@@ -42,6 +42,7 @@ import com.cloud.exception.InsufficientServerCapacityException;
 import com.cloud.exception.ResourceAllocationException;
 import com.cloud.exception.ResourceUnavailableException;
 import com.cloud.exception.StorageUnavailableException;
+import com.cloud.exception.VolumeMoveRequiredException;
 import com.cloud.user.Account;
 import com.cloud.uservm.UserVm;
 import com.cloud.utils.exception.ExecutionException;
@@ -94,6 +95,15 @@ public class StartVMCmd extends BaseAsyncCmd implements UserCmd {
     @Parameter(name = ApiConstants.BOOT_INTO_SETUP, type = CommandType.BOOLEAN, required = false, description = "Boot into hardware setup menu or not", since = "4.15.0.0")
     private Boolean bootIntoSetup;
 
+    @Parameter(name = ApiConstants.MIGRATE_VOLUMES, type = CommandType.BOOLEAN, since = "4.23.0.100",
+            description = "Whether the Instance's local volumes may be moved to another host when only another host has room; the move " +
+                    "also needs the placementtoken that checkPlacement returned for it. False by default.")
+    private Boolean migrateVolumes;
+
+    @Parameter(name = ApiConstants.PLACEMENT_TOKEN, type = CommandType.STRING, since = "4.23.0.100",
+            description = "The approval of a volume move that checkPlacement returned with the verdict move")
+    private String placementToken;
+
     // ///////////////////////////////////////////////////
     // ///////////////// Accessors ///////////////////////
     // ///////////////////////////////////////////////////
@@ -124,6 +134,14 @@ public class StartVMCmd extends BaseAsyncCmd implements UserCmd {
 
     public Boolean getConsiderLastHost() {
         return considerLastHost;
+    }
+
+    public boolean isMigrateVolumes() {
+        return Boolean.TRUE.equals(migrateVolumes);
+    }
+
+    public String getPlacementToken() {
+        return placementToken;
     }
 
     // ///////////////////////////////////////////////////
@@ -204,6 +222,9 @@ public class StartVMCmd extends BaseAsyncCmd implements UserCmd {
         } catch (ResourceAllocationException ex) {
             logger.warn("Exception: ", ex);
             throw new ServerApiException(ApiErrorCode.RESOURCE_ALLOCATION_ERROR, ex.getMessage());
+        } catch (VolumeMoveRequiredException ex) {
+            logger.info(ex.getMessage());
+            throw new ServerApiException(ApiErrorCode.INSUFFICIENT_CAPACITY_ERROR, ex.getMessage(), ex);
         } catch (InsufficientCapacityException ex) {
             StringBuilder message = new StringBuilder(ex.getMessage());
             if (ex instanceof InsufficientServerCapacityException) {

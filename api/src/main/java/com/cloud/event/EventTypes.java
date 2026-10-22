@@ -483,6 +483,7 @@ public class EventTypes {
     // Host
     public static final String EVENT_HOST_RECONNECT = "HOST.RECONNECT";
     public static final String EVENT_HOST_GPU_GROUPS_UPDATE = "HOST.GPU.GROUPS.UPDATE";
+    public static final String EVENT_HOST_MOVE_RATE_UPDATE = "HOST.MOVE.RATE.UPDATE";
 
     // Host on Degraded ResourceState
     public static final String EVENT_DECLARE_HOST_DEGRADED = "HOST.DECLARE.DEGRADED";
@@ -1178,6 +1179,7 @@ public class EventTypes {
         // Host
         entityEventDetails.put(EVENT_HOST_RECONNECT, Host.class);
         entityEventDetails.put(EVENT_HOST_GPU_GROUPS_UPDATE, Host.class);
+        entityEventDetails.put(EVENT_HOST_MOVE_RATE_UPDATE, Host.class);
 
         // Host Out-of-band management
         entityEventDetails.put(EVENT_HOST_OUTOFBAND_MANAGEMENT_ENABLE, Host.class);

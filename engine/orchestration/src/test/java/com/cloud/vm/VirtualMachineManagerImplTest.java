@@ -44,7 +44,9 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
@@ -63,9 +65,13 @@ import com.cloud.network.NetworkModel;
 import com.cloud.resource.ResourceManager;
 import com.cloud.storage.clvm.ClvmPoolManager;
 import org.apache.cloudstack.api.ApiConstants;
+import org.apache.cloudstack.affinity.dao.AffinityGroupVMMapDao;
 import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.engine.orchestration.service.NetworkOrchestrationService;
 import org.apache.cloudstack.engine.orchestration.service.VolumeOrchestrationService;
+import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreManager;
+import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreProviderManager;
+import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStore;
 import org.apache.cloudstack.engine.subsystem.api.storage.StoragePoolAllocator;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeDataFactory;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeInfo;
@@ -111,6 +117,7 @@ import com.cloud.agent.api.to.VirtualMachineTO;
 import com.cloud.agent.manager.Commands;
 import com.cloud.capacity.HostPoolCoreManager;
 import com.cloud.exception.InsufficientServerCapacityException;
+import com.cloud.exception.VolumeMoveRequiredException;
 import com.cloud.hypervisor.HypervisorGuru;
 import com.cloud.serializer.GsonHelper;
 import com.cloud.api.query.dao.UserVmJoinDao;
@@ -129,6 +136,7 @@ import com.cloud.deploy.DeploymentPlan;
 import com.cloud.deploy.DeploymentPlanner;
 import com.cloud.deploy.DeploymentPlanner.ExcludeList;
 import com.cloud.deploy.DeploymentPlanningManager;
+import com.cloud.deploy.PlacementVerdict;
 import com.cloud.domain.DomainVO;
 import com.cloud.domain.dao.DomainDao;
 import com.cloud.exception.AgentUnavailableException;
@@ -2395,5 +2403,131 @@ public class VirtualMachineManagerImplTest {
 
         assertTrue(sent.isEmpty());
         verify(startGpuService, never()).allocateGpuGroup(any(), Mockito.anyLong(), Mockito.anyLong(), Mockito.anyInt());
+    }
+
+    /**
+     * Starts a stopped KVM user VM whose ready root volume is on host 1's local pool, without a plan from the caller, so
+     * a first pass is tied to that pool; the planner answers each pass in turn.
+     */
+    private void startFromLocalRoot(org.mockito.stubbing.Answer<DeployDestination> planner) throws Exception {
+        VMInstanceVO vmInstance = new VMInstanceVO();
+        ReflectionTestUtils.setField(vmInstance, "id", 1L);
+        ReflectionTestUtils.setField(vmInstance, "accountId", 1L);
+        ReflectionTestUtils.setField(vmInstance, "uuid", "vm-uuid");
+        ReflectionTestUtils.setField(vmInstance, "serviceOfferingId", 2L);
+        ReflectionTestUtils.setField(vmInstance, "instanceName", "myVm");
+        ReflectionTestUtils.setField(vmInstance, "type", VirtualMachine.Type.User);
+        ReflectionTestUtils.setField(vmInstance, "dataCenterId", 1L);
+        ReflectionTestUtils.setField(vmInstance, "hypervisorType", HypervisorType.KVM);
+
+        VirtualMachineGuru vmGuru = mock(VirtualMachineGuru.class);
+        User user = mock(User.class);
+        Account account = mock(Account.class);
+        Account owner = mock(Account.class);
+        ReservationContext ctx = mock(ReservationContext.class);
+        Mockito.lenient().when(ctx.getJournal()).thenReturn(mock(Journal.class));
+        ItWorkVO work = mock(ItWorkVO.class);
+        Mockito.lenient().when(work.getStep()).thenReturn(ItWorkVO.Step.Prepare);
+        VirtualMachineTemplate template = mock(VirtualMachineTemplate.class);
+        ServiceOfferingVO offering = startOffering(2, null);
+        Mockito.lenient().when(vmInstanceDaoMock.findByUuid("vm-uuid")).thenReturn(vmInstance);
+        Mockito.lenient().doReturn(vmGuru).when(virtualMachineManagerImpl).getVmGuru(vmInstance);
+        Mockito.lenient().doReturn(new Ternary<>(vmInstance, ctx, work)).when(virtualMachineManagerImpl)
+                .changeToStartState(vmGuru, vmInstance, user, account, owner, offering, template);
+        Mockito.lenient().when(serviceOfferingDaoMock.findById(1L, 2L)).thenReturn(offering);
+        Mockito.lenient().when(_entityMgr.findById(Account.class, 1L)).thenReturn(owner);
+        Mockito.lenient().when(_entityMgr.findByIdIncludingRemoved(VirtualMachineTemplate.class, vmInstance.getTemplateId())).thenReturn(template);
+        Mockito.lenient().doNothing().when(virtualMachineManagerImpl).checkIfTemplateNeededForCreatingVmVolumes(vmInstance);
+        Mockito.lenient().when(_hvGuruMgr.getGuru(HypervisorType.KVM)).thenReturn(mock(HypervisorGuru.class));
+        Mockito.lenient().when(_stateMachine.transitTo(any(), any(), any(), any())).thenReturn(true);
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "hostPoolCoreManager", mock(HostPoolCoreManager.class));
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "gpuService", startGpuService);
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "_affinityGroupVMMapDao", mock(AffinityGroupVMMapDao.class));
+        ClusterDetailsVO ratio = mock(ClusterDetailsVO.class);
+        Mockito.lenient().when(ratio.getValue()).thenReturn("1.0");
+        Mockito.lenient().when(_clusterDetailsDao.findDetail(eq(1L), anyString())).thenReturn(ratio);
+
+        VolumeVO root = mock(VolumeVO.class);
+        Mockito.lenient().when(root.getId()).thenReturn(301L);
+        Mockito.lenient().when(root.getName()).thenReturn("ROOT-1");
+        Mockito.lenient().when(root.getPoolId()).thenReturn(11L);
+        Mockito.lenient().when(root.getSize()).thenReturn(10L << 30);
+        Mockito.lenient().when(root.getState()).thenReturn(Volume.State.Ready);
+        Mockito.lenient().when(volumeDaoMock.findReadyRootVolumesByInstance(1L)).thenReturn(Collections.singletonList(root));
+        Mockito.lenient().when(volumeDaoMock.findUsableVolumesForInstance(1L)).thenReturn(Collections.singletonList(root));
+        PrimaryDataStore store = mock(PrimaryDataStore.class);
+        Mockito.lenient().when(store.getDataCenterId()).thenReturn(1L);
+        Mockito.lenient().when(store.getPodId()).thenReturn(2L);
+        Mockito.lenient().when(store.getClusterId()).thenReturn(1L);
+        DataStoreManager stores = mock(DataStoreManager.class);
+        Mockito.lenient().when(stores.getPrimaryDataStore(11L)).thenReturn(store);
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "dataStoreMgr", stores);
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "dataStoreProviderManager", mock(DataStoreProviderManager.class));
+        StoragePoolVO pool = mock(StoragePoolVO.class);
+        Mockito.lenient().when(pool.getId()).thenReturn(11L);
+        Mockito.lenient().when(pool.getScope()).thenReturn(ScopeType.HOST);
+        Mockito.lenient().when(storagePoolDaoMock.findById(11L)).thenReturn(pool);
+        Mockito.lenient().when(storagePoolHostDaoMock.listByPoolId(11L)).thenReturn(Collections.singletonList(new StoragePoolHostVO(11L, 1L, "/var/lib/libvirt/images")));
+
+        Mockito.lenient().when(_dpMgr.planDeployment(any(VirtualMachineProfileImpl.class), any(DataCenterDeployment.class), any(ExcludeList.class), any()))
+                .thenAnswer(planner);
+        CallContext callContext = mock(CallContext.class);
+        Mockito.lenient().when(callContext.getCallingAccount()).thenReturn(account);
+        Mockito.lenient().when(callContext.getCallingUser()).thenReturn(user);
+        try (MockedStatic<CallContext> ignored = Mockito.mockStatic(CallContext.class)) {
+            when(CallContext.current()).thenReturn(callContext);
+            virtualMachineManagerImpl.orchestrateStart("vm-uuid", startParams, null, null);
+        }
+    }
+
+    @Test
+    public void secondPassUsesFreshExcludeList() {
+        List<Set<Long>> hostsAvoidedAtCall = new ArrayList<>();
+        List<Object> allowVolumeMoveAtCall = new ArrayList<>();
+        List<Long> poolOfPlanAtCall = new ArrayList<>();
+
+        assertThrows(InsufficientServerCapacityException.class, () -> startFromLocalRoot(invocation -> {
+            VirtualMachineProfile profile = invocation.getArgument(0);
+            ExcludeList avoids = invocation.getArgument(2);
+            hostsAvoidedAtCall.add(avoids.getHostsToAvoid() == null ? new HashSet<>() : new HashSet<>(avoids.getHostsToAvoid()));
+            allowVolumeMoveAtCall.add(profile.getParameter(VirtualMachineProfile.Param.AllowVolumeMove));
+            poolOfPlanAtCall.add(((DeploymentPlan)invocation.getArgument(1)).getPoolId());
+            // the first pass, tied to the root volume's pool, rules out the hosts that cannot reach that pool
+            avoids.addHost(7L);
+            return null;
+        }));
+
+        assertEquals(2, hostsAvoidedAtCall.size());
+        assertEquals(Long.valueOf(11L), poolOfPlanAtCall.get(0));
+        assertNull("the second pass is not tied to the root volume's pool", poolOfPlanAtCall.get(1));
+        assertFalse("what the first pass ruled out for the pool does not carry into the second", hostsAvoidedAtCall.get(1).contains(7L));
+        assertNull(allowVolumeMoveAtCall.get(0));
+        assertEquals("the second pass may name a host without the local volumes", Boolean.TRUE, allowVolumeMoveAtCall.get(1));
+    }
+
+    @Test
+    public void startOnAHostWithoutItsLocalVolumesNeedsAnApprovedMove() throws Exception {
+        HostVO other = kvmHost(2L);
+        Cluster cluster = mock(Cluster.class);
+        Mockito.lenient().when(cluster.getId()).thenReturn(1L);
+        Pod pod = mock(Pod.class);
+        Mockito.lenient().when(pod.getId()).thenReturn(2L);
+        DeployDestination elsewhere = mock(DeployDestination.class);
+        Mockito.lenient().when(elsewhere.getHost()).thenReturn(other);
+        Mockito.lenient().when(elsewhere.getPod()).thenReturn(pod);
+        Mockito.lenient().when(elsewhere.getCluster()).thenReturn(cluster);
+        List<Integer> calls = new ArrayList<>();
+
+        VolumeMoveRequiredException e = assertThrows(VolumeMoveRequiredException.class, () -> startFromLocalRoot(invocation -> {
+            calls.add(calls.size());
+            return calls.size() == 1 ? null : elsewhere;
+        }));
+
+        assertEquals(Collections.singletonList(301L), e.getVerdict().getVolumeIds());
+        assertEquals(PlacementVerdict.Verdict.move, e.getVerdict().getVerdict());
+        assertTrue(e.getMessage(), e.getMessage().contains("ROOT-1"));
+        verify(_stateMachine, never()).transitTo(any(), eq(VirtualMachine.Event.OperationRetry), any(), any());
+        verify(startGpuService, never()).allocateGpuGroup(any(), Mockito.anyLong(), Mockito.anyLong(), Mockito.anyInt());
+        verify(_stateMachine).transitTo(any(), eq(VirtualMachine.Event.OperationFailed), any(), any());
     }
 }

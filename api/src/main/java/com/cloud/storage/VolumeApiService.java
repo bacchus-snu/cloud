@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.cloud.dc.DataCenter;
+import com.cloud.exception.InsufficientCapacityException;
 import com.cloud.exception.ResourceAllocationException;
 import com.cloud.offering.DiskOffering;
 import com.cloud.user.Account;
@@ -112,7 +113,11 @@ public interface VolumeApiService {
 
     Volume changeDiskOfferingForVolumeInternal(Long volumeId, Long newDiskOfferingId, Long newSize, Long newMinIops, Long newMaxIops, boolean autoMigrateVolume, boolean shrinkOk) throws ResourceAllocationException;
 
-    Volume attachVolumeToVM(AttachVolumeCmd command);
+    /**
+     * @throws InsufficientCapacityException with {@link com.cloud.exception.VolumeMoveRequiredException} when the volume is on the local
+     *         storage of another host than the running Instance's and the owner has not approved moving it
+     */
+    Volume attachVolumeToVM(AttachVolumeCmd command) throws InsufficientCapacityException;
 
     Volume attachVolumeToVM(Long vmId, Long volumeId, Long deviceId, Boolean allowAttachForSharedFS, boolean allowAttachOnRestoring);
 

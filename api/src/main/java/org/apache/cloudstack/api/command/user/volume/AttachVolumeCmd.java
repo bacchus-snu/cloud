@@ -33,6 +33,7 @@ import org.apache.cloudstack.api.response.VolumeResponse;
 import org.apache.cloudstack.context.CallContext;
 
 import com.cloud.event.EventTypes;
+import com.cloud.exception.InsufficientCapacityException;
 import com.cloud.storage.Volume;
 import com.cloud.user.Account;
 import com.cloud.vm.VirtualMachine;
@@ -60,6 +61,15 @@ public class AttachVolumeCmd extends BaseAsyncCmd implements UserCmd {
             required=true, description = "    the ID of the Instance")
     private Long virtualMachineId;
 
+    @Parameter(name = ApiConstants.MIGRATE_VOLUME, type = CommandType.BOOLEAN, since = "4.23.0.100",
+            description = "Whether a volume on the local storage of another host may be moved to the host of the running Instance; the move " +
+                    "also needs the placementtoken that checkPlacement returned for it. False by default.")
+    private Boolean migrateVolume;
+
+    @Parameter(name = ApiConstants.PLACEMENT_TOKEN, type = CommandType.STRING, since = "4.23.0.100",
+            description = "The approval of a volume move that checkPlacement returned with the verdict move")
+    private String placementToken;
+
     /////////////////////////////////////////////////////
     /////////////////// Accessors ///////////////////////
     /////////////////////////////////////////////////////
@@ -74,6 +84,14 @@ public class AttachVolumeCmd extends BaseAsyncCmd implements UserCmd {
 
     public Long getVirtualMachineId() {
         return virtualMachineId;
+    }
+
+    public boolean isMigrateVolume() {
+        return Boolean.TRUE.equals(migrateVolume);
+    }
+
+    public String getPlacementToken() {
+        return placementToken;
     }
 
     /////////////////////////////////////////////////////
@@ -117,7 +135,13 @@ public class AttachVolumeCmd extends BaseAsyncCmd implements UserCmd {
     @Override
     public void execute() {
         CallContext.current().setEventDetails("Volume ID: " + getResourceUuid(ApiConstants.ID) + " Instance ID: " + getResourceUuid(ApiConstants.VIRTUAL_MACHINE_ID));
-        Volume result = _volumeService.attachVolumeToVM(this);
+        Volume result;
+        try {
+            result = _volumeService.attachVolumeToVM(this);
+        } catch (InsufficientCapacityException ex) {
+            logger.info(ex.getMessage());
+            throw new ServerApiException(ApiErrorCode.INSUFFICIENT_CAPACITY_ERROR, ex.getMessage(), ex);
+        }
         if (result != null) {
             VolumeResponse response = _responseGenerator.createVolumeResponse(getResponseView(), result);
             response.setResponseName(getCommandName());

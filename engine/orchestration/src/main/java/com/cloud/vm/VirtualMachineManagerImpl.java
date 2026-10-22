@@ -197,6 +197,7 @@ import com.cloud.deploy.DeploymentPlanner;
 import com.cloud.deploy.DeploymentPlanner.ExcludeList;
 import com.cloud.deploy.DeploymentPlanningManager;
 import com.cloud.deploy.DeploymentPlanningManagerImpl;
+import com.cloud.deploy.PlacementVerdict;
 import com.cloud.deployasis.dao.UserVmDeployAsIsDetailsDao;
 import com.cloud.domain.Domain;
 import com.cloud.domain.dao.DomainDao;
@@ -210,6 +211,7 @@ import com.cloud.exception.ConcurrentOperationException;
 import com.cloud.exception.ConnectionException;
 import com.cloud.exception.InsufficientCapacityException;
 import com.cloud.exception.InsufficientServerCapacityException;
+import com.cloud.exception.VolumeMoveRequiredException;
 import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.OperationTimedoutException;
 import com.cloud.exception.ResourceAllocationException;
@@ -1412,6 +1414,8 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
             if (avoids == null) {
                 avoids = new ExcludeList();
             }
+            final ExcludeList callerAvoids = new ExcludeList(avoids.getDataCentersToAvoid(), avoids.getPodsToAvoid(), avoids.getClustersToAvoid(),
+                    avoids.getHostsToAvoid(), avoids.getPoolsToAvoid());
             logger.debug("Deploy avoids pods: {}, clusters: {}, hosts: {}", avoids.getPodsToAvoid(), avoids.getClustersToAvoid(), avoids.getHostsToAvoid());
 
             boolean planChangedByVolume = false;
@@ -1472,7 +1476,12 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
                     }
                 }
 
-                VirtualMachineProfileImpl vmProfile = new VirtualMachineProfileImpl(vm, template, offering, owner, params);
+                Map<VirtualMachineProfile.Param, Object> profileParams = params;
+                if (!reuseVolume) {
+                    profileParams = params == null ? new HashMap<>() : new HashMap<>(params);
+                    profileParams.put(VirtualMachineProfile.Param.AllowVolumeMove, Boolean.TRUE);
+                }
+                VirtualMachineProfileImpl vmProfile = new VirtualMachineProfileImpl(vm, template, offering, owner, profileParams);
                 logBootModeParameters(params);
                 DeployDestination dest = null;
                 try {
@@ -1487,6 +1496,9 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
                         plan = originalPlan;
                         planChangedByVolume = false;
                         reuseVolume = false;
+                        // what the first pass ruled out applied to the volumes' pool only
+                        avoids = new ExcludeList(callerAvoids.getDataCentersToAvoid(), callerAvoids.getPodsToAvoid(), callerAvoids.getClustersToAvoid(),
+                                callerAvoids.getHostsToAvoid(), callerAvoids.getPoolsToAvoid());
                         continue;
                     }
                     String message = String.format("Unable to create a deployment for %s after %s attempts", vmProfile, attemptNumber);
@@ -1496,6 +1508,15 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
                     } else {
                         throw new InsufficientServerCapacityException(message, DataCenter.class, plan.getDataCenterId(), areAffinityGroupsAssociated(vmProfile));
                     }
+                }
+
+                List<VolumeVO> stranded = readyLocalVolumesOffHost(vm.getId(), dest.getHost().getId());
+                if (!stranded.isEmpty()) {
+                    List<PlacementVerdict.MovedVolume> moved = stranded.stream().map(v -> new PlacementVerdict.MovedVolume(v.getId(), v.getUuid(), v.getName(),
+                            v.getSize() == null ? 0 : v.getSize(), v.getSize() == null ? 0 : v.getSize())).collect(Collectors.toList());
+                    throw new VolumeMoveRequiredException(String.format("Instance %s can start only on a host that does not hold its volumes %s; moving them "
+                            + "needs the owner's approval through a placement check", vm.getUuid(), stranded.stream().map(VolumeVO::getName)
+                            .collect(Collectors.toList())), vm.getDataCenterId(), PlacementVerdict.moveRequired(moved));
                 }
 
                 avoids.addHost(dest.getHost().getId());
@@ -1766,6 +1787,28 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
             String message = String.format(messageTmpl, vm.getHostName(), vm.getUuid(), details);
             throw new CloudRuntimeException(message, lastKnownError);
         }
+    }
+
+    /**
+     * @return the VM's ready volumes on the local storage of hosts other than the given one, which a start there would
+     *         need moved; a start never moves them. A recreatable volume is not among them: a start recreates it.
+     */
+    protected List<VolumeVO> readyLocalVolumesOffHost(long vmId, long hostId) {
+        List<VolumeVO> stranded = new ArrayList<>();
+        for (VolumeVO volume : _volsDao.findUsableVolumesForInstance(vmId)) {
+            if (volume.getState() != Volume.State.Ready || volume.getPoolId() == null || volume.isRecreatable()) {
+                continue;
+            }
+            StoragePoolVO pool = _storagePoolDao.findById(volume.getPoolId());
+            if (pool == null || pool.getScope() != ScopeType.HOST) {
+                continue;
+            }
+            List<StoragePoolHostVO> poolHosts = _poolHostDao.listByPoolId(pool.getId());
+            if (poolHosts.stream().noneMatch(poolHost -> poolHost.getHostId() == hostId)) {
+                stranded.add(volume);
+            }
+        }
+        return stranded;
     }
 
     /**

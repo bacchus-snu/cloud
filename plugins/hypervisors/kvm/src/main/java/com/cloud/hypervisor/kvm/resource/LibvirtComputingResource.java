@@ -583,7 +583,7 @@ public class LibvirtComputingResource extends ServerResourceBase implements Serv
     protected int cmdsTimeout;
     protected int stopTimeout;
     protected CPUStat cpuStat = new CPUStat();
-    protected MemStat memStat = new MemStat(dom0MinMem, dom0OvercommitMem);
+    protected MemStat memStat;
     private final LibvirtUtilitiesHelper libvirtUtilitiesHelper = new LibvirtUtilitiesHelper();
     private LibvirtDomainListener libvirtDomainListener;
 
@@ -754,7 +754,12 @@ public class LibvirtComputingResource extends ServerResourceBase implements Serv
     }
 
     public MemStat getMemStat() {
-        memStat.refresh();
+        // built on first use, after configure has read the reserved and overcommitted memory
+        if (memStat == null) {
+            memStat = new MemStat(dom0MinMem, dom0OvercommitMem);
+        } else {
+            memStat.refresh();
+        }
         return memStat;
     }
 
@@ -4085,10 +4090,19 @@ public class LibvirtComputingResource extends ServerResourceBase implements Serv
             throw new InternalErrorException("LibvirtVMDef object get devices with null result");
         }
         final InterfaceDef interfaceDef = getVifDriver(nic.getType(), nic.getName()).plug(nic, vm.getPlatformEmulator(), nicAdapter, extraConfig);
+        interfaceDef.setMtu(getDomainNicMtu(nic, vmSpec.getType()));
         if (vmSpec.getDetails() != null) {
             setInterfaceDefQueueSettings(vmSpec.getDetails(), vmSpec.getCpus(), interfaceDef);
         }
         vm.getDevices().addDevice(interfaceDef);
+    }
+
+    /**
+     * The MTU a NIC gets in the domain, which is also the most its guest can set. A virtual router sets the MTUs of
+     * its interfaces itself and raises them while it runs, so its NICs get none.
+     */
+    public static Integer getDomainNicMtu(final NicTO nic, final VirtualMachine.Type vmType) {
+        return vmType == VirtualMachine.Type.DomainRouter ? null : nic.getMtu();
     }
 
     public boolean cleanupDisk(Map<String, String> volumeToDisconnect) {
@@ -5006,7 +5020,7 @@ public class LibvirtComputingResource extends ServerResourceBase implements Serv
             return DiskDef.DiskBus.IDE;
         } else if (platformEmulator.startsWith("Other PV Virtio-SCSI")) {
             return DiskDef.DiskBus.SCSI;
-        } else if (platformEmulator.contains("Ubuntu") ||
+        } else if (platformEmulator.contains("Ubuntu") || isVirtioLinux(platformEmulator) ||
                 StringUtils.startsWithAny(platformEmulator,
                         "Fedora", "CentOS", "Red Hat Enterprise Linux", "Debian GNU/Linux", "FreeBSD", "Oracle",
                         "Rocky Linux", "AlmaLinux", "Other PV")) {
@@ -5020,6 +5034,15 @@ public class LibvirtComputingResource extends ServerResourceBase implements Serv
         }
 
     }
+
+    /**
+     * Linux guests drive virtio; emulated IDE and e1000 remain for OS types that may lack its drivers, among them the
+     * 2.6 kernel series, whose early releases predate virtio.
+     */
+    private static boolean isVirtioLinux(final String platformEmulator) {
+        return StringUtils.containsIgnoreCase(platformEmulator, "Linux") && !platformEmulator.contains("2.6x");
+    }
+
     private void cleanupVMNetworks(final Connect conn, final List<InterfaceDef> nics) {
         if (nics != null) {
             for (final InterfaceDef nic : nics) {

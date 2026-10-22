@@ -57,12 +57,16 @@ public class MemStat {
         return _memStats.get(TOTAL_KEY) - reservedMemory + overCommitMemory;
     }
 
+    /**
+     * The reserved memory is the host's own: it comes off the total and off the used memory, which the kernel
+     * counts host-wide, so free and reclaimable memory is available to guests, up to the total.
+     */
     public long getAvailable() {
-        return getFree() + getCache() + getBuffer();
+        return Math.min(getFree() + getCache() + getBuffer(), getTotal());
     }
 
     public long getFree() {
-        return _memStats.get(FREE_KEY) - reservedMemory + overCommitMemory;
+        return _memStats.get(FREE_KEY) + overCommitMemory;
     }
 
     public long getCache() {

@@ -39,7 +39,7 @@ public class ListTagsCmd extends BaseListProjectAndAccountResourcesCmd {
     @Parameter(name = ApiConstants.KEY, type = CommandType.STRING, description = "List by key")
     private String key;
 
-    @Parameter(name = ApiConstants.VALUE, type = CommandType.STRING, description = "List by value")
+    @Parameter(name = ApiConstants.VALUE, type = CommandType.STRING, length = ResourceTag.VALUE_MAX_LENGTH, description = "List by value")
     private String value;
 
     @Parameter(name = ApiConstants.CUSTOMER, type = CommandType.STRING, description = "List by customer name")

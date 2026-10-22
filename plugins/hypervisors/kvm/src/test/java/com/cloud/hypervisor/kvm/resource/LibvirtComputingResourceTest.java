@@ -39,6 +39,7 @@ import static org.mockito.Mockito.when;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.net.NetworkInterface;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -7638,5 +7639,69 @@ public class LibvirtComputingResourceTest {
         Pair<Integer, Long> expectedResult = new Pair<>(expectedPeriod, expectedQuota);
         Pair<Integer, Long> result = libvirtComputingResourceSpy.getPeriodAndQuota(cpuQuotaPercentage);
         Assert.assertEquals(expectedResult, result);
+    }
+    @Test
+    public void linuxGuestsGetVirtioDisksAndNics() {
+        LibvirtComputingResource resource = new LibvirtComputingResource();
+        BridgeVifDriver vifDriver = new BridgeVifDriver();
+        vifDriver._libvirtComputingResource = resource;
+        for (String os : List.of("OpenSUSE Linux (64 bit)", "Other Linux (64-bit)", "SUSE Linux Enterprise Server 15 (64-bit)", "Arch Linux",
+                "Alpine Linux", "Ubuntu 26.04 LTS", "Debian GNU/Linux 13 (64-bit)", "AlmaLinux 10", "Rocky Linux 10")) {
+            assertTrue(os, resource.isGuestPVEnabled(os));
+            assertEquals(os, InterfaceDef.NicModel.VIRTIO, vifDriver.getGuestNicModel(os, null));
+        }
+        for (String os : List.of("Windows 10 (64-bit)", "Other (64-bit)", "Other Linux 2.6x", "Other 2.6x Linux (64-bit)", "Other 2.6x Linux (32-bit)")) {
+            assertFalse(os, resource.isGuestPVEnabled(os));
+            assertEquals(os, InterfaceDef.NicModel.E1000, vifDriver.getGuestNicModel(os, null));
+        }
+    }
+
+    @Test
+    public void createVifsGiveAGuestNicItsMtuAndARouterNicNone() throws Exception {
+        VifDriver vifDriver = Mockito.mock(VifDriver.class);
+        Mockito.doReturn(vifDriver).when(libvirtComputingResourceSpy).getVifDriver(Mockito.any(), Mockito.any());
+        Mockito.when(vifDriver.plug(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any())).thenAnswer(invocation -> {
+            InterfaceDef intf = new InterfaceDef();
+            intf.defBridgeNet("cloudbr1", null, "02:00:0a:5e:01:0a", InterfaceDef.NicModel.VIRTIO);
+            return intf;
+        });
+        NicTO nic = new NicTO();
+        nic.setDeviceId(0);
+        nic.setType(TrafficType.Guest);
+        nic.setMtu(1450);
+
+        Assert.assertEquals(Integer.valueOf(1450), createdInterface(VirtualMachine.Type.User, nic).getMtu());
+        Assert.assertTrue(createdInterface(VirtualMachine.Type.User, nic).toString().contains("<mtu size='1450'/>"));
+        Assert.assertNull(createdInterface(VirtualMachine.Type.DomainRouter, nic).getMtu());
+
+        NicTO unmanagedNic = new NicTO();
+        unmanagedNic.setDeviceId(0);
+        unmanagedNic.setType(TrafficType.Guest);
+        Assert.assertFalse(createdInterface(VirtualMachine.Type.User, unmanagedNic).toString().contains("<mtu"));
+    }
+
+    private InterfaceDef createdInterface(VirtualMachine.Type type, NicTO nic) throws Exception {
+        VirtualMachineTO vmSpec = Mockito.mock(VirtualMachineTO.class);
+        Mockito.when(vmSpec.getNics()).thenReturn(new NicTO[] {nic});
+        Mockito.when(vmSpec.getType()).thenReturn(type);
+        LibvirtVMDef vm = new LibvirtVMDef();
+        vm.addComp(new DevicesDef());
+        libvirtComputingResourceSpy.createVifs(vmSpec, vm);
+        return vm.getDevices().getInterfaces().get(0);
+    }
+
+    @Test
+    public void hostStatsMemoryHonoursTheReservedAndOvercommittedMemory() throws Exception {
+        LibvirtComputingResource resource = new LibvirtComputingResource();
+        long reserved = 1024L * 1024 * 1024;
+        long overcommitted = 512L * 1024 * 1024;
+        Field reservedField = LibvirtComputingResource.class.getDeclaredField("dom0MinMem");
+        reservedField.setAccessible(true);
+        reservedField.setLong(resource, reserved);
+        Field overcommittedField = LibvirtComputingResource.class.getDeclaredField("dom0OvercommitMem");
+        overcommittedField.setAccessible(true);
+        overcommittedField.setLong(resource, overcommitted);
+
+        assertEquals(new MemStat().getTotal() - reserved + overcommitted, resource.getMemStat().getTotal());
     }
 }

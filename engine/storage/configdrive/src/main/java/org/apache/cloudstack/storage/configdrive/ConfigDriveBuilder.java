@@ -22,7 +22,6 @@ import static com.cloud.network.NetworkModel.CONFIGDATA_DIR;
 import static com.cloud.network.NetworkModel.CONFIGDATA_FILE;
 import static com.cloud.network.NetworkModel.PASSWORD_FILE;
 import static com.cloud.network.NetworkModel.USERDATA_FILE;
-import static com.cloud.network.NetworkService.DEFAULT_MTU;
 import static org.apache.cloudstack.storage.configdrive.ConfigDriveUtils.mergeJsonArraysAndUpdateObject;
 
 import java.io.File;
@@ -112,8 +111,11 @@ public class ConfigDriveBuilder {
     /**
      *  This method will build the metadata files required by OpenStack driver. Then, an ISO is going to be generated and returned as a String in base 64.
      *  If vmData is null, we throw a {@link CloudRuntimeException}. Moreover, {@link IOException} are captured and re-thrown as {@link CloudRuntimeException}.
+     *  supportedServices holds, per NIC id, the services the config drive provides on the NIC's network;
+     *  nicsWithDhcpServer holds the ids of the NICs whose network has a DHCP server other than the config drive.
      */
-    public static String buildConfigDrive(List<NicProfile> nics, List<String[]> vmData, String isoFileName, String driveLabel, Map<String, String> customUserdataParams, Map<Long, List<Network.Service>> supportedServices) {
+    public static String buildConfigDrive(List<NicProfile> nics, List<String[]> vmData, String isoFileName, String driveLabel, Map<String, String> customUserdataParams,
+            Map<Long, List<Network.Service>> supportedServices, Set<Long> nicsWithDhcpServer) {
         if (vmData == null && nics == null) {
             throw new CloudRuntimeException("No VM metadata and nic profile provided");
         }
@@ -146,7 +148,7 @@ public class ConfigDriveBuilder {
                 writeVendorDataJsonFile(openStackFolder, vmPassword);
             }
 
-            writeNetworkData(nics, supportedServices, openStackFolder);
+            writeNetworkData(nics, supportedServices, nicsWithDhcpServer, openStackFolder);
             for (NicProfile nic: nics) {
                 if (supportedServices.get(nic.getId()).contains(Network.Service.UserData)) {
                     if (vmData == null) {
@@ -245,26 +247,22 @@ public class ConfigDriveBuilder {
     }
 
     /**
-     * First we generate a JSON object using {@link #getNetworkDataJsonObjectForNic(NicProfile, List)}, then we write it to a file called "network_data.json".
+     * First we generate a JSON object using {@link #getNetworkDataJsonObjectForNic(NicProfile, List, boolean)}, then we write it to a file called "network_data.json".
+     * Every NIC is described: a guest takes the description as the whole network configuration and configures nothing
+     * that is left out of it.
      */
-    static void writeNetworkData(List<NicProfile> nics, Map<Long, List<Network.Service>> supportedServices, File openStackFolder) {
+    static void writeNetworkData(List<NicProfile> nics, Map<Long, List<Network.Service>> supportedServices, Set<Long> nicsWithDhcpServer, File openStackFolder) {
         JsonObject finalNetworkData = new JsonObject();
-        if (needForGeneratingNetworkData(supportedServices)) {
-            for (NicProfile nic : nics) {
-                List<Network.Service> supportedService = supportedServices.get(nic.getId());
-                JsonObject networkData = getNetworkDataJsonObjectForNic(nic, supportedService);
+        for (NicProfile nic : nics) {
+            List<Network.Service> supportedService = supportedServices.getOrDefault(nic.getId(), List.of());
+            JsonObject networkData = getNetworkDataJsonObjectForNic(nic, supportedService, nicsWithDhcpServer.contains(nic.getId()));
 
-                mergeJsonArraysAndUpdateObject(finalNetworkData, networkData, "links", "id", "type");
-                mergeJsonArraysAndUpdateObject(finalNetworkData, networkData, "networks", "id", "type");
-                mergeJsonArraysAndUpdateObject(finalNetworkData, networkData, "services", "address", "type");
-            }
+            mergeJsonArraysAndUpdateObject(finalNetworkData, networkData, "links", "id", "type");
+            mergeJsonArraysAndUpdateObject(finalNetworkData, networkData, "networks", "id", "type");
+            mergeJsonArraysAndUpdateObject(finalNetworkData, networkData, "services", "address", "type");
         }
 
         writeFile(openStackFolder, "network_data.json", finalNetworkData.toString());
-    }
-
-    static boolean needForGeneratingNetworkData(Map<Long, List<Network.Service>> supportedServices) {
-        return supportedServices.values().stream().anyMatch(services -> services.contains(Network.Service.Dhcp) || services.contains(Network.Service.Dns));
     }
 
     /**
@@ -328,12 +326,26 @@ public class ConfigDriveBuilder {
      *     <li> networks </li>
      *     <li> services </li>
      * </ul>
+     * The NIC's addresses are static when the config drive is their only source (it provides Dhcp on the network, or
+     * no DHCP server serves the network), and its IPv4 address is obtained by DHCP when a DHCP server on the network
+     * hands it out. A NIC whose addresses are not managed is described as a guest configures it on its own: DHCP on the
+     * default NIC only. The default routes and the DNS servers belong to the default NIC, as a DHCP server hands them
+     * out only there; the DNS servers are listed when nothing else hands them out or the config drive provides Dns.
+     * A link carries the NIC's MTU, which a NIC has when CloudStack configures it: its DHCP serves it or this
+     * description gives its addresses statically.
      */
-    static JsonObject getNetworkDataJsonObjectForNic(NicProfile nic, List<Network.Service> supportedServices) {
+    static JsonObject getNetworkDataJsonObjectForNic(NicProfile nic, List<Network.Service> supportedServices, boolean dhcpServer) {
         JsonObject networkData = new JsonObject();
 
         JsonArray links = getLinksJsonArrayForNic(nic);
-        JsonArray networks = getNetworksJsonArrayForNic(nic);
+        boolean addressed = StringUtils.isNotBlank(nic.getIPv4Address()) || StringUtils.isNotBlank(nic.getIPv6Address());
+        boolean staticAddresses = addressed && (supportedServices.contains(Network.Service.Dhcp) || !dhcpServer);
+        JsonArray networks = new JsonArray();
+        if (staticAddresses) {
+            networks = getNetworksJsonArrayForNic(nic);
+        } else if (StringUtils.isNotBlank(nic.getIPv4Address()) || (!addressed && nic.isDefaultNic())) {
+            networks.add(getIpv4DhcpNetworkObject(nic));
+        }
         if (links.size() > 0) {
             networkData.add("links", links);
         }
@@ -341,12 +353,23 @@ public class ConfigDriveBuilder {
             networkData.add("networks", networks);
         }
 
-        JsonArray services = getServicesJsonArrayForNic(nic);
-        if (services.size() > 0) {
-            networkData.add("services", services);
+        if (nic.isDefaultNic() && (staticAddresses || supportedServices.contains(Network.Service.Dns))) {
+            JsonArray services = getServicesJsonArrayForNic(nic);
+            if (services.size() > 0) {
+                networkData.add("services", services);
+            }
         }
 
         return networkData;
+    }
+
+    private static JsonObject getIpv4DhcpNetworkObject(NicProfile nic) {
+        JsonObject ipv4Network = new JsonObject();
+        ipv4Network.addProperty("id", String.format("eth%d", nic.getDeviceId()));
+        ipv4Network.addProperty("link", String.format("eth%d", nic.getDeviceId()));
+        ipv4Network.addProperty("network_id", nic.getUuid());
+        ipv4Network.addProperty("type", "ipv4_dhcp");
+        return ipv4Network;
     }
 
     static JsonArray getLinksJsonArrayForNic(NicProfile nic) {
@@ -355,7 +378,9 @@ public class ConfigDriveBuilder {
             JsonObject link = new JsonObject();
             link.addProperty("ethernet_mac_address", nic.getMacAddress());
             link.addProperty("id", String.format("eth%d", nic.getDeviceId()));
-            link.addProperty("mtu", nic.getMtu() != null ? nic.getMtu() : DEFAULT_MTU);
+            if (nic.getMtu() != null) {
+                link.addProperty("mtu", nic.getMtu());
+            }
             link.addProperty("type", "phy");
             links.add(link);
         }
@@ -373,14 +398,16 @@ public class ConfigDriveBuilder {
             ipv4Network.addProperty("network_id", nic.getUuid());
             ipv4Network.addProperty("type", "ipv4");
 
-            JsonArray ipv4RouteArray = new JsonArray();
-            JsonObject ipv4Route = new JsonObject();
-            ipv4Route.addProperty("gateway", nic.getIPv4Gateway());
-            ipv4Route.addProperty("netmask", "0.0.0.0");
-            ipv4Route.addProperty("network", "0.0.0.0");
-            ipv4RouteArray.add(ipv4Route);
+            if (nic.isDefaultNic()) {
+                JsonArray ipv4RouteArray = new JsonArray();
+                JsonObject ipv4Route = new JsonObject();
+                ipv4Route.addProperty("gateway", nic.getIPv4Gateway());
+                ipv4Route.addProperty("netmask", "0.0.0.0");
+                ipv4Route.addProperty("network", "0.0.0.0");
+                ipv4RouteArray.add(ipv4Route);
 
-            ipv4Network.add("routes", ipv4RouteArray);
+                ipv4Network.add("routes", ipv4RouteArray);
+            }
 
             networks.add(ipv4Network);
         }
@@ -394,14 +421,16 @@ public class ConfigDriveBuilder {
             ipv6Network.addProperty("network_id", nic.getUuid());
             ipv6Network.addProperty("type", "ipv6");
 
-            JsonArray ipv6RouteArray = new JsonArray();
-            JsonObject ipv6Route = new JsonObject();
-            ipv6Route.addProperty("gateway", nic.getIPv6Gateway());
-            ipv6Route.addProperty("netmask", "0");
-            ipv6Route.addProperty("network", "::");
-            ipv6RouteArray.add(ipv6Route);
+            if (nic.isDefaultNic()) {
+                JsonArray ipv6RouteArray = new JsonArray();
+                JsonObject ipv6Route = new JsonObject();
+                ipv6Route.addProperty("gateway", nic.getIPv6Gateway());
+                ipv6Route.addProperty("netmask", "0");
+                ipv6Route.addProperty("network", "::");
+                ipv6RouteArray.add(ipv6Route);
 
-            ipv6Network.add("routes", ipv6RouteArray);
+                ipv6Network.add("routes", ipv6RouteArray);
+            }
 
             networks.add(ipv6Network);
         }

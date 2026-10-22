@@ -36,6 +36,7 @@ import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 
 import javax.inject.Inject;
@@ -1272,6 +1273,33 @@ public class NetworkOrchestrator extends ManagerBase implements NetworkOrchestra
         return isForProvider && !ip.isForSystemVms();
     }
 
+    /**
+     * A guest network's MTU belongs to the NICs CloudStack configures on it: those its DHCP serves, and the addressed
+     * NICs the VM's config drive describes statically. Any other NIC (L2, external DHCP) carries none, as its guest
+     * owns the link MTU.
+     */
+    protected void setManagedGuestMtu(final NicProfile profile, final Network network, final BooleanSupplier vmHasConfigDrive) {
+        if (network.getTrafficType() != TrafficType.Guest || network.getPrivateMtu() == null) {
+            return;
+        }
+        final boolean addressed = StringUtils.isNotBlank(profile.getIPv4Address()) || StringUtils.isNotBlank(profile.getIPv6Address());
+        if (_networkModel.areServicesSupportedInNetwork(network.getId(), Service.Dhcp) || addressed && vmHasConfigDrive.getAsBoolean()) {
+            profile.setMtu(network.getPrivateMtu());
+        }
+    }
+
+    /**
+     * A user VM gets a config drive, which describes all its NICs, when one of its networks takes user data from it.
+     */
+    protected boolean hasConfigDrive(final List<? extends Nic> nics) {
+        for (final Nic nic : nics) {
+            if (_networkModel.isProviderSupportServiceInNetwork(nic.getNetworkId(), Service.UserData, Provider.ConfigDrive)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void setMtuDetailsInVRNic(final Pair<NetworkVO, VpcVO> networks, Network network, NicVO vo) {
         if (TrafficType.Public == network.getTrafficType()) {
             if (networks == null) {
@@ -2303,6 +2331,8 @@ public class NetworkOrchestrator extends ManagerBase implements NetworkOrchestra
         if (vmProfile.getType() == Type.DomainRouter) {
             Pair<NetworkVO, VpcVO> networks = getGuestNetworkRouterAndVpcDetails(vmProfile.getId());
             setMtuDetailsInVRNic(networks, network, nic);
+        } else {
+            setManagedGuestMtu(profile, network, () -> vmProfile.getType() == Type.User && hasConfigDrive(_nicDao.listByVmId(vmProfile.getId())));
         }
         updateNic(nic, network, 1);
 
@@ -4695,6 +4725,9 @@ public class NetworkOrchestrator extends ManagerBase implements NetworkOrchestra
                 final NicProfile profile = new NicProfile(nic, network, nic.getBroadcastUri(), nic.getIsolationUri(), networkRate,
                         _networkModel.isSecurityGroupSupportedInNetwork(network), _networkModel.getNetworkTag(hypervisorType, network));
                 guru.updateNicProfile(profile, network);
+                if (nic.getVmType() != Type.DomainRouter) {
+                    setManagedGuestMtu(profile, network, () -> nic.getVmType() == Type.User && hasConfigDrive(nics));
+                }
                 profiles.add(profile);
             }
         }

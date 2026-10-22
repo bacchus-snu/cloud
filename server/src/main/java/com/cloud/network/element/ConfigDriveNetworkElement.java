@@ -19,6 +19,7 @@ package com.cloud.network.element;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -576,7 +577,8 @@ public class ConfigDriveNetworkElement extends AdapterBase implements NetworkEle
         final String isoPath = ConfigDrive.createConfigDrivePath(profile.getInstanceName());
         List<NicProfile> nicProfiles = _networkOrchestrationService.getNicProfiles(profile.getVirtualMachine().getId(), profile.getHypervisorType());
         final Map<Long, List<Service>> supportedServices = getSupportedServicesByElementForNetwork(nicProfiles);
-        final String isoData = ConfigDriveBuilder.buildConfigDrive(nicProfiles, profile.getVmData(), isoFileName, profile.getConfigDriveLabel(), customUserdataParamMap, supportedServices);
+        final String isoData = ConfigDriveBuilder.buildConfigDrive(nicProfiles, profile.getVmData(), isoFileName, profile.getConfigDriveLabel(), customUserdataParamMap, supportedServices,
+                getNicsWithDhcpServer(nicProfiles));
         final HandleConfigDriveIsoCommand configDriveIsoCommand = new HandleConfigDriveIsoCommand(isoPath, isoData, null, false, true, true);
 
         final HandleConfigDriveIsoAnswer answer = (HandleConfigDriveIsoAnswer) agentManager.easySend(host.getId(), configDriveIsoCommand);
@@ -646,6 +648,17 @@ public class ConfigDriveNetworkElement extends AdapterBase implements NetworkEle
         return supportedServices;
     }
 
+    Set<Long> getNicsWithDhcpServer(List<NicProfile> nics) {
+        Set<Long> nicIds = new HashSet<>();
+        for (NicProfile nic : nics) {
+            if (_networkModel.areServicesSupportedInNetwork(nic.getNetworkId(), Service.Dhcp)
+                    && !_networkModel.isProviderSupportServiceInNetwork(nic.getNetworkId(), Service.Dhcp, getProvider())) {
+                nicIds.add(nic.getId());
+            }
+        }
+        return nicIds;
+    }
+
     public boolean createConfigDriveIso(NicProfile nic, VirtualMachineProfile profile, DeployDestination dest, DiskTO disk) throws ResourceUnavailableException {
         DataStore dataStore = getDatastoreForConfigDriveIso(disk, profile, dest);
 
@@ -664,7 +677,7 @@ public class ConfigDriveNetworkElement extends AdapterBase implements NetworkEle
         List<NicProfile> nicProfiles = _networkOrchestrationService.getNicProfiles(nic.getVirtualMachineId(), profile.getHypervisorType());
         final Map<Long, List<Service>> supportedServices = getSupportedServicesByElementForNetwork(nicProfiles);
         final String isoData = ConfigDriveBuilder.buildConfigDrive(
-                nicProfiles, profile.getVmData(), isoFileName, profile.getConfigDriveLabel(), customUserdataParamMap, supportedServices);
+                nicProfiles, profile.getVmData(), isoFileName, profile.getConfigDriveLabel(), customUserdataParamMap, supportedServices, getNicsWithDhcpServer(nicProfiles));
         boolean useHostCacheOnUnsupportedPool = VirtualMachineManager.VmConfigDriveUseHostCacheOnUnsupportedPool.valueIn(dest.getDataCenter().getId());
         boolean preferHostCache = VirtualMachineManager.VmConfigDriveForceHostCacheUse.valueIn(dest.getDataCenter().getId());
         final HandleConfigDriveIsoCommand configDriveIsoCommand = new HandleConfigDriveIsoCommand(isoPath, isoData, dataStore.getTO(), useHostCacheOnUnsupportedPool, preferHostCache, true);

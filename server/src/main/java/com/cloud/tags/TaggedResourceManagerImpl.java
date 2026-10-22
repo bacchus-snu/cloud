@@ -212,6 +212,9 @@ public class TaggedResourceManagerImpl extends ManagerBase implements TaggedReso
                         if (value == null || value.isEmpty()) {
                             throw new InvalidParameterValueException("Value for the key " + key + " is either null or empty");
                         }
+                        if (value.length() > ResourceTag.VALUE_MAX_LENGTH) {
+                            throw new InvalidParameterValueException(String.format("Value for the key %s is longer than %d characters", key, ResourceTag.VALUE_MAX_LENGTH));
+                        }
 
                         ResourceTagVO resourceTag = new ResourceTagVO(key, value, accountDomainPair.first(), accountDomainPair.second(), id, resourceType, customer, resourceUuid);
                         try {

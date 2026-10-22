@@ -1625,6 +1625,7 @@ public class LibvirtVMDef {
         private Integer _userIp4Prefix;
         private Integer _multiQueueNumber;
         private Boolean _packedVirtQueues;
+        private Integer _mtu;
 
         public void defBridgeNet(String brName, String targetBrName, String macAddr, NicModel model) {
             defBridgeNet(brName, targetBrName, macAddr, model, 0);
@@ -1821,6 +1822,14 @@ public class LibvirtVMDef {
             this._packedVirtQueues = packedVirtQueues;
         }
 
+        public Integer getMtu() {
+            return _mtu;
+        }
+
+        public void setMtu(Integer mtu) {
+            this._mtu = mtu;
+        }
+
         public String getContent() {
             StringBuilder netBuilder = new StringBuilder();
             if (_netType == GuestNetType.BRIDGE) {
@@ -1842,6 +1851,9 @@ public class LibvirtVMDef {
             }
             if (_model != null) {
                 netBuilder.append("<model type='" + _model + "'/>\n");
+            }
+            if (_mtu != null && _mtu > 0 && _netType != GuestNetType.USER) {
+                netBuilder.append("<mtu size='" + _mtu + "'/>\n");
             }
             if (NicModel.VIRTIO.equals(_model)) {
                 boolean isMultiQueueNumberSpecified = _multiQueueNumber != null;

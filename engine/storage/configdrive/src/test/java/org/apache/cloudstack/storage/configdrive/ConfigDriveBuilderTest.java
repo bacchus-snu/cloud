@@ -33,6 +33,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import com.cloud.network.Network;
 import com.cloud.vm.NicProfile;
@@ -128,15 +129,15 @@ public class ConfigDriveBuilderTest {
 
     @Test(expected = CloudRuntimeException.class)
     public void buildConfigDriveTestNoVmDataAndNic() {
-        ConfigDriveBuilder.buildConfigDrive(null, null, "teste", "C:", null, null);
+        ConfigDriveBuilder.buildConfigDrive(null, null, "teste", "C:", null, null, null);
     }
 
     @Test(expected = CloudRuntimeException.class)
     public void buildConfigDriveTestIoException() {
         try (MockedStatic<ConfigDriveBuilder> configDriveBuilderMocked = Mockito.mockStatic(ConfigDriveBuilder.class)) {
             configDriveBuilderMocked.when(() -> ConfigDriveBuilder.writeVendorDataJsonFile(nullable(File.class))).thenThrow(CloudRuntimeException.class);
-            Mockito.when(ConfigDriveBuilder.buildConfigDrive(null, new ArrayList<>(), "teste", "C:", null, supportedServices)).thenCallRealMethod();
-            ConfigDriveBuilder.buildConfigDrive(null, new ArrayList<>(), "teste", "C:", null, supportedServices);
+            Mockito.when(ConfigDriveBuilder.buildConfigDrive(null, new ArrayList<>(), "teste", "C:", null, supportedServices, Set.of())).thenCallRealMethod();
+            ConfigDriveBuilder.buildConfigDrive(null, new ArrayList<>(), "teste", "C:", null, supportedServices, Set.of());
         }
     }
 
@@ -156,9 +157,9 @@ public class ConfigDriveBuilderTest {
             Mockito.when(mockedNicProfile.getId()).thenReturn(1L);
 
             //force execution of real method
-            Mockito.when(ConfigDriveBuilder.buildConfigDrive(List.of(mockedNicProfile), new ArrayList<>(), "teste", "C:", null, supportedServices)).thenCallRealMethod();
+            Mockito.when(ConfigDriveBuilder.buildConfigDrive(List.of(mockedNicProfile), new ArrayList<>(), "teste", "C:", null, supportedServices, Set.of())).thenCallRealMethod();
 
-            String returnedIsoData = ConfigDriveBuilder.buildConfigDrive(List.of(mockedNicProfile), new ArrayList<>(), "teste", "C:", null, supportedServices);
+            String returnedIsoData = ConfigDriveBuilder.buildConfigDrive(List.of(mockedNicProfile), new ArrayList<>(), "teste", "C:", null, supportedServices, Set.of());
 
             Assert.assertEquals("mockIsoDataBase64", returnedIsoData);
 
@@ -529,6 +530,7 @@ public class ConfigDriveBuilderTest {
 
         Mockito.when(nicp.getMacAddress()).thenReturn("00:00:00:00:00:00");
         Mockito.when(nicp.getMtu()).thenReturn(2000);
+        Mockito.when(nicp.isDefaultNic()).thenReturn(true);
 
         Mockito.when(nicp.getIPv4Address()).thenReturn("172.31.0.10");
         Mockito.when(nicp.getDeviceId()).thenReturn(1);
@@ -619,7 +621,7 @@ public class ConfigDriveBuilderTest {
                 "}";
 
         // Action
-        ConfigDriveBuilder.writeNetworkData(Arrays.asList(nicp), supportedServices, openStackFolder);
+        ConfigDriveBuilder.writeNetworkData(Arrays.asList(nicp), supportedServices, Set.of(), openStackFolder);
 
         // Verify
         File networkDataFile = new File(openStackFolder, "network_data.json");
@@ -648,7 +650,7 @@ public class ConfigDriveBuilderTest {
         String expectedJson = "{}";
 
         // Action
-        ConfigDriveBuilder.writeNetworkData(Arrays.asList(nicp), supportedServices, openStackFolder);
+        ConfigDriveBuilder.writeNetworkData(Arrays.asList(nicp), supportedServices, Set.of(), openStackFolder);
 
         // Verify
         File networkDataFile = new File(openStackFolder, "network_data.json");
@@ -658,5 +660,79 @@ public class ConfigDriveBuilderTest {
 
         Assert.assertEquals(expectedJsonObject, actualJson);
         folder.delete();
+    }
+
+    private static NicProfile nicProfile(long id, int deviceId, String mac, Integer mtu, String ipv4, boolean defaultNic) {
+        return nicProfile(id, deviceId, mac, mtu, ipv4, defaultNic, "10.94.0.1");
+    }
+
+    private static NicProfile nicProfile(long id, int deviceId, String mac, Integer mtu, String ipv4, boolean defaultNic, String gateway) {
+        NicProfile nic = mock(NicProfile.class);
+        Mockito.lenient().when(nic.getId()).thenReturn(id);
+        Mockito.lenient().when(nic.getDeviceId()).thenReturn(deviceId);
+        Mockito.lenient().when(nic.getMacAddress()).thenReturn(mac);
+        Mockito.lenient().when(nic.getMtu()).thenReturn(mtu);
+        Mockito.lenient().when(nic.getUuid()).thenReturn("nic-" + id);
+        Mockito.lenient().when(nic.getIPv4Address()).thenReturn(ipv4);
+        Mockito.lenient().when(nic.getIPv4Netmask()).thenReturn(ipv4 == null ? null : "255.255.0.0");
+        Mockito.lenient().when(nic.getIPv4Gateway()).thenReturn(ipv4 == null ? null : gateway);
+        Mockito.lenient().when(nic.getIPv4Dns1()).thenReturn(gateway);
+        Mockito.lenient().when(nic.isDefaultNic()).thenReturn(defaultNic);
+        return nic;
+    }
+
+    private static JsonObject networkData(List<NicProfile> nics, Map<Long, List<Network.Service>> services, Set<Long> nicsWithDhcpServer) throws IOException {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            File openStackFolder = folder.newFolder("openStack");
+            ConfigDriveBuilder.writeNetworkData(nics, services, nicsWithDhcpServer, openStackFolder);
+            String content = FileUtils.readFileToString(new File(openStackFolder, "network_data.json"), StandardCharsets.UTF_8);
+            return JsonParser.parseString(content).getAsJsonObject();
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void networkDataDescribesANicThatADhcpServerOnItsNetworkAddressesWithTheNetworkMtu() throws Exception {
+        NicProfile nic = nicProfile(1L, 0, "02:00:0a:5e:01:0a", 1450, "10.94.1.10", true);
+
+        JsonObject actual = networkData(List.of(nic), Map.of(1L, List.of(Network.Service.UserData)), Set.of(1L));
+
+        String expected = "{\"links\": [{\"ethernet_mac_address\": \"02:00:0a:5e:01:0a\", \"id\": \"eth0\", \"mtu\": 1450, \"type\": \"phy\"}],"
+                + " \"networks\": [{\"id\": \"eth0\", \"link\": \"eth0\", \"network_id\": \"nic-1\", \"type\": \"ipv4_dhcp\"}]}";
+        Assert.assertEquals(JsonParser.parseString(expected).getAsJsonObject(), actual);
+    }
+
+    @Test
+    public void networkDataDescribesL2NicsAsAGuestConfiguresThemOnItsOwn() throws Exception {
+        NicProfile defaultNic = nicProfile(1L, 0, "02:00:00:00:00:01", null, null, true);
+        NicProfile otherNic = nicProfile(2L, 1, "02:00:00:00:00:02", null, null, false);
+        Map<Long, List<Network.Service>> services = Map.of(1L, List.of(Network.Service.UserData), 2L, List.of(Network.Service.UserData));
+
+        JsonObject actual = networkData(List.of(defaultNic, otherNic), services, Set.of());
+
+        String expected = "{\"links\": [{\"ethernet_mac_address\": \"02:00:00:00:00:01\", \"id\": \"eth0\", \"type\": \"phy\"},"
+                + " {\"ethernet_mac_address\": \"02:00:00:00:00:02\", \"id\": \"eth1\", \"type\": \"phy\"}],"
+                + " \"networks\": [{\"id\": \"eth0\", \"link\": \"eth0\", \"network_id\": \"nic-1\", \"type\": \"ipv4_dhcp\"}]}";
+        Assert.assertEquals(JsonParser.parseString(expected).getAsJsonObject(), actual);
+    }
+
+    @Test
+    public void networkDataGivesStaticAddressesWhenNoDhcpServerServesTheNetwork() throws Exception {
+        NicProfile nic = nicProfile(1L, 0, "02:00:0a:5e:01:0b", null, "10.94.1.11", true);
+        NicProfile secondNic = nicProfile(2L, 1, "02:00:0a:5f:01:0c", null, "10.95.1.12", false, "10.95.0.1");
+        Map<Long, List<Network.Service>> services = Map.of(1L, List.of(Network.Service.UserData), 2L, List.of(Network.Service.UserData));
+
+        JsonObject actual = networkData(List.of(nic, secondNic), services, Set.of());
+
+        String expected = "{\"links\": [{\"ethernet_mac_address\": \"02:00:0a:5e:01:0b\", \"id\": \"eth0\", \"type\": \"phy\"},"
+                + " {\"ethernet_mac_address\": \"02:00:0a:5f:01:0c\", \"id\": \"eth1\", \"type\": \"phy\"}],"
+                + " \"networks\": [{\"id\": \"eth0\", \"ip_address\": \"10.94.1.11\", \"link\": \"eth0\", \"netmask\": \"255.255.0.0\","
+                + " \"network_id\": \"nic-1\", \"type\": \"ipv4\", \"routes\": [{\"gateway\": \"10.94.0.1\", \"netmask\": \"0.0.0.0\", \"network\": \"0.0.0.0\"}]},"
+                + " {\"id\": \"eth1\", \"ip_address\": \"10.95.1.12\", \"link\": \"eth1\", \"netmask\": \"255.255.0.0\", \"network_id\": \"nic-2\", \"type\": \"ipv4\"}],"
+                + " \"services\": [{\"address\": \"10.94.0.1\", \"type\": \"dns\"}]}";
+        Assert.assertEquals(JsonParser.parseString(expected).getAsJsonObject(), actual);
     }
 }

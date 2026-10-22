@@ -21,6 +21,7 @@ from .networkConfig import networkConfig
 import re
 from .configFileOps import configFileOps
 import os
+import shlex
 import shutil
 
 class serviceCfgBase(object):
@@ -621,6 +622,45 @@ def configureLibvirtConfig(tls_enabled = True, cfg = None):
     cfo.addEntry("auth_tls", "\"none\"")
     cfo.save()
 
+def configureLibvirtdListener(cfg=None, defaultsFile="/etc/default/libvirtd", unitDir="/lib/systemd/system"):
+    """libvirtd opens the listeners of libvirtd.conf only when started with --listen; its systemd unit
+    passes $LIBVIRTD_ARGS from the defaults file. --listen excludes socket activation, so the socket units
+    are masked, and --timeout goes: without socket activation nothing would start an idle libvirtd again."""
+    if not os.path.exists(defaultsFile):
+        return
+    cfo = configFileOps(defaultsFile, cfg)
+    value = shlex.split(cfo.getEntry("LIBVIRTD_ARGS"), comments=True)
+    args = shlex.split(value[0]) if value else []
+    kept = []
+    while args:
+        arg = args.pop(0)
+        if arg in ("--timeout", "-t"):
+            if args:
+                args.pop(0)
+        elif not arg.startswith("--timeout="):
+            kept.append(arg)
+    if "--listen" not in kept and "-l" not in kept:
+        kept.append("--listen")
+    cfo.replace_or_add_line(r"^#?\s*LIBVIRTD_ARGS=", "LIBVIRTD_ARGS=\"%s\"" % " ".join(shlex.quote(arg) for arg in kept))
+    maskLibvirtdSocketUnits(unitDir)
+
+def maskLibvirtdSocketUnits(unitDir="/lib/systemd/system"):
+    if os.path.exists(os.path.join(unitDir, "libvirtd.socket")):
+        bash("/bin/systemctl mask \
+            libvirtd.socket \
+            libvirtd-ro.socket \
+            libvirtd-admin.socket \
+            libvirtd-tls.socket \
+            libvirtd-tcp.socket")
+    if os.path.exists(os.path.join(unitDir, "virtqemud.socket")):
+        bash("/bin/systemctl mask \
+            virtqemud.socket \
+            virtqemud-ro.socket \
+            virtqemud-admin.socket \
+            virtqemud \
+            virtnetworkd \
+            virtstoraged")
+
 class libvirtConfigRedhat(serviceCfgBase):
     def __init__(self, syscfg):
         super(libvirtConfigRedhat, self).__init__(syscfg)
@@ -722,21 +762,11 @@ class libvirtConfigUbuntu(serviceCfgBase):
         elif os.path.exists("/etc/default/libvirtd"):
             cfo = configFileOps("/etc/default/libvirtd", self)
             cfo.replace_or_add_line("libvirtd_opts=","libvirtd_opts='-l'")
-            if os.path.exists("/lib/systemd/system/libvirtd.socket"):
-                bash("/bin/systemctl mask \
-                    libvirtd.socket \
-                    libvirtd-ro.socket \
-                    libvirtd-admin.socket \
-                    libvirtd-tls.socket \
-                    libvirtd-tcp.socket");
-            if os.path.exists("/lib/systemd/system/virtqemud.socket"):
-                bash("/bin/systemctl mask \
-                    virtqemud.socket \
-                    virtqemud-ro.socket \
-                    virtqemud-admin.socket \
-                    virtqemud \
-                    virtnetworkd \
-                    virtstoraged");
+            # without TLS the TCP listener would take connections unauthenticated
+            if self.syscfg.env.secure:
+                configureLibvirtdListener(self)
+            else:
+                maskLibvirtdSocketUnits()
 
     def config(self):
         try:

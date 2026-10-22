@@ -89,9 +89,11 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.hamcrest.Matchers.hasEntry;
 import static org.hamcrest.Matchers.is;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
@@ -299,7 +301,7 @@ public class ConfigDriveNetworkElementTest {
     public void testCreateConfigDriveIso() throws Exception {
         try (MockedStatic<ConfigDriveBuilder> ignored1 = Mockito.mockStatic(ConfigDriveBuilder.class); MockedStatic<CallContext> ignored2 = Mockito.mockStatic(CallContext.class)) {
             Mockito.when(CallContext.current()).thenReturn(callContextMock);
-            Mockito.when(ConfigDriveBuilder.buildConfigDrive(Mockito.anyList(), Mockito.anyList(), Mockito.anyString(), Mockito.anyString(), Mockito.anyMap(), Mockito.anyMap())).thenReturn("content");
+            Mockito.when(ConfigDriveBuilder.buildConfigDrive(Mockito.anyList(), Mockito.anyList(), Mockito.anyString(), Mockito.anyString(), Mockito.anyMap(), Mockito.anyMap(), Mockito.anySet())).thenReturn("content");
 
             final HandleConfigDriveIsoAnswer answer = mock(HandleConfigDriveIsoAnswer.class);
             when(agentManager.easySend(Mockito.anyLong(), Mockito.any(HandleConfigDriveIsoCommand.class))).thenReturn(answer);
@@ -323,5 +325,23 @@ public class ConfigDriveNetworkElementTest {
             assertTrue(createCommand.getIsoData().length() > 0);
             assertTrue(createCommand.getIsoFile().equals(ConfigDrive.createConfigDrivePath(profile.getInstanceName())));
         }
+    }
+    @Test
+    public void nicsWhoseNetworkHasADhcpServerOtherThanTheConfigDriveAreMarked() {
+        NicProfile servedByRouter = mock(NicProfile.class);
+        when(servedByRouter.getId()).thenReturn(1L);
+        when(servedByRouter.getNetworkId()).thenReturn(10L);
+        NicProfile servedByConfigDrive = mock(NicProfile.class);
+        when(servedByConfigDrive.getNetworkId()).thenReturn(20L);
+        NicProfile withoutDhcp = mock(NicProfile.class);
+        when(withoutDhcp.getNetworkId()).thenReturn(30L);
+        Network.Provider configDrive = _configDrivesNetworkElement.getProvider();
+        doReturn(true).when(_networkModel).areServicesSupportedInNetwork(10L, Network.Service.Dhcp);
+        doReturn(false).when(_networkModel).isProviderSupportServiceInNetwork(10L, Network.Service.Dhcp, configDrive);
+        doReturn(true).when(_networkModel).areServicesSupportedInNetwork(20L, Network.Service.Dhcp);
+        doReturn(true).when(_networkModel).isProviderSupportServiceInNetwork(20L, Network.Service.Dhcp, configDrive);
+        doReturn(false).when(_networkModel).areServicesSupportedInNetwork(30L, Network.Service.Dhcp);
+
+        assertEquals(Set.of(1L), _configDrivesNetworkElement.getNicsWithDhcpServer(List.of(servedByRouter, servedByConfigDrive, withoutDhcp)));
     }
 }

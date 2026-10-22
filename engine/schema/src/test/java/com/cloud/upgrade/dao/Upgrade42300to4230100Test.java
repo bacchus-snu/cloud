@@ -18,11 +18,15 @@ package com.cloud.upgrade.dao;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 
 import org.junit.Test;
+
+import com.cloud.server.ResourceTag;
 
 public class Upgrade42300to4230100Test {
 
@@ -32,6 +36,37 @@ public class Upgrade42300to4230100Test {
     public void prepareAndCleanupScriptsAreFound() throws IOException {
         assertOneScript(upgrade.getPrepareScripts());
         assertOneScript(upgrade.getCleanupScripts());
+    }
+
+    @Test
+    public void tagValuesAreWidenedToTheLengthTheApiAccepts() throws IOException {
+        assertTrue(prepareScript().contains("CALL `cloud`.`IDEMPOTENT_CHANGE_COLUMN`('cloud.resource_tags', 'value', 'value', 'varchar("
+                + ResourceTag.VALUE_MAX_LENGTH + ")');"));
+    }
+
+    @Test
+    public void currentDistributionsHaveGuestOsTypesWithKvmMappings() throws IOException {
+        String script = prepareScript();
+        for (String os : new String[] {"Ubuntu 26.04 LTS", "Debian GNU/Linux 13 (64-bit)", "Rocky Linux 10", "AlmaLinux 10", "Arch Linux", "Alpine Linux"}) {
+            assertEquals(os, 2, occurrences(script, "'" + os + "'"));
+        }
+        for (String os : new String[] {"Fedora Linux (64 bit)", "OpenSUSE Linux (64 bit)"}) {
+            assertEquals(os, 1, occurrences(script, "'" + os + "'"));
+        }
+    }
+
+    private String prepareScript() throws IOException {
+        try (InputStream script = upgrade.getPrepareScripts()[0]) {
+            return new String(script.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private static int occurrences(String text, String part) {
+        int count = 0;
+        for (int index = text.indexOf(part); index >= 0; index = text.indexOf(part, index + 1)) {
+            count++;
+        }
+        return count;
     }
 
     private static void assertOneScript(InputStream[] scripts) throws IOException {

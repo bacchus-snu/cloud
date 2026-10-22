@@ -603,19 +603,26 @@ public class NetworkOrchestratorTest extends TestCase {
     }
 
     private NicProfile prepareMocksAndRunPrepareNic(VirtualMachine.Type vmType, boolean isDefaultNic, boolean isVpcRouter, boolean routerResourceHasCustomDns) {
+        return prepareMocksAndRunPrepareNic(vmType, isDefaultNic, isVpcRouter, routerResourceHasCustomDns, Mockito.mock(Network.class));
+    }
+
+    private NicProfile prepareMocksAndRunPrepareNic(VirtualMachine.Type vmType, boolean isDefaultNic, boolean isVpcRouter, boolean routerResourceHasCustomDns, Network network) {
+        return prepareMocksAndRunPrepareNic(vmType, isDefaultNic, isVpcRouter, routerResourceHasCustomDns, network, Mockito.mock(NicVO.class));
+    }
+
+    private NicProfile prepareMocksAndRunPrepareNic(VirtualMachine.Type vmType, boolean isDefaultNic, boolean isVpcRouter, boolean routerResourceHasCustomDns, Network network,
+            NicVO nicVO) {
         Hypervisor.HypervisorType hypervisorType = Hypervisor.HypervisorType.KVM;
         Long nicId = 1L;
         Long vmId = 1L;
         Long networkId = 1L;
         Integer networkRate = 200;
-        Network network = Mockito.mock(Network.class);
         Mockito.when(network.getGuruName()).thenReturn(GuestNetworkGuru.class.getSimpleName());
         Mockito.when(network.getDns1()).thenReturn(ip4Dns[0]);
         Mockito.when(network.getDns2()).thenReturn(ip4Dns[1]);
         Mockito.when(network.getIp6Dns1()).thenReturn(ip6Dns[0]);
         Mockito.when(network.getIp6Dns2()).thenReturn(ip6Dns[1]);
         Mockito.when(testOrchestrator._networkModel.getNetworkRate(networkId, vmId)).thenReturn(networkRate);
-        NicVO nicVO = Mockito.mock(NicVO.class);
         Mockito.when(nicVO.isDefaultNic()).thenReturn(isDefaultNic);
         Mockito.when(testOrchestrator._nicDao.findById(nicId)).thenReturn(nicVO);
         Mockito.when(testOrchestrator._nicDao.update(nicId, nicVO)).thenReturn(true);
@@ -678,6 +685,70 @@ public class NetworkOrchestratorTest extends TestCase {
             Assert.fail(String.format("Failure with exception %s", e.getMessage()));
         }
         return profile;
+    }
+
+    private static Network guestNetwork(long id, Integer privateMtu) {
+        Network network = Mockito.mock(Network.class);
+        Mockito.when(network.getId()).thenReturn(id);
+        Mockito.when(network.getTrafficType()).thenReturn(TrafficType.Guest);
+        Mockito.when(network.getPrivateMtu()).thenReturn(privateMtu);
+        return network;
+    }
+
+    private static NicVO userNic(long networkId, String ipv4Address) {
+        NicVO nic = Mockito.mock(NicVO.class);
+        Mockito.when(nic.getNetworkId()).thenReturn(networkId);
+        Mockito.when(nic.getIPv4Address()).thenReturn(ipv4Address);
+        Mockito.when(nic.getVmType()).thenReturn(Type.User);
+        return nic;
+    }
+
+    private NetworkVO guestNetworkVO(long id, Integer privateMtu) {
+        NetworkVO network = Mockito.mock(NetworkVO.class);
+        Mockito.when(network.getId()).thenReturn(id);
+        Mockito.when(network.getTrafficType()).thenReturn(TrafficType.Guest);
+        Mockito.when(network.getPrivateMtu()).thenReturn(privateMtu);
+        Mockito.when(network.getGuruName()).thenReturn(guruName);
+        Mockito.when(testOrchestrator._networksDao.findById(id)).thenReturn(network);
+        return network;
+    }
+
+    @Test
+    public void prepareNicGivesTheNetworkMtuOnlyToANicCloudStackConfigures() {
+        Mockito.when(testOrchestrator._networkModel.areServicesSupportedInNetwork(11L, Service.Dhcp)).thenReturn(true);
+        Assert.assertEquals(Integer.valueOf(1450), prepareMocksAndRunPrepareNic(Type.User, true, false, false, guestNetwork(11L, 1450)).getMtu());
+
+        NicVO externalDhcpNic = userNic(12L, "10.95.1.10");
+        Assert.assertNull(prepareMocksAndRunPrepareNic(Type.User, true, false, false, guestNetwork(12L, 1500), externalDhcpNic).getMtu());
+
+        NicVO describedNic = userNic(13L, "10.96.1.10");
+        Mockito.when(testOrchestrator._nicDao.listByVmId(1L)).thenReturn(List.of(describedNic));
+        Mockito.when(testOrchestrator._networkModel.isProviderSupportServiceInNetwork(13L, Service.UserData, Network.Provider.ConfigDrive)).thenReturn(true);
+        Assert.assertEquals(Integer.valueOf(1450), prepareMocksAndRunPrepareNic(Type.User, true, false, false, guestNetwork(13L, 1450), describedNic).getMtu());
+
+        Assert.assertNull(prepareMocksAndRunPrepareNic(Type.User, false, false, false, guestNetwork(14L, 1500), userNic(14L, null)).getMtu());
+    }
+
+    @Test
+    public void nicProfilesCarryTheNetworkMtuOnlyForNicsCloudStackConfigures() {
+        guestNetworkVO(21L, 1450);
+        guestNetworkVO(22L, 1500);
+        guestNetworkVO(23L, 1450);
+        guestNetworkVO(24L, 1500);
+        Mockito.when(testOrchestrator._networkModel.areServicesSupportedInNetwork(21L, Service.Dhcp)).thenReturn(true);
+        Mockito.when(testOrchestrator._networkModel.isProviderSupportServiceInNetwork(23L, Service.UserData, Network.Provider.ConfigDrive)).thenReturn(true);
+        List<NicVO> nicsWithoutConfigDrive = List.of(userNic(21L, "10.94.1.10"), userNic(22L, "10.95.1.10"));
+        List<NicVO> nicsWithConfigDrive = List.of(userNic(23L, "10.96.1.10"), userNic(24L, null));
+        Mockito.when(testOrchestrator._nicDao.listByVmId(5L)).thenReturn(nicsWithoutConfigDrive);
+        Mockito.when(testOrchestrator._nicDao.listByVmId(6L)).thenReturn(nicsWithConfigDrive);
+
+        List<NicProfile> withoutConfigDrive = testOrchestrator.getNicProfiles(5L, Hypervisor.HypervisorType.KVM);
+        List<NicProfile> withConfigDrive = testOrchestrator.getNicProfiles(6L, Hypervisor.HypervisorType.KVM);
+
+        Assert.assertEquals("DHCP by CloudStack", Integer.valueOf(1450), withoutConfigDrive.get(0).getMtu());
+        Assert.assertNull("external DHCP", withoutConfigDrive.get(1).getMtu());
+        Assert.assertEquals("static by the config drive", Integer.valueOf(1450), withConfigDrive.get(0).getMtu());
+        Assert.assertNull("L2", withConfigDrive.get(1).getMtu());
     }
 
     @Test

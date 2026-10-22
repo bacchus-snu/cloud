@@ -68,6 +68,8 @@ import org.springframework.test.util.ReflectionTestUtils;
 import com.cloud.agent.api.to.IpAddressTO;
 import com.cloud.agent.api.to.NicTO;
 import com.cloud.alert.AlertManager;
+import com.cloud.api.query.dao.DomainRouterJoinDao;
+import com.cloud.api.query.vo.DomainRouterJoinVO;
 import com.cloud.bgp.BGPService;
 import com.cloud.configuration.ConfigurationManager;
 import com.cloud.dc.DataCenter;
@@ -80,6 +82,7 @@ import com.cloud.exception.InsufficientAddressCapacityException;
 import com.cloud.exception.InsufficientCapacityException;
 import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.ResourceAllocationException;
+import com.cloud.network.Networks.TrafficType;
 import com.cloud.network.dao.IPAddressDao;
 import com.cloud.network.dao.IPAddressVO;
 import com.cloud.network.dao.NetworkDao;
@@ -176,6 +179,8 @@ public class NetworkServiceImplTest {
     VpcDao vpcDao;
     @Mock
     DomainRouterDao routerDao;
+    @Mock
+    DomainRouterJoinDao routerJoinDao;
     @Mock
     AccountService _accountService;
     @Mock
@@ -569,11 +574,11 @@ public class NetworkServiceImplTest {
         Assert.assertEquals(privateMtu, updatedMtus.second());
     }
 
-    private void prepareCreateNetworkDnsMocks(CreateNetworkCmd cmd, Network.GuestType guestType, boolean ipv6, boolean isVpc, boolean dnsServiceSupported) {
+    private void prepareCreateNetworkDnsMocks(CreateNetworkCmd cmd, Network.GuestType guestType, boolean ipv6, boolean isVpc) {
         long networkOfferingId = 1L;
         Mockito.when(cmd.getNetworkOfferingId()).thenReturn(networkOfferingId);
         networkOfferingVO = Mockito.mock(NetworkOfferingVO.class);
-        Mockito.when(networkOfferingVO.getId()).thenReturn(networkOfferingId);
+        Mockito.lenient().when(networkOfferingVO.getId()).thenReturn(networkOfferingId);
         Mockito.when(networkOfferingVO.getGuestType()).thenReturn(guestType);
         Mockito.when(networkOfferingDao.findById(networkOfferingId)).thenReturn(networkOfferingVO);
         if (Network.GuestType.Shared.equals(guestType)) {
@@ -582,7 +587,6 @@ public class NetworkServiceImplTest {
             Mockito.when(cmd.getNetmask()).thenReturn(IP4_NETMASK);
         }
         Mockito.when(physicalNetworkDao.findById(Mockito.anyLong())).thenReturn(Mockito.mock(PhysicalNetworkVO.class));
-        Mockito.when(networkOfferingServiceMapDao.areServicesSupportedByNetworkOffering(networkOfferingId, Network.Service.Dns)).thenReturn(dnsServiceSupported);
         if(ipv6 && Network.GuestType.Isolated.equals(guestType)) {
             Mockito.when(networkOfferingDao.isIpv6Supported(networkOfferingId)).thenReturn(true);
             try {
@@ -604,7 +608,7 @@ public class NetworkServiceImplTest {
     public void testCreateL2NetworkDnsFailure() {
         registerCallContext();
         CreateNetworkCmd cmd = Mockito.mock(CreateNetworkCmd.class);
-        prepareCreateNetworkDnsMocks(cmd, Network.GuestType.L2, false, false, true);
+        prepareCreateNetworkDnsMocks(cmd, Network.GuestType.L2, false, false);
         Mockito.when(cmd.getIp4Dns1()).thenReturn(ip4Dns[0]);
         try {
             service.createGuestNetwork(cmd);
@@ -617,7 +621,7 @@ public class NetworkServiceImplTest {
     public void testCreateNetworkDnsVpcFailure() {
         registerCallContext();
         CreateNetworkCmd cmd = Mockito.mock(CreateNetworkCmd.class);
-        prepareCreateNetworkDnsMocks(cmd, Network.GuestType.Isolated, false, false, true);
+        prepareCreateNetworkDnsMocks(cmd, Network.GuestType.Isolated, false, false);
         Mockito.when(cmd.getIp4Dns1()).thenReturn(ip4Dns[0]);
         Mockito.when(cmd.getCidrSize()).thenReturn(null);
         try {
@@ -627,13 +631,15 @@ public class NetworkServiceImplTest {
         }
     }
 
-    @Test(expected = CloudRuntimeException.class)
-    public void testCreateNetworkDnsOfferingServiceFailure() {
+    @Test
+    public void testCreateNetworkDnsWithoutTheDnsService() {
         registerCallContext();
         CreateNetworkCmd cmd = Mockito.mock(CreateNetworkCmd.class);
         Mockito.when(cmd.getDomainId()).thenReturn(null);
         Mockito.when(cmd.getProjectId()).thenReturn(null);
-        prepareCreateNetworkDnsMocks(cmd, Network.GuestType.Isolated, false, false, false);
+        Mockito.when(cmd.getCidrSize()).thenReturn(null);
+        prepareCreateNetworkDnsMocks(cmd, Network.GuestType.Isolated, false, false);
+        Mockito.lenient().when(networkOfferingServiceMapDao.areServicesSupportedByNetworkOffering(1L, Network.Service.Dns)).thenReturn(false);
         Mockito.when(cmd.getIp4Dns1()).thenReturn(ip4Dns[0]);
         try {
             service.createGuestNetwork(cmd);
@@ -646,7 +652,7 @@ public class NetworkServiceImplTest {
     public void testCreateIp4NetworkIp6DnsFailure() {
         registerCallContext();
         CreateNetworkCmd cmd = Mockito.mock(CreateNetworkCmd.class);
-        prepareCreateNetworkDnsMocks(cmd, Network.GuestType.Isolated, false, false, true);
+        prepareCreateNetworkDnsMocks(cmd, Network.GuestType.Isolated, false, false);
         Mockito.when(cmd.getIp6Dns1()).thenReturn(ip4Dns[0]);
         try {
             service.createGuestNetwork(cmd);
@@ -660,10 +666,7 @@ public class NetworkServiceImplTest {
         Assert.assertFalse(service.checkAndUpdateNetworkDns(Mockito.mock(NetworkVO.class), Mockito.mock(NetworkOffering.class), null, null, null, null));
         NetworkVO network1 = Mockito.mock(NetworkVO.class);
         Mockito.when(network1.getDns1()).thenReturn(ip4Dns[0]);
-        Long offeringId = 1L;
         NetworkOffering offering = Mockito.mock(NetworkOffering.class);
-        Mockito.when(offering.getId()).thenReturn(offeringId);
-        Mockito.when(networkOfferingServiceMapDao.areServicesSupportedByNetworkOffering(offeringId, Network.Service.Dns)).thenReturn(true);
         Assert.assertFalse(service.checkAndUpdateNetworkDns(network1, offering, null, null, null, null));
         Assert.assertFalse(service.checkAndUpdateNetworkDns(network1, Mockito.mock(NetworkOffering.class), ip4Dns[0], null, null, null));
         Mockito.when(network1.getIp6Dns1()).thenReturn(ip6Dns[0]);
@@ -671,18 +674,12 @@ public class NetworkServiceImplTest {
     }
 
     @Test
-    public void testCheckAndUpdateNetworkOfferingChangeReset() {
+    public void testCheckAndUpdateNetworkKeepsDnsUnderAnOfferingWithoutDns() {
         NetworkVO networkVO = new NetworkVO();
         networkVO.setDns1(ip4Dns[0]);
-        Long offeringId = 1L;
         NetworkOffering offering = Mockito.mock(NetworkOffering.class);
-        Mockito.when(offering.getId()).thenReturn(offeringId);
-        Mockito.when(networkOfferingServiceMapDao.areServicesSupportedByNetworkOffering(offeringId, Network.Service.Dns)).thenReturn(false);
-        Assert.assertTrue(service.checkAndUpdateNetworkDns(networkVO, offering, null, null, null, null));
-        Assert.assertNull(networkVO.getDns1());
-        Assert.assertNull(networkVO.getDns2());
-        Assert.assertNull(networkVO.getIp6Dns1());
-        Assert.assertNull(networkVO.getIp6Dns2());
+        Assert.assertFalse(service.checkAndUpdateNetworkDns(networkVO, offering, null, null, null, null));
+        Assert.assertEquals(ip4Dns[0], networkVO.getDns1());
     }
 
     @Test(expected = InvalidParameterValueException.class)
@@ -702,16 +699,17 @@ public class NetworkServiceImplTest {
         service.checkAndUpdateNetworkDns(networkVO, offering, ip4Dns[0], null, null, null);
     }
 
-    @Test(expected = InvalidParameterValueException.class)
-    public void testCheckAndUpdateNetworkDnsServiceFailure() {
-        NetworkVO networkVO = Mockito.mock(NetworkVO.class);
-        Mockito.when(networkVO.getVpcId()).thenReturn(null);
+    @Test
+    public void testCheckAndUpdateNetworkDnsWithoutTheDnsService() {
+        NetworkVO networkVO = new NetworkVO();
+        networkVO.setVpcId(null);
         Long offeringId = 1L;
         NetworkOffering offering = Mockito.mock(NetworkOffering.class);
         Mockito.when(offering.getId()).thenReturn(offeringId);
         Mockito.when(offering.getGuestType()).thenReturn(Network.GuestType.Shared);
-        Mockito.when(networkOfferingServiceMapDao.areServicesSupportedByNetworkOffering(offeringId, Network.Service.Dns)).thenReturn(false);
-        service.checkAndUpdateNetworkDns(networkVO, offering, ip4Dns[0], null, null, null);
+        Assert.assertTrue(service.checkAndUpdateNetworkDns(networkVO, offering, ip4Dns[0], ip4Dns[1], null, null));
+        Assert.assertEquals(ip4Dns[0], networkVO.getDns1());
+        Assert.assertEquals(ip4Dns[1], networkVO.getDns2());
     }
 
     @Test(expected = InvalidParameterValueException.class)
@@ -723,7 +721,6 @@ public class NetworkServiceImplTest {
         Long offeringId = 1L;
         NetworkOffering offering = Mockito.mock(NetworkOffering.class);
         Mockito.when(offering.getId()).thenReturn(offeringId);
-        Mockito.when(networkOfferingServiceMapDao.areServicesSupportedByNetworkOffering(offeringId, Network.Service.Dns)).thenReturn(true);
         service.checkAndUpdateNetworkDns(networkVO, offering, null, null, ip6Dns[0], null);
     }
 
@@ -736,7 +733,6 @@ public class NetworkServiceImplTest {
         NetworkOffering offering = Mockito.mock(NetworkOffering.class);
         Mockito.when(offering.getId()).thenReturn(offeringId);
         Mockito.when(networkOfferingDao.isIpv6Supported(offeringId)).thenReturn(false);
-        Mockito.when(networkOfferingServiceMapDao.areServicesSupportedByNetworkOffering(offeringId, Network.Service.Dns)).thenReturn(true);
         service.checkAndUpdateNetworkDns(networkVO, offering, null, null, ip6Dns[0], null);
     }
 
@@ -752,10 +748,7 @@ public class NetworkServiceImplTest {
             Assert.fail(String.format("Unable to set network guestType, %s", e.getMessage()));
         }
         networkVO.setIp6Cidr("cidr");
-        Long offeringId = 1L;
         NetworkOffering offering = Mockito.mock(NetworkOffering.class);
-        Mockito.when(offering.getId()).thenReturn(offeringId);
-        Mockito.when(networkOfferingServiceMapDao.areServicesSupportedByNetworkOffering(offeringId, Network.Service.Dns)).thenReturn(true);
         boolean updated = service.checkAndUpdateNetworkDns(networkVO, offering, ip4Dns[0], null, ip6Dns[0], null);
         Assert.assertTrue(updated);
         Assert.assertEquals(ip4Dns[0], networkVO.getDns1());
@@ -765,11 +758,46 @@ public class NetworkServiceImplTest {
     }
 
     @Test
+    public void testUpdateNetworkMtusRecordsTheMtuWithoutARouterToReconfigure() {
+        NetworkVO withoutRouters = new NetworkVO();
+        withoutRouters.setPrivateMtu(1500);
+        Mockito.when(routerDao.findByNetwork(withoutRouters.getId())).thenReturn(new ArrayList<>());
+        service.updateNetworkMtus(withoutRouters, null, 1450, false);
+        Assert.assertEquals(Integer.valueOf(1450), withoutRouters.getPrivateMtu());
+        Mockito.verify(networkDao).update(Mockito.anyLong(), Mockito.same(withoutRouters));
+
+        NetworkVO restarting = new NetworkVO();
+        restarting.setPrivateMtu(1500);
+        DomainRouterVO router = Mockito.mock(DomainRouterVO.class);
+        Mockito.when(router.getId()).thenReturn(7L);
+        Mockito.when(routerDao.findByNetwork(restarting.getId())).thenReturn(List.of(router));
+        DomainRouterJoinVO guestNic = Mockito.mock(DomainRouterJoinVO.class);
+        Mockito.when(guestNic.getTrafficType()).thenReturn(TrafficType.Guest);
+        Mockito.when(guestNic.getIpAddress()).thenReturn("10.94.1.5");
+        Mockito.when(routerJoinDao.getRouterByIdAndTrafficType(7L, TrafficType.Guest, TrafficType.Public)).thenReturn(List.of(guestNic));
+        service.updateNetworkMtus(restarting, null, 1450, true);
+        Assert.assertEquals(Integer.valueOf(1450), restarting.getPrivateMtu());
+        Mockito.verify(networkDao).update(Mockito.anyLong(), Mockito.same(restarting));
+    }
+
+    @Test
+    public void testUpdateNetworkMtusWithoutMtusWritesNothingBeforeTheRestart() {
+        NetworkVO network = new NetworkVO();
+        network.setPrivateMtu(1450);
+
+        service.updateNetworkMtus(network, null, null, true);
+        service.updateNetworkMtus(network, null, null, false);
+
+        Assert.assertEquals(Integer.valueOf(1450), network.getPrivateMtu());
+        Mockito.verify(networkDao, Mockito.never()).update(Mockito.anyLong(), Mockito.any(NetworkVO.class));
+    }
+
+    @Test
     public void testCreateIpv4RoutedNetwork() {
         registerCallContext();
         CreateNetworkCmd cmd = Mockito.mock(CreateNetworkCmd.class);
         Mockito.when(cmd.getCidrSize()).thenReturn(24);
-        prepareCreateNetworkDnsMocks(cmd, Network.GuestType.Isolated, false, false, true);
+        prepareCreateNetworkDnsMocks(cmd, Network.GuestType.Isolated, false, false);
         when(networkOfferingVO.getNetworkMode()).thenReturn(NetworkOffering.NetworkMode.ROUTED);
         when(networkOfferingVO.getRoutingMode()).thenReturn(NetworkOffering.RoutingMode.Static);
         when(routedIpv4Manager.isRoutedNetworkVpcEnabled(nullable(Long.class))).thenReturn(true);
@@ -832,7 +860,7 @@ public class NetworkServiceImplTest {
         List<Long> bgpPeerIds = Arrays.asList(11L, 12L);
         Mockito.when(cmd.getBgpPeerIds()).thenReturn(bgpPeerIds);
 
-        prepareCreateNetworkDnsMocks(cmd, Network.GuestType.Isolated, false, true, true);
+        prepareCreateNetworkDnsMocks(cmd, Network.GuestType.Isolated, false, true);
         when(networkOfferingVO.getNetworkMode()).thenReturn(NetworkOffering.NetworkMode.ROUTED);
         when(networkOfferingVO.getRoutingMode()).thenReturn(NetworkOffering.RoutingMode.Static);
         when(routedIpv4Manager.isRoutedNetworkVpcEnabled(nullable(Long.class))).thenReturn(true);
@@ -860,7 +888,7 @@ public class NetworkServiceImplTest {
         List<Long> bgpPeerIds = Arrays.asList(11L, 12L);
         Mockito.when(cmd.getBgpPeerIds()).thenReturn(bgpPeerIds);
 
-        prepareCreateNetworkDnsMocks(cmd, Network.GuestType.Isolated, false, false, true);
+        prepareCreateNetworkDnsMocks(cmd, Network.GuestType.Isolated, false, false);
         when(networkOfferingVO.getNetworkMode()).thenReturn(NetworkOffering.NetworkMode.ROUTED);
         when(networkOfferingVO.getRoutingMode()).thenReturn(NetworkOffering.RoutingMode.Static);
         when(routedIpv4Manager.isRoutedNetworkVpcEnabled(nullable(Long.class))).thenReturn(true);
@@ -888,7 +916,7 @@ public class NetworkServiceImplTest {
         List<Long> bgpPeerIds = Arrays.asList(11L, 12L);
         Mockito.when(cmd.getBgpPeerIds()).thenReturn(bgpPeerIds);
 
-        prepareCreateNetworkDnsMocks(cmd, Network.GuestType.Isolated, false, false, true);
+        prepareCreateNetworkDnsMocks(cmd, Network.GuestType.Isolated, false, false);
         when(networkOfferingVO.getNetworkMode()).thenReturn(NetworkOffering.NetworkMode.ROUTED);
         when(networkOfferingVO.getRoutingMode()).thenReturn(NetworkOffering.RoutingMode.Static);
         when(routedIpv4Manager.isRoutedNetworkVpcEnabled(nullable(Long.class))).thenReturn(true);

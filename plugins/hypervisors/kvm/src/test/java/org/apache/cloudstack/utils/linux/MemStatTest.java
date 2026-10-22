@@ -83,4 +83,19 @@ public class MemStatTest {
         }
         Assert.assertEquals(memStat.getTotal(), 5970162688L);
     }
+
+    @Test
+    public void reservedMemoryComesOffTheTotalAndTheUsedMemory() {
+        long reserved = 2L * 1024 * 1024 * 1024;
+        MemStat memStat = new MemStat(reserved, 0);
+        if (!System.getProperty("os.name").equals("Linux")) {
+            return;
+        }
+        long hostWideUsed = 5970161664L - 3164520448L;
+
+        Assert.assertEquals(5970161664L - reserved, memStat.getTotal());
+        Assert.assertEquals(hostWideUsed - reserved, memStat.getTotal() - memStat.getAvailable());
+        MemStat moreThanUsed = new MemStat(3L * 1024 * 1024 * 1024, 0);
+        Assert.assertEquals(0L, moreThanUsed.getTotal() - moreThanUsed.getAvailable());
+    }
 }

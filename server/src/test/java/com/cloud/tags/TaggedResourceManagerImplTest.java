@@ -19,17 +19,25 @@
 
 package com.cloud.tags;
 
+import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.PermissionDeniedException;
+import com.cloud.server.ResourceManagerUtil;
 import com.cloud.server.ResourceTag;
+import com.cloud.tags.dao.ResourceTagDao;
 import com.cloud.user.Account;
 import com.cloud.user.AccountManager;
+import com.cloud.user.dao.AccountDao;
+import com.cloud.utils.db.EntityManager;
 import junit.framework.TestCase;
+import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnitRunner;
@@ -45,6 +53,14 @@ public class TaggedResourceManagerImplTest extends TestCase {
 
     @Mock
     AccountManager accountManager;
+    @Mock
+    ResourceTagDao resourceTagDao;
+    @Mock
+    ResourceManagerUtil resourceManagerUtil;
+    @Mock
+    EntityManager entityManager;
+    @Mock
+    AccountDao accountDao;
 
 
     @Spy
@@ -127,5 +143,22 @@ public class TaggedResourceManagerImplTest extends TestCase {
     public void testRetrieveDataStoreNullPoolId() {
         DataStore dataStore = taggedResourceManagerImplSpy.retrieveDatastore(null);
         Assert.assertNull(dataStore);
+    }
+    @Test
+    public void createTagsTakesValuesUpToTheColumnWidthAndRefusesLongerOnes() {
+        try (MockedStatic<CallContext> callContextMocked = Mockito.mockStatic(CallContext.class)) {
+            CallContext callContext = Mockito.mock(CallContext.class);
+            callContextMocked.when(CallContext::current).thenReturn(callContext);
+            Mockito.when(callContext.getCallingAccount()).thenReturn(Mockito.mock(Account.class));
+            String longest = "a".repeat(ResourceTag.VALUE_MAX_LENGTH);
+
+            taggedResourceManagerImplSpy.createTags(List.of("template-1"), ResourceTag.ResourceObjectType.Template, Map.of("owners", longest), null);
+
+            ArgumentCaptor<ResourceTagVO> persisted = ArgumentCaptor.forClass(ResourceTagVO.class);
+            Mockito.verify(resourceTagDao).persist(persisted.capture());
+            Assert.assertEquals(longest, persisted.getValue().getValue());
+            Assert.assertThrows(InvalidParameterValueException.class, () -> taggedResourceManagerImplSpy.createTags(List.of("template-1"),
+                    ResourceTag.ResourceObjectType.Template, Map.of("owners", longest + "a"), null));
+        }
     }
 }

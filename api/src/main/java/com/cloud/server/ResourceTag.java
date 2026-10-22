@@ -26,6 +26,9 @@ import org.apache.cloudstack.api.InternalIdentity;
 
 public interface ResourceTag extends ControlledEntity, Identity, InternalIdentity {
 
+    /** Longest tag value, the width of resource_tags.value. */
+    int VALUE_MAX_LENGTH = 8192;
+
     // FIXME - extract enum to another interface as its used both by resourceTags and resourceMetaData code
     public enum ResourceObjectType {
         UserVm(true, true, true),

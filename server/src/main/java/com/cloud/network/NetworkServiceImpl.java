@@ -660,9 +660,6 @@ public class NetworkServiceImpl extends ManagerBase implements NetworkService, C
             if (vpcId != null) {
                 throw new InvalidParameterValueException("DNS can not be specified for a VPC tier");
             }
-            if (!areServicesSupportedByNetworkOffering(networkOffering.getId(), Service.Dns)) {
-                throw new InvalidParameterValueException("DNS can not be specified for networks with network offering that do not support DNS service");
-            }
         }
         if (!isIpv6 && !StringUtils.isAllEmpty(ip6Dns1, ip6Dns2)) {
             throw new InvalidParameterValueException("IPv6 DNS cannot be specified for IPv4 only network");
@@ -677,15 +674,8 @@ public class NetworkServiceImpl extends ManagerBase implements NetworkService, C
         String ip4Dns2 = network.getDns2();
         String ip6Dns1 = network.getIp6Dns1();
         String ip6Dns2 = network.getIp6Dns2();
+        // a network's DNS servers are the resolvers its guests are given, whether or not the network serves DNS itself
         if (ObjectUtils.allNull(newIp4Dns1, newIp4Dns2, newIp6Dns1, newIp6Dns2)) {
-            if (ObjectUtils.anyNotNull(ip4Dns1, ip4Dns2, ip6Dns1, ip6Dns2) &&
-                    !areServicesSupportedByNetworkOffering(networkOffering.getId(), Service.Dns)) {
-                network.setDns1(null);
-                network.setDns2(null);
-                network.setIp6Dns1(null);
-                network.setIp6Dns2(null);
-                return true;
-            }
             return false;
         }
         if (StringUtils.equals(ip4Dns1, StringUtils.trimToNull(newIp4Dns1)) && StringUtils.equals(ip4Dns2, StringUtils.trimToNull(newIp4Dns2)) &&
@@ -3446,51 +3436,7 @@ public class NetworkServiceImpl extends ManagerBase implements NetworkService, C
         }
 
         Pair<Integer, Integer> mtus = validateMtuOnUpdate(network, dc.getId(), publicMtu, privateMtu);
-        publicMtu = mtus.first();
-        privateMtu = mtus.second();
-
-        // List all routers for the given network:
-        List<DomainRouterVO> routers = routerDao.findByNetwork(networkId);
-
-        // Create Map to store the IPAddress List for each router
-        Map<Long, Set<IpAddressTO>> routersToIpList = new HashMap<>();
-        for (DomainRouterVO routerVO : routers) {
-            Set<IpAddressTO> ips = new HashSet<>();
-            List<DomainRouterJoinVO> routerJoinVOS = routerJoinDao.getRouterByIdAndTrafficType(routerVO.getId(), TrafficType.Guest, TrafficType.Public);
-            for (DomainRouterJoinVO router : routerJoinVOS) {
-                IpAddressTO ip = null;
-                if (router.getTrafficType() == TrafficType.Guest && privateMtu != null) {
-                    ip = new IpAddressTO(router.getIpAddress(), privateMtu, router.getNetmask());
-                    ip.setTrafficType(TrafficType.Guest);
-                } else if (router.getTrafficType() == TrafficType.Public && publicMtu != null) {
-                    ip = new IpAddressTO(router.getIpAddress(), publicMtu, router.getNetmask());
-                    ip.setTrafficType(TrafficType.Public);
-                }
-                if (ip != null) {
-                    ips.add(ip);
-                }
-            }
-            if (network.getGuestType() == GuestType.Isolated && network.getVpcId() == null && publicMtu != null) {
-                List<IPAddressVO> addrs = _ipAddressDao.listByNetworkId(networkId);
-                for(IPAddressVO addr : addrs) {
-                    VlanVO vlan = _vlanDao.findById(addr.getVlanId());
-                    IpAddressTO to = new IpAddressTO(addr.getAddress().addr(), publicMtu, vlan.getVlanNetmask());
-                    ips.add(to);
-                }
-            }
-            if (!ips.isEmpty()) {
-                routersToIpList.put(routerVO.getId(), ips);
-            }
-        }
-
-        if (!routersToIpList.isEmpty() && !restartNetwork) {
-            boolean success = updateMtuOnVr(routersToIpList);
-            if (success) {
-                updateNetworkDetails(routersToIpList, network, publicMtu, privateMtu);
-            } else {
-                throw new CloudRuntimeException("Failed to update MTU on the network");
-            }
-        }
+        updateNetworkMtus(network, mtus.first(), mtus.second(), restartNetwork);
 
         ReservationContext context = new ReservationContextImpl(null, null, callerUser, callerAccount);
         // 1) Shutdown all the elements and cleanup all the rules. Don't allow to shutdown network in intermediate
@@ -3716,6 +3662,62 @@ public class NetworkServiceImpl extends ManagerBase implements NetworkService, C
         }
 
         return new Pair<>(publicMtu, privateMtu);
+    }
+
+    /**
+     * The network's routers are reconfigured first and the network records the MTUs once they took them; a network
+     * without routers, or one about to restart, records them directly, for the routers and guests that start on it next.
+     */
+    protected void updateNetworkMtus(NetworkVO network, Integer publicMtu, Integer privateMtu, boolean restartNetwork) {
+        if (publicMtu == null && privateMtu == null) {
+            return;
+        }
+        Map<Long, Set<IpAddressTO>> routersToIpList = new HashMap<>();
+        for (DomainRouterVO routerVO : routerDao.findByNetwork(network.getId())) {
+            Set<IpAddressTO> ips = new HashSet<>();
+            List<DomainRouterJoinVO> routerJoinVOS = routerJoinDao.getRouterByIdAndTrafficType(routerVO.getId(), TrafficType.Guest, TrafficType.Public);
+            for (DomainRouterJoinVO router : routerJoinVOS) {
+                IpAddressTO ip = null;
+                if (router.getTrafficType() == TrafficType.Guest && privateMtu != null) {
+                    ip = new IpAddressTO(router.getIpAddress(), privateMtu, router.getNetmask());
+                    ip.setTrafficType(TrafficType.Guest);
+                } else if (router.getTrafficType() == TrafficType.Public && publicMtu != null) {
+                    ip = new IpAddressTO(router.getIpAddress(), publicMtu, router.getNetmask());
+                    ip.setTrafficType(TrafficType.Public);
+                }
+                if (ip != null) {
+                    ips.add(ip);
+                }
+            }
+            if (network.getGuestType() == GuestType.Isolated && network.getVpcId() == null && publicMtu != null) {
+                List<IPAddressVO> addrs = _ipAddressDao.listByNetworkId(network.getId());
+                for(IPAddressVO addr : addrs) {
+                    VlanVO vlan = _vlanDao.findById(addr.getVlanId());
+                    IpAddressTO to = new IpAddressTO(addr.getAddress().addr(), publicMtu, vlan.getVlanNetmask());
+                    ips.add(to);
+                }
+            }
+            if (!ips.isEmpty()) {
+                routersToIpList.put(routerVO.getId(), ips);
+            }
+        }
+
+        if (!routersToIpList.isEmpty() && !restartNetwork) {
+            boolean success = updateMtuOnVr(routersToIpList);
+            if (success) {
+                updateNetworkDetails(routersToIpList, network, publicMtu, privateMtu);
+            } else {
+                throw new CloudRuntimeException("Failed to update MTU on the network");
+            }
+            return;
+        }
+        if (publicMtu != null) {
+            network.setPublicMtu(publicMtu);
+        }
+        if (privateMtu != null) {
+            network.setPrivateMtu(privateMtu);
+        }
+        _networksDao.update(network.getId(), network);
     }
 
     private void updateNetworkDetails(Map<Long, Set<IpAddressTO>> routerToIpList, NetworkVO network, Integer publicMtu, Integer privateMtu) {

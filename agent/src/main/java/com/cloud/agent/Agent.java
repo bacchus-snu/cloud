@@ -29,8 +29,10 @@ import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -939,7 +941,11 @@ public class Agent implements HandlerFactory, IAgentControl, AgentStatusUpdater 
         if (CollectionUtils.isNotEmpty(msList) && StringUtils.isNotEmpty(lbAlgorithm)) {
             try {
                 final String newMSHosts = String.format("%s%s%s", com.cloud.utils.StringUtils.toCSVList(msList), IAgentShell.hostLbAlgorithmSeparator, lbAlgorithm);
-                shell.setPersistentProperty(null, "host", newMSHosts);
+                if (namesSameManagementServers(shell.getPersistentProperty(null, "host"), msList)) {
+                    logger.debug("The persisted management server list already names {}, leaving it as it is", msList);
+                } else {
+                    shell.setPersistentProperty(null, "host", newMSHosts);
+                }
                 shell.setHosts(newMSHosts);
                 shell.resetHostCounter();
                 logger.info("Processed new management server list: {}", newMSHosts);
@@ -955,6 +961,28 @@ public class Agent implements HandlerFactory, IAgentControl, AgentStatusUpdater 
             hostLbExecutor.shutdown();
         }
         scheduleHostLBCheckerTask(lbAlgorithm, shell.getLbCheckerInterval(lbCheckInterval));
+    }
+
+    /**
+     * Whether a persisted host value names the given management servers, in whatever order and with whatever algorithm
+     * suffix. The management server orders the list per agent and the running agent applies that order; the persisted
+     * list only bootstraps the next start.
+     */
+    static boolean namesSameManagementServers(final String hostValue, final List<String> msList) {
+        if (StringUtils.isBlank(hostValue)) {
+            return false;
+        }
+        final Set<String> persisted = new HashSet<>();
+        for (final String host : hostValue.split(IAgentShell.hostLbAlgorithmSeparator)[0].split(",")) {
+            if (StringUtils.isNotBlank(host)) {
+                persisted.add(host.trim());
+            }
+        }
+        final Set<String> received = new HashSet<>();
+        for (final String host : msList) {
+            received.add(host.trim());
+        }
+        return persisted.equals(received);
     }
 
     private Answer setupManagementServerList(final SetupMSListCommand cmd) {

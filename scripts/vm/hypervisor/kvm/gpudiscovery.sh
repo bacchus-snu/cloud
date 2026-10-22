@@ -688,6 +688,21 @@ get_pci_root() {
 	echo "$addr"
 }
 
+# A VGA-class device serves guests only while it is bound to vfio-pci or offers
+# mediated devices or enabled virtual functions; otherwise it drives the host's
+# own display (on servers, the BMC or onboard graphics). SR-IOV capability alone
+# says nothing: host display devices may have it too.
+vga_reserved_for_guests() {
+	local dev="/sys/bus/pci/devices/$1"
+	local driver numvfs
+	driver=$(basename "$(readlink "$dev/driver" 2>/dev/null)")
+	if [[ "$driver" == vfio-pci || -d "$dev/mdev_supported_types" ]]; then
+		return 0
+	fi
+	numvfs=$(cat "$dev/sriov_numvfs" 2>/dev/null || true)
+	[[ "${numvfs:-0}" =~ ^[0-9]+$ ]] && ((numvfs > 0))
+}
+
 # Build VM → hostdev maps:
 #   pci_to_vm[BDF] = VM name that attaches that BDF
 #   mdev_to_vm[UUID] = VM name that attaches that MDEV UUID
@@ -849,8 +864,13 @@ for LINE in "${LINES[@]}"; do
 		continue
 	fi
 
-	# Only process PCI classes - 3D controller, Processing accelerators, Display controller
-	if [[ ! "$PCI_CLASS" =~ (3D\ controller|Processing\ accelerators|Display\ controller) ]]; then
+	# Only process PCI classes - 3D controller, Processing accelerators, Display controller,
+	# and VGA compatible controller when the device is reserved for guests
+	if [[ "$PCI_CLASS" =~ ^VGA\ compatible\ controller ]]; then
+		if ! vga_reserved_for_guests "$SYSFS_ADDR"; then
+			continue
+		fi
+	elif [[ ! "$PCI_CLASS" =~ (3D\ controller|Processing\ accelerators|Display\ controller) ]]; then
 		continue
 	fi
 

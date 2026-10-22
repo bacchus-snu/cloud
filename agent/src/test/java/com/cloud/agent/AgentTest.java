@@ -25,6 +25,7 @@ import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -32,6 +33,7 @@ import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.List;
 
 import javax.naming.ConfigurationException;
 
@@ -42,6 +44,7 @@ import org.junit.runner.RunWith;
 import org.mockito.junit.MockitoJUnitRunner;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import com.cloud.agent.api.ReadyCommand;
 import com.cloud.resource.ServerResource;
 import com.cloud.utils.backoff.impl.ConstantTimeBackoff;
 import com.cloud.utils.nio.Link;
@@ -253,5 +256,34 @@ public class AgentTest {
         verify(mockConnection).stop();
         verify(mockConnection).cleanUp();
         verify(mockBackoff, times(3)).waitBeforeRetry();
+    }
+
+    private void processReady(String persistedHost, List<String> msList, String lbAlgorithm) {
+        when(shell.getPersistentProperty(null, "host")).thenReturn(persistedHost);
+        ReadyCommand ready = new ReadyCommand();
+        ready.setMsHostList(msList);
+        ready.setLbAlgorithm(lbAlgorithm);
+        agent.processReadyCommand(ready);
+    }
+
+    @Test
+    public void readyCommandLeavesAHostLineNamingTheSameServersUntouched() {
+        processReady("ms1.example", List.of("ms1.example"), "static");
+        processReady("ms1.example,ms2.example@static", List.of("ms1.example", "ms2.example"), "static");
+        processReady("ms2.example,ms1.example@shuffle", List.of("ms1.example", "ms2.example"), "shuffle");
+        processReady("ms2.example,ms1.example@static", List.of("ms1.example", "ms2.example"), "static");
+        processReady("ms1.example,ms2.example", List.of("ms2.example", "ms1.example"), "roundrobin");
+
+        verify(shell, never()).setPersistentProperty(any(), any(), any());
+        verify(shell).setHosts("ms1.example@static");
+    }
+
+    @Test
+    public void readyCommandRewritesTheHostLineWhenTheServersChange() {
+        processReady("ms1.example", List.of("ms1.example", "ms2.example"), "static");
+        processReady("ms1.example,ms3.example@roundrobin", List.of("ms1.example", "ms2.example"), "roundrobin");
+
+        verify(shell).setPersistentProperty(null, "host", "ms1.example,ms2.example@static");
+        verify(shell).setPersistentProperty(null, "host", "ms1.example,ms2.example@roundrobin");
     }
 }

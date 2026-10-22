@@ -103,6 +103,24 @@ public class LibvirtVMDefTest extends TestCase {
     }
 
     @Test
+    public void testInterfaceBridgeNetWithTheNetworkMtu() {
+        LibvirtVMDef.InterfaceDef ifDef = new LibvirtVMDef.InterfaceDef();
+        ifDef.defBridgeNet("cloudbr1", null, "00:11:22:aa:bb:dd", LibvirtVMDef.InterfaceDef.NicModel.VIRTIO);
+        ifDef.setMtu(1450);
+
+        String expected =
+            "<interface type='" + LibvirtVMDef.InterfaceDef.GuestNetType.BRIDGE + "'>\n"
+                    + "<source bridge='cloudbr1'/>\n"
+                    + "<mac address='00:11:22:aa:bb:dd'/>\n"
+                    + "<model type='virtio'/>\n"
+                    + "<mtu size='1450'/>\n"
+                    + "<link state='up'/>\n"
+                    + "</interface>\n";
+
+        assertEquals(expected, ifDef.toString());
+    }
+
+    @Test
     public void testInterfaceDirectNet() {
         LibvirtVMDef.InterfaceDef ifDef = new LibvirtVMDef.InterfaceDef();
         ifDef.defDirectNet("targetDeviceName", null, "00:11:22:aa:bb:dd", LibvirtVMDef.InterfaceDef.NicModel.VIRTIO, "private");

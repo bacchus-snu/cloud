@@ -425,6 +425,10 @@ enable_radvd() {
   grep -q "radvd" /var/cache/cloud/enabled_svcs || echo "radvd" >> /var/cache/cloud/enabled_svcs
 }
 
+dns_per_account() {
+  [ "$USE_EXTERNAL_DNS" != "true" ] && [ "$DNS_PER_ACCOUNT" == "true" ]
+}
+
 setup_radvd() {
   log_it "Setting up radvd"
 
@@ -440,11 +444,16 @@ setup_radvd() {
   sed -i "s,{{ GUEST_INTERFACE }},$intf,g" /etc/radvd.conf.$intf
   sed -i "s,{{ IPV6_CIDR }},$ip6cidr,g" /etc/radvd.conf.$intf
   RDNSS_CFG=
-  if [ -n "$IP6_NS1" ];then
-    RDNSS_CFG=$RDNSS_CFG"    RDNSS $IP6_NS1\n    {\n        AdvRDNSSLifetime 30;\n    };\n"
-  fi
-  if [ -n "$IP6_NS2" ];then
-    RDNSS_CFG=$RDNSS_CFG"    RDNSS $IP6_NS2\n    {\n        AdvRDNSSLifetime 30;\n    };\n"
+  if dns_per_account
+  then
+    RDNSS_CFG="    RDNSS $ipv6\n    {\n        AdvRDNSSLifetime 30;\n    };\n"
+  else
+    if [ -n "$IP6_NS1" ];then
+      RDNSS_CFG=$RDNSS_CFG"    RDNSS $IP6_NS1\n    {\n        AdvRDNSSLifetime 30;\n    };\n"
+    fi
+    if [ -n "$IP6_NS2" ];then
+      RDNSS_CFG=$RDNSS_CFG"    RDNSS $IP6_NS2\n    {\n        AdvRDNSSLifetime 30;\n    };\n"
+    fi
   fi
   sed -i "s,{{ RDNSS_CONFIG }},$RDNSS_CFG,g" /etc/radvd.conf.$intf
   cat /etc/radvd.conf.$intf >> /etc/radvd.conf
@@ -536,6 +545,20 @@ setup_dnsmasq() {
     # disable dns
     sed -i -e "/^[#]*port=.*$/d" /etc/dnsmasq.conf
     echo "port=0" >> /etc/dnsmasq.conf
+  fi
+  # On a network shared by several accounts cloud-guest-dns answers guests per account
+  # on the router's own addresses, which are then their only resolvers: a second
+  # resolver would answer the network's domain differently. dnsmasq keeps DHCP only.
+  # Its map is written from this boot's DHCP entries, never kept from a previous boot.
+  rm -f /var/cache/cloud/guest_dns.json /var/cache/cloud/guest_dns.resolv
+  if dns_per_account
+  then
+    [ -n "$ETH0_IP" ] && NS="$INTERNAL_DNS,"
+    [ -n "$ETH0_IP6" ] && NS6="[::],"
+    echo "port=0" >> /etc/dnsmasq.conf
+    echo "cloud-guest-dns cloud-guest-dns-cache" >> /var/cache/cloud/enabled_svcs
+  else
+    echo "cloud-guest-dns cloud-guest-dns-cache" >> /var/cache/cloud/disabled_svcs
   fi
   NS=${NS%?}
   NS6=${NS6%?}
@@ -812,6 +835,9 @@ parse_cmd_line() {
             ;;
         useextdns)
             export USE_EXTERNAL_DNS=$VALUE
+            ;;
+        dnsperaccount)
+            export DNS_PER_ACCOUNT=$VALUE
             ;;
         mgmtcidr)
             export MGMTNET=$VALUE

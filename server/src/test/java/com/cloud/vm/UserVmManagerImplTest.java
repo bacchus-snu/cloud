@@ -176,6 +176,7 @@ import com.cloud.network.dao.PhysicalNetworkDao;
 import com.cloud.network.dao.PhysicalNetworkVO;
 import com.cloud.network.element.UserDataServiceProvider;
 import com.cloud.network.guru.NetworkGuru;
+import com.cloud.network.router.VpcVirtualNetworkApplianceManager;
 import com.cloud.network.rules.FirewallRuleVO;
 import com.cloud.network.rules.PortForwardingRule;
 import com.cloud.network.rules.dao.PortForwardingRulesDao;
@@ -313,6 +314,9 @@ public class UserVmManagerImplTest {
 
     @Mock
     private NetworkModel networkModel;
+
+    @Mock
+    private VpcVirtualNetworkApplianceManager virtualNetworkApplianceMock;
 
     @Mock
     private Account accountMock;
@@ -2239,6 +2243,77 @@ public class UserVmManagerImplTest {
 
         Mockito.verify(userVmManagerImpl).updateAdvancedTypeNetworkForVm(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(),
                 Mockito.any(), Mockito.any(), Mockito.any());
+    }
+
+    @Test
+    public void updateVmNetworkKeepingTheNicsLeavesTheRoutersUntilTheOwnerChangeIsCommitted() throws Exception {
+        Mockito.doReturn(true).when(assignVmCmdMock).isSkipNetwork();
+
+        userVmManagerImpl.updateVmNetwork(assignVmCmdMock, callerAccount, userVmVoMock, accountMock, virtualMachineTemplateMock);
+
+        Mockito.verify(userVmManagerImpl, Mockito.never()).updateDhcpEntriesOwner(Mockito.any());
+        Mockito.verifyNoInteractions(virtualNetworkApplianceMock);
+    }
+
+    @Test
+    public void updateDhcpEntriesOwnerGivesTheRoutersEveryNicsEntry() {
+        Mockito.doReturn(5L).when(userVmVoMock).getId();
+        NicVO first = Mockito.mock(NicVO.class);
+        NicVO second = Mockito.mock(NicVO.class);
+        Mockito.doReturn(List.of(first, second)).when(nicDao).listByVmId(5L);
+
+        userVmManagerImpl.updateDhcpEntriesOwner(userVmVoMock);
+
+        Mockito.verify(virtualNetworkApplianceMock).refreshDhcpEntry(userVmVoMock, first);
+        Mockito.verify(virtualNetworkApplianceMock).refreshDhcpEntry(userVmVoMock, second);
+    }
+
+    @Test
+    public void aRefreshThatFailsNeverFailsTheCommittedOwnerChange() {
+        Mockito.doReturn(5L).when(userVmVoMock).getId();
+        NicVO first = Mockito.mock(NicVO.class);
+        NicVO second = Mockito.mock(NicVO.class);
+        Mockito.doReturn(List.of(first, second)).when(nicDao).listByVmId(5L);
+        Mockito.doThrow(new CloudRuntimeException("no router to ask")).when(virtualNetworkApplianceMock).refreshDhcpEntry(userVmVoMock, first);
+
+        userVmManagerImpl.updateDhcpEntriesOwner(userVmVoMock);
+
+        Mockito.verify(virtualNetworkApplianceMock).refreshDhcpEntry(userVmVoMock, second);
+    }
+
+    @Test
+    public void moveVmToUserKeepingTheNicsGivesTheRoutersTheNewOwnerAfterTheChangeIsCommitted() throws Exception {
+        LinkedList<VolumeVO> volumes = new LinkedList<>();
+        Mockito.doReturn(true).when(accountManager).isRootAdmin(Mockito.anyLong());
+        Mockito.doReturn(userVmVoMock).when(userVmDao).findById(Mockito.anyLong());
+        Mockito.doReturn(null).when(assignVmCmdMock).getProjectId();
+        Mockito.doReturn(true).when(assignVmCmdMock).isSkipNetwork();
+        Mockito.doReturn(volumes).when(volumeDaoMock).findByInstance(Mockito.anyLong());
+        Mockito.doReturn(accountMock).when(accountManager).finalizeOwner(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+        Mockito.doReturn(domainVoMock).when(domainDaoMock).findById(Mockito.anyLong());
+        configureDoNothingForMethodsThatWeDoNotWantToTest();
+        Mockito.doNothing().when(userVmManagerImpl).verifyResourceLimitsForAccountAndStorage(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(),
+                Mockito.any());
+        boolean[] inTransaction = {false};
+        List<String> calls = new ArrayList<>();
+        Mockito.doAnswer(invocation -> calls.add("owner changed, in transaction: " + inTransaction[0])).when(userVmManagerImpl)
+                .executeStepsToChangeOwnershipOfVm(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(),
+                        Mockito.any());
+        Mockito.doAnswer(invocation -> calls.add("routers told, in transaction: " + inTransaction[0])).when(userVmManagerImpl).updateDhcpEntriesOwner(userVmVoMock);
+
+        try (MockedStatic<Transaction> transaction = mockStatic(Transaction.class)) {
+            transaction.when(() -> Transaction.execute(any(TransactionCallback.class))).thenAnswer(invocation -> {
+                inTransaction[0] = true;
+                try {
+                    return ((TransactionCallback<?>) invocation.getArgument(0)).doInTransaction(null);
+                } finally {
+                    inTransaction[0] = false;
+                }
+            });
+            userVmManagerImpl.moveVmToUser(assignVmCmdMock);
+        }
+
+        Assert.assertEquals(List.of("owner changed, in transaction: true", "routers told, in transaction: false"), calls);
     }
 
     @Test

@@ -1,0 +1,19 @@
+[Unit]
+Description=CloudStack guest DNS answering each guest with its own account's names
+Wants=cloud-guest-dns-cache.service
+After=cloud-early-config.service network.target cloud-guest-dns-cache.service
+ConditionPathExists=/var/cache/cloud/guest_dns.json
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/opt/cloud/bin/guest_dns.py /var/cache/cloud/guest_dns.json
+DynamicUser=yes
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+Restart=on-failure
+RestartSec=5

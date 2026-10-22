@@ -29,6 +29,7 @@ import com.cloud.offerings.dao.NetworkOfferingDetailsDao;
 import com.cloud.vm.UserVmVO;
 import com.cloud.vm.NicVO;
 import com.cloud.vm.dao.NicDao;
+import com.cloud.vm.dao.NicSecondaryIpDao;
 import org.apache.cloudstack.engine.orchestration.service.NetworkOrchestrationService;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.junit.Assert;
@@ -70,6 +71,8 @@ public class DhcpLeaseTimeoutIntegrationTest {
     RouterControlHelper routerControlHelper;
     @Mock
     DataCenterDao dcDao;
+    @Mock
+    NicSecondaryIpDao nicSecondaryIpDao;
 
     private VirtualRouter mockRouter;
     private UserVmVO mockVm;
@@ -86,6 +89,7 @@ public class DhcpLeaseTimeoutIntegrationTest {
         ReflectionTestUtils.setField(commandSetupHelper, "networkDetailsDao", networkDetailsDao);
         ReflectionTestUtils.setField(commandSetupHelper, "_routerControlHelper", routerControlHelper);
         ReflectionTestUtils.setField(commandSetupHelper, "_dcDao", dcDao);
+        ReflectionTestUtils.setField(commandSetupHelper, "_nicSecondaryIpDao", nicSecondaryIpDao);
 
         // Create common mocks
         mockRouter = Mockito.mock(VirtualRouter.class);

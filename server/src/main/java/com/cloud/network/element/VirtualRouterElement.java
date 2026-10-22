@@ -80,6 +80,7 @@ import com.cloud.network.dao.VirtualRouterProviderDao;
 import com.cloud.network.lb.LoadBalancingRule;
 import com.cloud.network.lb.LoadBalancingRulesManager;
 import com.cloud.network.router.NetworkHelper;
+import com.cloud.network.router.VirtualNetworkApplianceManager;
 import com.cloud.network.router.VirtualRouter;
 import com.cloud.network.router.VirtualRouter.Role;
 import com.cloud.network.router.VpcVirtualNetworkApplianceManager;
@@ -1016,12 +1017,26 @@ NetworkMigrationResponder, AggregatedCommandExecutor, RedundantResource, DnsServ
             final DataCenterVO dcVO = _dcDao.findById(network.getDataCenterId());
             final NetworkTopology networkTopology = networkTopologyContext.retrieveNetworkTopology(dcVO);
 
+            ResourceUnavailableException failure = null;
             for (final DomainRouterVO domainRouterVO : routers) {
-                if (domainRouterVO.getState() != VirtualMachine.State.Running) {
+                boolean removed = false;
+                if (domainRouterVO.getState() == VirtualMachine.State.Running) {
+                    try {
+                        removed = networkTopology.removeDhcpEntry(network, nic, vmProfile, domainRouterVO);
+                    } catch (final ResourceUnavailableException e) {
+                        failure = failure == null ? e : failure;
+                    }
+                    result = result && removed;
+                } else if (VirtualNetworkApplianceManager.takesDhcpEntriesAfresh(domainRouterVO.getState())) {
                     continue;
                 }
-
-                result = result && networkTopology.removeDhcpEntry(network, nic, vmProfile, domainRouterVO);
+                if (!removed && _routerMgr.answersGuestNamesPerAccount(network)) {
+                    _routerMgr.keepDhcpEntryPending(domainRouterVO, nic.getMacAddress(), ObjectUtils.firstNonNull(nic.getIPv4Address(), nic.getRequestedIPv4()),
+                            ObjectUtils.firstNonNull(nic.getIPv6Address(), nic.getRequestedIPv6()));
+                }
+            }
+            if (failure != null) {
+                throw failure;
             }
         }
         return result;

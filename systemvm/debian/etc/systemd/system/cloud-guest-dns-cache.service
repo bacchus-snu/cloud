@@ -1,0 +1,15 @@
+[Unit]
+Description=CloudStack guest DNS cache, forwarding to the network's resolvers
+After=cloud-early-config.service network.target
+ConditionPathExists=/var/cache/cloud/guest_dns.resolv
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+Type=simple
+RuntimeDirectory=cloud-guest-dns-cache
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file=/run/cloud-guest-dns-cache/dnsmasq.pid --listen-address=127.0.0.1 --bind-interfaces --port=10053 --no-hosts --resolv-file=/var/cache/cloud/guest_dns.resolv
+Restart=on-failure
+RestartSec=5

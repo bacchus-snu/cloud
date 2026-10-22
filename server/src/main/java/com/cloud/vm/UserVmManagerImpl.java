@@ -8710,6 +8710,9 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                     executeStepsToChangeOwnershipOfVm(cmd, caller, oldAccount, newAccount, vm, offering, volumes, template, domainId);
                 }
             });
+            if (cmd.isSkipNetwork()) {
+                updateDhcpEntriesOwner(vm);
+            }
         } catch (Exception e) {
             if (newNetwork != null) {
                 logger.debug("Cleaning up the created network.");
@@ -9167,6 +9170,20 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
         allocateNetworksForVm(vm, networks);
         logger.debug("Adding [{}] networks to VM [{}].", networks.size(), vm.getInstanceName());
+    }
+
+    /**
+     * A VM that keeps its NICs while changing owner keeps its DHCP entries; the routers serving them learn the new
+     * owner once it is committed, as they answer guests' DNS per account.
+     */
+    protected void updateDhcpEntriesOwner(UserVmVO vm) {
+        for (NicVO nic : _nicDao.listByVmId(vm.getId())) {
+            try {
+                _virtualNetAppliance.refreshDhcpEntry(vm, nic);
+            } catch (RuntimeException e) {
+                logger.warn("Unable to give the routers serving {} the new owner of {}", nic, vm, e);
+            }
+        }
     }
 
     protected void cleanupOfOldOwnerNicsForNetwork(VirtualMachineProfileImpl vmOldProfile) {

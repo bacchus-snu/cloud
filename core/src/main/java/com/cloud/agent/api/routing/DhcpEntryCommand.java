@@ -19,6 +19,8 @@
 
 package com.cloud.agent.api.routing;
 
+import java.util.List;
+
 public class DhcpEntryCommand extends NetworkElementCommand {
 
     String vmMac;
@@ -33,6 +35,8 @@ public class DhcpEntryCommand extends NetworkElementCommand {
     String vmIp6Address;
     String ip6Gateway;
     String duid;
+    Long vmAccountId;
+    List<String> vmSecondaryAddresses;
     private boolean isDefault;
     boolean executeInSequence = false;
     boolean remove;
@@ -160,5 +164,21 @@ public class DhcpEntryCommand extends NetworkElementCommand {
 
     public void setLeaseTime(Long leaseTime) {
         this.leaseTime = leaseTime;
+    }
+
+    public Long getVmAccountId() {
+        return vmAccountId;
+    }
+
+    public void setVmAccountId(Long vmAccountId) {
+        this.vmAccountId = vmAccountId;
+    }
+
+    public List<String> getVmSecondaryAddresses() {
+        return vmSecondaryAddresses;
+    }
+
+    public void setVmSecondaryAddresses(List<String> vmSecondaryAddresses) {
+        this.vmSecondaryAddresses = vmSecondaryAddresses;
     }
 }

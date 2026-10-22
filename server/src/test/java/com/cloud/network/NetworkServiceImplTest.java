@@ -773,7 +773,7 @@ public class NetworkServiceImplTest {
         Mockito.when(routerDao.findByNetwork(restarting.getId())).thenReturn(List.of(router));
         DomainRouterJoinVO guestNic = Mockito.mock(DomainRouterJoinVO.class);
         Mockito.when(guestNic.getTrafficType()).thenReturn(TrafficType.Guest);
-        Mockito.when(guestNic.getIpAddress()).thenReturn("10.94.1.5");
+        Mockito.when(guestNic.getIpAddress()).thenReturn("203.0.113.5");
         Mockito.when(routerJoinDao.getRouterByIdAndTrafficType(7L, TrafficType.Guest, TrafficType.Public)).thenReturn(List.of(guestNic));
         service.updateNetworkMtus(restarting, null, 1450, true);
         Assert.assertEquals(Integer.valueOf(1450), restarting.getPrivateMtu());
@@ -1405,5 +1405,130 @@ public class NetworkServiceImplTest {
         Mockito.when(networkOfferingVO.getGuestType()).thenReturn(Network.GuestType.Isolated);
 
         Assert.assertFalse(service.getAndValidateSupportForKeepMacAddressOnPublicNicParameter(false, networkOfferingVO));
+    }
+
+    private NetworkVO sharedNetworkOn(long offeringId, String cidr) {
+        NetworkVO shared = Mockito.mock(NetworkVO.class);
+        Mockito.lenient().when(shared.getId()).thenReturn(11L);
+        Mockito.lenient().when(shared.getUuid()).thenReturn("shared-network");
+        Mockito.lenient().when(shared.getGuestType()).thenReturn(Network.GuestType.Shared);
+        Mockito.lenient().when(shared.getTrafficType()).thenReturn(TrafficType.Guest);
+        Mockito.lenient().when(shared.getNetworkOfferingId()).thenReturn(offeringId);
+        Mockito.lenient().when(shared.getCidr()).thenReturn(cidr);
+        return shared;
+    }
+
+    private NetworkOfferingVO sharedOffering(long id, boolean securityGroups, boolean ipv6, boolean virtualRouter) {
+        NetworkOfferingVO shared = Mockito.mock(NetworkOfferingVO.class);
+        Mockito.lenient().when(shared.getId()).thenReturn(id);
+        Mockito.lenient().when(shared.getUuid()).thenReturn("offering-" + id);
+        Mockito.lenient().when(shared.getGuestType()).thenReturn(Network.GuestType.Shared);
+        Mockito.lenient().when(shared.getTrafficType()).thenReturn(TrafficType.Guest);
+        Mockito.lenient().when(shared.isSpecifyVlan()).thenReturn(true);
+        Mockito.lenient().when(shared.isSpecifyIpRanges()).thenReturn(true);
+        Mockito.lenient().when(shared.getState()).thenReturn(NetworkOffering.State.Enabled);
+        Mockito.lenient().when(networkOfferingDao.findById(id)).thenReturn(shared);
+        Mockito.lenient().when(networkOfferingDao.findByIdIncludingRemoved(id)).thenReturn(shared);
+        Mockito.lenient().when(networkOfferingDao.isIpv6Supported(id)).thenReturn(ipv6);
+        Mockito.lenient().when(networkOfferingServiceMapDao.areServicesSupportedByNetworkOffering(id, Network.Service.SecurityGroup)).thenReturn(securityGroups);
+        Mockito.lenient().when(networkModel.isProviderForNetworkOffering(Network.Provider.VirtualRouter, id)).thenReturn(virtualRouter);
+        return shared;
+    }
+
+    private void assertSharedOfferingChangeRefused(Network network, NetworkOffering from, NetworkOffering to, boolean changesCidr, String reason) {
+        try {
+            service.checkSharedNetworkOfferingChange(network, from, to, changesCidr);
+            Assert.fail("accepted a change that " + reason);
+        } catch (InvalidParameterValueException e) {
+            Assert.assertTrue(e.getMessage(), e.getMessage().contains(reason));
+        }
+    }
+
+    @Test
+    public void testSharedNetworkMovesToASharedOfferingThatAddsDns() {
+        NetworkOfferingVO withoutDns = sharedOffering(21L, true, false, true);
+        NetworkOfferingVO withDns = sharedOffering(22L, true, false, true);
+        Mockito.lenient().when(networkOfferingServiceMapDao.areServicesSupportedByNetworkOffering(21L, Network.Service.Dns)).thenReturn(false);
+        Mockito.lenient().when(networkOfferingServiceMapDao.areServicesSupportedByNetworkOffering(22L, Network.Service.Dns)).thenReturn(true);
+        Mockito.lenient().when(networkOfferingServiceMapDao.listServicesForNetworkOffering(21L)).thenReturn(List.of("Dhcp", "SecurityGroup", "UserData"));
+        Mockito.lenient().when(networkOfferingServiceMapDao.listServicesForNetworkOffering(22L)).thenReturn(List.of("Dhcp", "Dns", "SecurityGroup", "UserData"));
+        NetworkVO shared = sharedNetworkOn(21L, "203.0.113.0/24");
+
+        service.checkSharedNetworkOfferingChange(shared, withoutDns, withDns, false);
+        service.checkOfferingUpgrade(shared, 21L, 22L);
+    }
+
+    @Test
+    public void testSharedNetworkOfferingChangeRefusesWhatTheNetworkWasCreatedWith() {
+        NetworkOfferingVO current = sharedOffering(21L, true, false, true);
+        NetworkVO shared = sharedNetworkOn(21L, "203.0.113.0/24");
+        NetworkOfferingVO isolated = sharedOffering(23L, true, false, true);
+        Mockito.lenient().when(isolated.getGuestType()).thenReturn(Network.GuestType.Isolated);
+        NetworkOfferingVO otherVlans = sharedOffering(24L, true, false, true);
+        Mockito.lenient().when(otherVlans.isSpecifyVlan()).thenReturn(false);
+
+        assertSharedOfferingChangeRefused(shared, current, isolated, false, "only move to another Shared network offering");
+        assertSharedOfferingChangeRefused(shared, current, otherVlans, false, "specifyvlan or specifyipranges");
+        assertSharedOfferingChangeRefused(shared, current, sharedOffering(25L, false, false, true), false, "SecurityGroup service");
+        assertSharedOfferingChangeRefused(shared, current, sharedOffering(26L, true, true, true), false, "internet protocol");
+        assertSharedOfferingChangeRefused(shared, current, sharedOffering(27L, true, false, true), true, "keeps the CIDR");
+
+        NetworkVO ipv6Only = sharedNetworkOn(28L, null);
+        assertSharedOfferingChangeRefused(ipv6Only, sharedOffering(28L, true, true, false), sharedOffering(29L, true, true, true), false, "IPv6-only");
+    }
+
+    @Test
+    public void testUpdateGuestNetworkTakesAnOfferingChangeOfASharedNetworkToItsChecks() {
+        sharedOffering(21L, true, false, true);
+        NetworkOfferingVO isolated = sharedOffering(23L, true, false, true);
+        Mockito.lenient().when(isolated.getGuestType()).thenReturn(Network.GuestType.Isolated);
+        NetworkVO shared = sharedNetworkOn(21L, "203.0.113.0/24");
+        Mockito.when(networkDao.findById(11L)).thenReturn(shared);
+        Mockito.when(_accountService.getActiveUser(Mockito.anyLong())).thenReturn(Mockito.mock(User.class));
+        ReflectionTestUtils.setField(updateNetworkCmd, "id", 11L);
+        ReflectionTestUtils.setField(updateNetworkCmd, "networkOfferingId", 23L);
+
+        try {
+            service.updateGuestNetwork(updateNetworkCmd);
+            Assert.fail("an Isolated offering was accepted for a Shared network");
+        } catch (InvalidParameterValueException e) {
+            Assert.assertTrue(e.getMessage(), e.getMessage().contains("only move to another Shared network offering"));
+        }
+    }
+
+    private void assertOfferingUpgradeRefused(Network network, long from, long to, String reason) {
+        try {
+            service.checkOfferingUpgrade(network, from, to);
+            Assert.fail("accepted a change where " + reason);
+        } catch (InvalidParameterValueException e) {
+            Assert.assertTrue(e.getMessage(), e.getMessage().startsWith("Can't upgrade from network offering offering-" + from + " to offering-" + to + ": "));
+            Assert.assertTrue(e.getMessage(), e.getMessage().contains(reason));
+        }
+    }
+
+    @Test
+    public void testOfferingChangeRefusalsNameTheirReason() {
+        NetworkVO isolated = sharedNetworkOn(31L, "10.0.0.0/24");
+        Mockito.lenient().when(isolated.getGuestType()).thenReturn(Network.GuestType.Isolated);
+        NetworkOfferingVO current = sharedOffering(31L, false, false, true);
+        Mockito.lenient().when(current.getGuestType()).thenReturn(Network.GuestType.Isolated);
+        for (long id = 32L; id <= 38L; id++) {
+            Mockito.lenient().when(sharedOffering(id, false, false, true).getGuestType()).thenReturn(Network.GuestType.Isolated);
+        }
+        Mockito.lenient().when(networkOfferingServiceMapDao.areServicesSupportedByNetworkOffering(32L, Network.Service.SecurityGroup)).thenReturn(true);
+        Mockito.lenient().when(networkOfferingDao.findById(33L).getTags()).thenReturn("fast");
+        Mockito.lenient().when(networkOfferingDao.findById(34L).isSpecifyVlan()).thenReturn(false);
+        Mockito.lenient().when(networkOfferingDao.findById(35L).getNetworkMode()).thenReturn(NetworkOffering.NetworkMode.ROUTED);
+        Mockito.lenient().when(networkOfferingDao.findById(36L).getGuestType()).thenReturn(Network.GuestType.L2);
+        Mockito.lenient().when(networkOfferingDao.findById(37L).getTrafficType()).thenReturn(TrafficType.Public);
+        Mockito.lenient().when(networkOfferingDao.findById(38L).isSpecifyIpRanges()).thenReturn(false);
+
+        assertOfferingUpgradeRefused(isolated, 31L, 32L, "the offerings differ in the SecurityGroup service");
+        assertOfferingUpgradeRefused(isolated, 31L, 33L, "the offerings have different tags");
+        assertOfferingUpgradeRefused(isolated, 31L, 34L, "the offerings differ in specifyvlan");
+        assertOfferingUpgradeRefused(isolated, 31L, 35L, "the offerings have different network modes");
+        assertOfferingUpgradeRefused(isolated, 31L, 36L, "the offerings have different guest types");
+        assertOfferingUpgradeRefused(isolated, 31L, 37L, "the offerings have different traffic types");
+        assertOfferingUpgradeRefused(isolated, 31L, 38L, "the offerings differ in specifyipranges");
     }
 }

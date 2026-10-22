@@ -98,7 +98,7 @@
             v-focus="true"
             @change="sourcenatchange = form.sourcenatipaddress.length > 0"/>
         </a-form-item>
-        <a-form-item name="networkofferingid" ref="networkofferingid" v-if="isUpdatingIsolatedNetwork">
+        <a-form-item name="networkofferingid" ref="networkofferingid" v-if="canChangeNetworkOffering">
           <template #label>
             <tooltip-label :title="$t('label.networkofferingid')" :tooltip="apiParams.networkofferingid.description"/>
           </template>
@@ -304,6 +304,9 @@ export default {
     hasNetworkDomain () {
       return this.isUpdatingIsolatedNetwork || this.isUpdatingSharedNetwork
     },
+    canChangeNetworkOffering () {
+      return this.isUpdatingIsolatedNetwork || this.isUpdatingSharedNetwork
+    },
     selectedNetworkOfferingSupportsDns () {
       if (this.networkOffering) {
         const services = this.networkOffering?.service || []
@@ -354,7 +357,7 @@ export default {
         guestiptype: this.resource.type,
         forvpc: !!this.resource.vpcid
       }
-      if (!this.isUpdatingIsolatedNetwork) {
+      if (!this.canChangeNetworkOffering) {
         params.id = this.resource.networkofferingid
       }
       this.networkOfferingLoading = true

@@ -157,6 +157,8 @@ import com.cloud.vm.dao.DomainRouterDao;
 import com.cloud.vm.dao.NicDao;
 import com.cloud.vm.dao.NicIpAliasDao;
 import com.cloud.vm.dao.NicIpAliasVO;
+import com.cloud.vm.dao.NicSecondaryIpDao;
+import com.cloud.vm.dao.NicSecondaryIpVO;
 import com.cloud.vm.dao.UserVmDao;
 
 public class CommandSetupHelper {
@@ -182,6 +184,8 @@ public class CommandSetupHelper {
     private DataCenterDao _dcDao;
     @Inject
     private NicIpAliasDao _nicIpAliasDao;
+    @Inject
+    private NicSecondaryIpDao _nicSecondaryIpDao;
     @Inject
     private FirewallRulesDao _rulesDao;
     @Inject
@@ -295,6 +299,16 @@ public class CommandSetupHelper {
         dhcpCommand.setDuid(NetUtils.getDuidLL(nic.getMacAddress()));
         dhcpCommand.setDefault(nic.isDefaultNic());
         dhcpCommand.setRemove(remove);
+        dhcpCommand.setVmAccountId(vm.getAccountId());
+        final List<String> secondaryAddresses = new ArrayList<>();
+        for (final NicSecondaryIpVO secondaryIp : _nicSecondaryIpDao.listByNicId(nic.getId())) {
+            for (final String address : new String[] {secondaryIp.getIp4Address(), secondaryIp.getIp6Address()}) {
+                if (StringUtils.isNotBlank(address)) {
+                    secondaryAddresses.add(address);
+                }
+            }
+        }
+        dhcpCommand.setVmSecondaryAddresses(secondaryAddresses);
 
         // Set DHCP lease timeout from zone-scoped config (0 = infinite)
         Long leaseTime = (long) NetworkOrchestrationService.DhcpLeaseTimeout.valueIn(router.getDataCenterId());
@@ -305,6 +319,18 @@ public class CommandSetupHelper {
         dhcpCommand.setAccessDetail(NetworkElementCommand.ROUTER_GUEST_IP, _routerControlHelper.getRouterIpInNetwork(nic.getNetworkId(), router.getId()));
         dhcpCommand.setAccessDetail(NetworkElementCommand.ZONE_NETWORK_TYPE, dcVo.getNetworkType().toString());
 
+        cmds.addCommand("dhcp", dhcpCommand);
+    }
+
+    /**
+     * Removes the DHCP entry of a NIC that may no longer exist, from what the router was last given for it.
+     */
+    public void createDhcpEntryRemovalCommand(final VirtualRouter router, final String macAddress, final String ipv4Address, final String ipv6Address, final Commands cmds) {
+        final DhcpEntryCommand dhcpCommand = new DhcpEntryCommand(macAddress, ipv4Address, null, ipv6Address, _networkModel.getExecuteInSeqNtwkElmtCmd());
+        dhcpCommand.setRemove(true);
+        dhcpCommand.setAccessDetail(NetworkElementCommand.ROUTER_IP, _routerControlHelper.getRouterControlIp(router.getId()));
+        dhcpCommand.setAccessDetail(NetworkElementCommand.ROUTER_NAME, router.getInstanceName());
+        dhcpCommand.setAccessDetail(NetworkElementCommand.ZONE_NETWORK_TYPE, _dcDao.findById(router.getDataCenterId()).getNetworkType().toString());
         cmds.addCommand("dhcp", dhcpCommand);
     }
 

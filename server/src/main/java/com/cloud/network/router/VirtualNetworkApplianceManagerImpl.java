@@ -29,8 +29,10 @@ import java.security.NoSuchAlgorithmException;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -69,6 +71,7 @@ import org.apache.cloudstack.framework.jobs.AsyncJobManager;
 import org.apache.cloudstack.framework.jobs.impl.AsyncJobVO;
 import org.apache.cloudstack.lb.ApplicationLoadBalancerRuleVO;
 import org.apache.cloudstack.lb.dao.ApplicationLoadBalancerRuleDao;
+import org.apache.cloudstack.framework.messagebus.MessageBus;
 import org.apache.cloudstack.managed.context.ManagedContextRunnable;
 import org.apache.cloudstack.network.BgpPeer;
 import org.apache.cloudstack.network.RoutedIpv4Manager;
@@ -233,6 +236,7 @@ import com.cloud.user.UserVO;
 import com.cloud.user.dao.UserDao;
 import com.cloud.user.dao.UserStatisticsDao;
 import com.cloud.user.dao.UserStatsLogDao;
+import com.cloud.uservm.UserVm;
 import com.cloud.utils.NumbersUtil;
 import com.cloud.utils.Pair;
 import com.cloud.utils.component.ComponentContext;
@@ -257,9 +261,12 @@ import com.cloud.vm.DomainRouterVO;
 import com.cloud.vm.Nic;
 import com.cloud.vm.NicIpAlias;
 import com.cloud.vm.NicProfile;
+import com.cloud.vm.NicSecondaryIp;
 import com.cloud.vm.NicVO;
 import com.cloud.vm.ReservationContext;
 import com.cloud.vm.ReservationContextImpl;
+import com.cloud.vm.UserVmVO;
+import com.cloud.vm.VMInstanceDetailVO;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.VirtualMachineGuru;
 import com.cloud.vm.VirtualMachineManager;
@@ -269,6 +276,8 @@ import com.cloud.vm.dao.DomainRouterDao;
 import com.cloud.vm.dao.NicDao;
 import com.cloud.vm.dao.NicIpAliasDao;
 import com.cloud.vm.dao.NicIpAliasVO;
+import com.cloud.vm.dao.NicSecondaryIpDao;
+import com.cloud.vm.dao.UserVmDao;
 import com.cloud.vm.dao.VMInstanceDetailsDao;
 
 /**
@@ -281,6 +290,14 @@ Configurable, StateListener<VirtualMachine.State, VirtualMachine.Event, VirtualM
     private static final String FILESYSTEM_WRITABLE_TEST = "filesystem.writable.test";
     private static final String READONLY_FILESYSTEM_ERROR = "Read-only file system";
     private static final String BACKUP_ROUTER_EXCLUDED_TESTS = "gateways_check.py";
+    /** A router detail present while the router has DHCP entry changes to take; each one is a detail of this prefix and a MAC address. */
+    static final String DHCP_ENTRY_PENDING = "dhcp.pending";
+    /** A router is given at most this many pending entries at a time, with this many seconds to take them. */
+    static final int DHCP_ENTRY_RECONCILE_BATCH = 10;
+    static final int DHCP_ENTRY_RECONCILE_WAIT = 60;
+    /** A pending entry that fails this many times is no longer tried: the router gets it afresh when it next starts. */
+    static final int DHCP_ENTRY_ATTEMPTS = 10;
+    private static final int DHCP_ENTRY_RECONCILE_INTERVAL = 60;
     /**
      * Used regex to ensure that the value that will be passed to the VR is an acceptable value
      */
@@ -316,6 +333,9 @@ Configurable, StateListener<VirtualMachine.State, VirtualMachine.Event, VirtualM
     @Inject protected NicDao _nicDao;
     @Inject NicIpAliasDao _nicIpAliasDao;
     @Inject VMInstanceDetailsDao _vmDetailsDao;
+    @Inject UserVmDao _userVmDao;
+    @Inject NicSecondaryIpDao _nicSecondaryIpDao;
+    @Inject MessageBus _messageBus;
     @Inject protected VirtualRouterProviderDao _vrProviderDao;
     @Inject ManagementServerHostDao _msHostDao;
     @Inject Site2SiteCustomerGatewayDao _s2sCustomerGatewayDao;
@@ -372,6 +392,7 @@ Configurable, StateListener<VirtualMachine.State, VirtualMachine.Event, VirtualM
 
     private ScheduledExecutorService _executor;
     private ScheduledExecutorService _checkExecutor;
+    private ScheduledExecutorService _dhcpEntryExecutor;
     private ScheduledExecutorService _networkStatsUpdateExecutor;
     private ExecutorService _rvrStatusUpdateExecutor;
 
@@ -538,6 +559,7 @@ Configurable, StateListener<VirtualMachine.State, VirtualMachine.Event, VirtualM
 
         _executor = Executors.newScheduledThreadPool(1, new NamedThreadFactory("RouterMonitor"));
         _checkExecutor = Executors.newScheduledThreadPool(1, new NamedThreadFactory("RouterStatusMonitor"));
+        _dhcpEntryExecutor = Executors.newSingleThreadScheduledExecutor(new NamedThreadFactory("RouterDhcpEntryReconcile"));
         _networkStatsUpdateExecutor = Executors.newScheduledThreadPool(1, new NamedThreadFactory("NetworkStatsUpdater"));
 
         VirtualMachine.State.getStateMachine().registerListener(this);
@@ -691,6 +713,10 @@ Configurable, StateListener<VirtualMachine.State, VirtualMachine.Event, VirtualM
             logger.debug(RouterHealthChecksConfigRefreshIntervalCK + "=" + routerHealthCheckConfigRefreshInterval + " so not scheduling the router health check data thread");
         }
 
+        _dhcpEntryExecutor.scheduleWithFixedDelay(new DhcpEntryReconcileTask(), DHCP_ENTRY_RECONCILE_INTERVAL, DHCP_ENTRY_RECONCILE_INTERVAL, TimeUnit.SECONDS);
+        _messageBus.subscribe(NetworkService.MESSAGE_ASSIGN_NIC_SECONDARY_IP_EVENT, (senderAddress, subject, args) -> refreshDhcpEntryOfSecondaryIp(_nicSecondaryIpDao.findById((Long) args)));
+        _messageBus.subscribe(NetworkService.MESSAGE_RELEASE_NIC_SECONDARY_IP_EVENT, (senderAddress, subject, args) -> refreshDhcpEntryOfSecondaryIp((NicSecondaryIp) args));
+
         final int routerHealthChecksFetchInterval = RouterHealthChecksResultFetchInterval.value();
         if (routerHealthChecksFetchInterval > 0) {
             _checkExecutor.scheduleAtFixedRate(new FetchRouterHealthChecksResultTask(), routerHealthChecksFetchInterval, routerHealthChecksFetchInterval, TimeUnit.MINUTES);
@@ -703,10 +729,300 @@ Configurable, StateListener<VirtualMachine.State, VirtualMachine.Event, VirtualM
 
     @Override
     public boolean stop() {
+        if (_dhcpEntryExecutor != null) {
+            _dhcpEntryExecutor.shutdownNow();
+        }
         return true;
     }
 
     protected VirtualNetworkApplianceManagerImpl() {
+    }
+
+    protected class DhcpEntryReconcileTask extends ManagedContextRunnable {
+        @Override
+        protected void runInContext() {
+            try {
+                reconcileDhcpEntries();
+            } catch (final Exception e) {
+                logger.warn("Unable to give routers their pending DHCP entry changes", e);
+            }
+        }
+    }
+
+    /**
+     * A secondary address identifies its VM's account to a router answering guests' DNS per account, so the routers get
+     * the NIC's entry again whenever one is added or removed.
+     */
+    protected void refreshDhcpEntryOfSecondaryIp(final NicSecondaryIp secondaryIp) {
+        try {
+            final NicVO nic = secondaryIp == null ? null : _nicDao.findById(secondaryIp.getNicId());
+            final UserVmVO vm = nic == null ? null : _userVmDao.findById(nic.getInstanceId());
+            if (vm != null) {
+                refreshDhcpEntry(vm, nic);
+            }
+        } catch (final Exception e) {
+            logger.warn("Unable to give routers the DHCP entry of {}", secondaryIp, e);
+        }
+    }
+
+    @Override
+    public void refreshDhcpEntry(final UserVm vm, final NicVO nic) {
+        final Network network = _networkDao.findById(nic.getNetworkId());
+        if (network == null || !answersGuestNamesPerAccount(network)
+                || !_networkModel.isProviderSupportServiceInNetwork(network.getId(), Service.Dhcp, Provider.VirtualRouter)) {
+            return;
+        }
+        for (final DomainRouterVO router : _routerDao.findByNetwork(network.getId())) {
+            if (router.getState() == VirtualMachine.State.Running) {
+                if (giveDhcpEntry(router, vm, nic)) {
+                    continue;
+                }
+            } else if (VirtualNetworkApplianceManager.takesDhcpEntriesAfresh(router.getState())) {
+                continue;
+            }
+            keepDhcpEntryPending(router, nic.getMacAddress(), nic.getIPv4Address(), nic.getIPv6Address());
+        }
+    }
+
+    private boolean giveDhcpEntry(final DomainRouterVO router, final UserVm vm, final NicVO nic) {
+        try {
+            final Commands cmds = new Commands(Command.OnError.Stop);
+            _commandSetupHelper.createDhcpEntryCommand(router, vm, nic, false, cmds);
+            return sendDhcpEntry(router, cmds);
+        } catch (final RuntimeException e) {
+            logger.warn("Unable to give router {} the DHCP entry of {}", router, nic, e);
+            return false;
+        }
+    }
+
+    @Override
+    public boolean answersGuestNamesPerAccount(final Network network) {
+        return network.getGuestType() == GuestType.Shared
+                && _networkModel.isProviderSupportServiceInNetwork(network.getId(), Service.Dns, Provider.VirtualRouter)
+                && !UseExternalDnsServers.valueIn(network.getDataCenterId());
+    }
+
+    @Override
+    public void keepDhcpEntryPending(final VirtualRouter router, final String macAddress, final String ipv4Address, final String ipv6Address) {
+        final String addresses = String.join(",", StringUtils.defaultString(ipv4Address), StringUtils.defaultString(ipv6Address), String.valueOf(System.currentTimeMillis()));
+        _vmDetailsDao.addDetail(router.getId(), DHCP_ENTRY_PENDING + "." + macAddress, addresses, false);
+        _vmDetailsDao.addDetail(router.getId(), DHCP_ENTRY_PENDING, "true", false);
+        final String subject = String.format("Virtual router %s missed a change of the DHCP entry of %s", router.getInstanceName(), macAddress);
+        _alertMgr.sendAlert(AlertManager.AlertType.ALERT_TYPE_DOMAIN_ROUTER, router.getDataCenterId(), router.getPodIdToDeployIn(), subject,
+                subject + "; it is given the entry again until it takes it");
+    }
+
+    /**
+     * Gives each running router on this management server's hosts that has pending DHCP entry changes what the
+     * database now holds: the NIC's current entry, or the entry's removal when the NIC is gone. The marker is cleared
+     * before the entries are read, and set again unless the router takes them all, so an entry recorded meanwhile is
+     * never stranded.
+     */
+    protected void reconcileDhcpEntries() {
+        final Set<Long> marked = new HashSet<>();
+        for (final VMInstanceDetailVO marker : _vmDetailsDao.findDetails(DHCP_ENTRY_PENDING)) {
+            marked.add(marker.getResourceId());
+        }
+        if (marked.isEmpty()) {
+            return;
+        }
+        for (final DomainRouterVO router : _routerDao.listByStateAndManagementServer(VirtualMachine.State.Running, mgmtSrvrId)) {
+            if (marked.remove(router.getId())) {
+                reconcileDhcpEntries(router);
+            }
+        }
+        for (final Long routerId : marked) {
+            if (_routerDao.findById(routerId) == null) {
+                _vmDetailsDao.removeDetailsWithPrefix(routerId, DHCP_ENTRY_PENDING);
+            }
+        }
+    }
+
+    private void reconcileDhcpEntries(final DomainRouterVO router) {
+        _vmDetailsDao.removeDetail(router.getId(), DHCP_ENTRY_PENDING);
+        boolean taken = false;
+        try {
+            taken = givePendingDhcpEntries(router);
+        } catch (final RuntimeException e) {
+            logger.warn("Unable to give router {} its pending DHCP entry changes", router, e);
+        }
+        if (!taken) {
+            _vmDetailsDao.addDetail(router.getId(), DHCP_ENTRY_PENDING, "true", false);
+        }
+    }
+
+    /**
+     * Sends the router its pending entries in one bounded batch that stops at the first failure. The entries it takes
+     * are cleared; one that fails, to build or on the router, goes to the back to be tried again, until
+     * {@link #DHCP_ENTRY_ATTEMPTS} failures leave it to the router's next start. Returns whether no entry is left to try.
+     */
+    private boolean givePendingDhcpEntries(final DomainRouterVO router) {
+        final List<VMInstanceDetailVO> records = new ArrayList<>();
+        for (final VMInstanceDetailVO pending : _vmDetailsDao.listDetails(router.getId())) {
+            if (pending.getName().startsWith(DHCP_ENTRY_PENDING + ".") && pendingAttempts(pending) < DHCP_ENTRY_ATTEMPTS) {
+                records.add(pending);
+            }
+        }
+        records.sort(Comparator.comparingLong(VMInstanceDetailVO::getId));
+        final Commands batch = new Commands(Command.OnError.Stop);
+        final List<VMInstanceDetailVO> given = new ArrayList<>();
+        final List<Integer> ends = new ArrayList<>();
+        boolean left = false;
+        for (final VMInstanceDetailVO pending : records) {
+            if (given.size() == DHCP_ENTRY_RECONCILE_BATCH) {
+                left = true;
+                break;
+            }
+            final Commands cmds = new Commands(Command.OnError.Stop);
+            try {
+                if (!buildPendingDhcpEntry(router, pending, cmds)) {
+                    continue;
+                }
+            } catch (final RuntimeException e) {
+                logger.warn("Unable to build the pending DHCP entry {} of router {}", pending.getName(), router, e);
+                left |= retryPendingDhcpEntry(router, pending, true);
+                continue;
+            }
+            for (final Command cmd : cmds) {
+                cmd.setWait(DHCP_ENTRY_RECONCILE_WAIT);
+                batch.addCommand(cmd);
+            }
+            given.add(pending);
+            ends.add(batch.size());
+        }
+        if (given.isEmpty()) {
+            return !left;
+        }
+        if (sendDhcpEntry(router, batch)) {
+            for (final VMInstanceDetailVO pending : given) {
+                _vmDetailsDao.removeDetail(router.getId(), pending.getName(), pending.getValue());
+            }
+            return !left;
+        }
+        final Answer[] answers = batch.getAnswers();
+        if (answers == null || answers.length != batch.size()) {
+            // without answers, as when the router cannot be reached, no entry is to blame: all are kept as they are
+            return false;
+        }
+        int next = 0;
+        for (int i = 0; i < given.size(); i++) {
+            boolean taken = true;
+            for (; next < ends.get(i); next++) {
+                taken = taken && answers[next].getResult();
+            }
+            if (!taken) {
+                // the batch stopped here: the entries after this one were not tried
+                final boolean again = retryPendingDhcpEntry(router, given.get(i), false);
+                return !(again || left || i + 1 < given.size());
+            }
+            _vmDetailsDao.removeDetail(router.getId(), given.get(i).getName(), given.get(i).getValue());
+        }
+        return !left;
+    }
+
+    /** Adds the entry, or its removal, that the database now holds for a pending record; false when none is due. */
+    private boolean buildPendingDhcpEntry(final DomainRouterVO router, final VMInstanceDetailVO pending, final Commands cmds) {
+        final String macAddress = pending.getName().substring(DHCP_ENTRY_PENDING.length() + 1);
+        final NicVO nic = findUserNic(router, macAddress);
+        final UserVmVO vm = nic == null ? null : _userVmDao.findById(nic.getInstanceId());
+        if (vm != null) {
+            _commandSetupHelper.createDhcpEntryCommand(router, vm, nic, false, cmds);
+            return true;
+        }
+        final String[] fields = pendingFields(pending);
+        final String ipv4Address = StringUtils.trimToNull(fields[0]);
+        if (isHeldByARunningGuest(router, macAddress, ipv4Address)) {
+            _vmDetailsDao.removeDetail(router.getId(), pending.getName(), pending.getValue());
+            return false;
+        }
+        _commandSetupHelper.createDhcpEntryRemovalCommand(router, macAddress, ipv4Address, StringUtils.trimToNull(fields[1]), cmds);
+        return true;
+    }
+
+    /**
+     * Records one more failure of a pending entry and moves it to the back, unless a newer change of the entry was
+     * recorded meanwhile. Returns whether it is to be tried again.
+     */
+    private boolean retryPendingDhcpEntry(final DomainRouterVO router, final VMInstanceDetailVO pending, final boolean notBuilt) {
+        final String[] fields = pendingFields(pending);
+        final int attempts = pendingAttempts(pending) + 1;
+        _vmDetailsDao.removeDetail(router.getId(), pending.getName(), pending.getValue());
+        if (_vmDetailsDao.findDetail(router.getId(), pending.getName()) != null) {
+            return true;
+        }
+        _vmDetailsDao.addDetail(router.getId(), pending.getName(), String.join(",", StringUtils.defaultString(fields[0]), StringUtils.defaultString(fields[1]),
+                StringUtils.defaultString(fields[2]), String.valueOf(attempts)), false);
+        final String macAddress = pending.getName().substring(DHCP_ENTRY_PENDING.length() + 1);
+        if (attempts >= DHCP_ENTRY_ATTEMPTS) {
+            final String subject = String.format("Virtual router %s does not take the DHCP entry of %s", router.getInstanceName(), macAddress);
+            _alertMgr.sendAlert(AlertManager.AlertType.ALERT_TYPE_DOMAIN_ROUTER, router.getDataCenterId(), router.getPodIdToDeployIn(), subject,
+                    subject + String.format("; it failed %d times and is no longer tried: the router gets every entry afresh when it next starts", attempts));
+            return false;
+        }
+        if (notBuilt && attempts == 1) {
+            final String subject = String.format("The DHCP entry of %s cannot be built for virtual router %s", macAddress, router.getInstanceName());
+            _alertMgr.sendAlert(AlertManager.AlertType.ALERT_TYPE_DOMAIN_ROUTER, router.getDataCenterId(), router.getPodIdToDeployIn(), subject,
+                    subject + "; it is tried again every minute");
+        }
+        return true;
+    }
+
+    /** A pending record's value: IPv4 and IPv6 address, the time it was recorded, and its failures so far. */
+    private static String[] pendingFields(final VMInstanceDetailVO pending) {
+        return Arrays.copyOf(pending.getValue().split(",", -1), 4);
+    }
+
+    private static int pendingAttempts(final VMInstanceDetailVO pending) {
+        return NumbersUtil.parseInt(pendingFields(pending)[3], 0);
+    }
+
+    /** A starting router gets every DHCP entry from the database, which settles the entries it was no longer tried with. */
+    protected void forgetAbandonedDhcpEntries(final long routerId) {
+        for (final VMInstanceDetailVO pending : _vmDetailsDao.listDetails(routerId)) {
+            if (pending.getName().startsWith(DHCP_ENTRY_PENDING + ".") && pendingAttempts(pending) >= DHCP_ENTRY_ATTEMPTS) {
+                _vmDetailsDao.removeDetail(routerId, pending.getName(), pending.getValue());
+            }
+        }
+    }
+
+    /**
+     * Whether a guest that runs holds the address now. Its entry already replaced the removed one under that address
+     * on the router, which a router keeping removals by address would lose; a guest that does not run is given its
+     * entry when it starts, so the removal is sent then.
+     */
+    private boolean isHeldByARunningGuest(final VirtualRouter router, final String macAddress, final String ipv4Address) {
+        if (ipv4Address == null) {
+            return false;
+        }
+        for (final Long networkId : _routerDao.getRouterNetworks(router.getId())) {
+            final NicVO nic = _nicDao.findByIp4AddressAndNetworkId(ipv4Address, networkId);
+            if (nic != null && nic.getVmType() == VirtualMachine.Type.User && !macAddress.equalsIgnoreCase(nic.getMacAddress())) {
+                final UserVmVO holder = _userVmDao.findById(nic.getInstanceId());
+                if (holder != null && !VirtualNetworkApplianceManager.takesDhcpEntriesAfresh(holder.getState())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private NicVO findUserNic(final VirtualRouter router, final String macAddress) {
+        for (final Long networkId : _routerDao.getRouterNetworks(router.getId())) {
+            final NicVO nic = _nicDao.findByNetworkIdAndMacAddress(networkId, macAddress);
+            if (nic != null && nic.getVmType() == VirtualMachine.Type.User) {
+                return nic;
+            }
+        }
+        return null;
+    }
+
+    private boolean sendDhcpEntry(final VirtualRouter router, final Commands cmds) {
+        try {
+            return _nwHelper.sendCommandsToRouter(router, cmds);
+        } catch (final ResourceUnavailableException e) {
+            logger.warn("Unable to give router {} a DHCP entry: {}", router, e.getMessage());
+            return false;
+        }
     }
 
     protected class NetworkUsageTask extends ManagedContextRunnable {
@@ -2192,6 +2508,11 @@ Configurable, StateListener<VirtualMachine.State, VirtualMachine.Event, VirtualM
             buf.append(" domain=").append(domain);
         }
 
+        // VMs of several accounts share the network: each guest may see only its own account's names
+        if (answersGuestNamesPerAccount(guestNetwork)) {
+            buf.append(" dnsperaccount=true");
+        }
+
         long cidrSize = 0;
 
         // setup dhcp range
@@ -2769,6 +3090,7 @@ Configurable, StateListener<VirtualMachine.State, VirtualMachine.Event, VirtualM
         }
 
         // at this point, all the router command are successful.
+        forgetAbandonedDhcpEntries(router.getId());
         boolean result = true;
         // Get guest networks info
         final List<Network> guestNetworks = new ArrayList<>();

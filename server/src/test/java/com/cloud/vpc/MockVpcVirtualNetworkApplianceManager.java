@@ -43,8 +43,10 @@ import com.cloud.user.Account;
 import com.cloud.user.User;
 import com.cloud.utils.Pair;
 import com.cloud.utils.component.ManagerBase;
+import com.cloud.uservm.UserVm;
 import com.cloud.vm.DomainRouterVO;
 import com.cloud.vm.Nic;
+import com.cloud.vm.NicVO;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.VirtualMachineProfile;
 
@@ -311,5 +313,18 @@ public class MockVpcVirtualNetworkApplianceManager extends ManagerBase implement
     public <T extends VirtualRouter> void collectNetworkStatistics(T router, Nic nic) {
         // TODO Auto-generated method stub
         return;
+    }
+
+    @Override
+    public void refreshDhcpEntry(UserVm vm, NicVO nic) {
+    }
+
+    @Override
+    public void keepDhcpEntryPending(VirtualRouter router, String macAddress, String ipv4Address, String ipv6Address) {
+    }
+
+    @Override
+    public boolean answersGuestNamesPerAccount(Network network) {
+        return false;
     }
 }

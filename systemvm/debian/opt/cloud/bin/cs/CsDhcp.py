@@ -27,6 +27,7 @@ from .CsGuestNetwork import CsGuestNetwork
 from cs.CsDatabag import CsDataBag
 from cs.CsFile import CsFile
 from cs.CsAddress import CsIP
+import guest_dns
 
 LEASES = "/var/lib/misc/dnsmasq.leases"
 DHCP_HOSTS = "/etc/dhcphosts.txt"
@@ -76,6 +77,7 @@ class CsDhcp(CsDataBag):
         if need_delete_leases:
             self.delete_leases()
         self.write_hosts()
+        self.configure_guest_dns()
 
         if not self.cl.is_redundant() or self.cl.is_primary():
             if restart_dnsmasq:
@@ -113,7 +115,10 @@ class CsDhcp(CsDataBag):
             if gn.get_dns() and device:
                 sline = "dhcp-option=tag:interface-%s-%s,6" % (device, idx)
                 dns_list = [x for x in gn.get_dns() if x]
-                if self.config.is_vpc() and not gn.is_vr_guest_gateway():
+                if guest_dns.is_per_account(self.cl.idata()):
+                    # the router answers the network's domain per account, so it is the only resolver
+                    dns_list = [self.cl.get_guest_gw() if self.cl.is_redundant() and self.cl.get_guest_gw() else ip]
+                elif self.config.is_vpc() and not gn.is_vr_guest_gateway():
                   if gateway in dns_list:
                     dns_list.remove(gateway)
                   if gn.data['router_guest_ip'] != ip:
@@ -160,6 +165,22 @@ class CsDhcp(CsDataBag):
         sline = "listen-address="
         line = "listen-address=%s" % (','.join(listen_address))
         self.conf.search(sline, line)
+
+    def configure_guest_dns(self):
+        if not guest_dns.is_per_account(self.cl.idata()):
+            return
+        # DHCP never depends on the name map; the responder keeps serving the last one written
+        try:
+            entries = [self.dbag[key] for key in self.dbag if key != "id"]
+            devices = [i for i in self.devinfo if i['dnsmasq']]
+            conf = guest_dns.config_from_dhcp(self.cl.idata(), entries, devices, self.cl.is_redundant())
+            if guest_dns.write_config(guest_dns.CONFIG, conf):
+                logging.info("Updated the per-account guest DNS names")
+            guest_dns.write_resolv(guest_dns.RESOLV, guest_dns.upstreams(self.cl.idata()))
+        except Exception:
+            logging.exception("Keeping the previous per-account guest DNS names")
+        CsHelper.start_if_stopped(guest_dns.CACHE_SERVICE)
+        CsHelper.start_if_stopped(guest_dns.SERVICE)
 
     def delete_leases(self):
         macs_dhcphosts = []

@@ -19,6 +19,8 @@
 
 package com.cloud.agent.resource.virtualnetwork.model;
 
+import java.util.List;
+
 public class VmDhcpConfig extends ConfigBase {
     private String hostName;
     private String macAddress;
@@ -30,6 +32,8 @@ public class VmDhcpConfig extends ConfigBase {
     private String staticRoutes;
     private boolean defaultEntry;
     private Long leaseTime;
+    private Long accountId;
+    private List<String> secondaryAddresses;
 
     // Indicate if the entry should be removed when set to true
     private boolean remove;
@@ -145,6 +149,22 @@ public class VmDhcpConfig extends ConfigBase {
 
     public void setLeaseTime(Long leaseTime) {
         this.leaseTime = leaseTime;
+    }
+
+    public Long getAccountId() {
+        return accountId;
+    }
+
+    public void setAccountId(Long accountId) {
+        this.accountId = accountId;
+    }
+
+    public List<String> getSecondaryAddresses() {
+        return secondaryAddresses;
+    }
+
+    public void setSecondaryAddresses(List<String> secondaryAddresses) {
+        this.secondaryAddresses = secondaryAddresses;
     }
 
 }

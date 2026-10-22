@@ -3240,9 +3240,8 @@ public class NetworkServiceImpl extends ManagerBase implements NetworkService, C
             network.setDisplayNetwork(displayNetwork);
         }
 
-        // network offering and domain suffix can be updated for Isolated networks only in 3.0
-        if (networkOfferingId != null && network.getGuestType() != GuestType.Isolated) {
-            throw new InvalidParameterValueException("NetworkOffering update can be performed for Isolated networks only.");
+        if (networkOfferingId != null && !Arrays.asList(GuestType.Isolated, GuestType.Shared).contains(network.getGuestType())) {
+            throw new InvalidParameterValueException("NetworkOffering update can be performed for Isolated and Shared networks only.");
         }
         // network offering and domain suffix can be updated for Isolated networks only in 3.0
         if (domainSuffix != null && ! Arrays.asList(GuestType.Isolated, GuestType.Shared).contains(network.getGuestType())) {
@@ -3275,8 +3274,12 @@ public class NetworkServiceImpl extends ManagerBase implements NetworkService, C
             if (networkOfferingId != oldNetworkOfferingId) {
                 Collection<String> newProviders = _networkMgr.finalizeServicesAndProvidersForNetwork(networkOffering, network.getPhysicalNetworkId()).values();
                 Collection<String> oldProviders = _networkMgr.finalizeServicesAndProvidersForNetwork(oldNtwkOff, network.getPhysicalNetworkId()).values();
+                boolean guestCidrChanges = providersConfiguredForExternalNetworking(newProviders) != providersConfiguredForExternalNetworking(oldProviders);
 
-                if (providersConfiguredForExternalNetworking(newProviders) != providersConfiguredForExternalNetworking(oldProviders) && !changeCidr) {
+                if (network.getGuestType() == GuestType.Shared) {
+                    checkSharedNetworkOfferingChange(network, oldNtwkOff, networkOffering, guestCidrChanges || changeCidr);
+                }
+                if (guestCidrChanges && !changeCidr) {
                     throw new InvalidParameterValueException("Updating network failed since guest CIDR needs to be changed!");
                 }
                 if (changeCidr) {
@@ -3284,10 +3287,7 @@ public class NetworkServiceImpl extends ManagerBase implements NetworkService, C
                         throwInvalidIdException("All user vm of network of specified id should be stopped before changing CIDR!", network.getUuid(), "networkId");
                     }
                 }
-                // check if the network is upgradable
-                if (!canUpgrade(network, oldNetworkOfferingId, networkOfferingId)) {
-                    throw new InvalidParameterValueException("Can't upgrade from network offering " + oldNtwkOff.getUuid() + " to " + networkOffering.getUuid() + "; check logs for more information");
-                }
+                checkOfferingUpgrade(network, oldNetworkOfferingId, networkOfferingId);
                 boolean isIpv6Supported = _networkOfferingDao.isIpv6Supported(oldNetworkOfferingId);
                 boolean isIpv6SupportedNew = _networkOfferingDao.isIpv6Supported(networkOfferingId);
                 if (!isIpv6Supported && isIpv6SupportedNew) {
@@ -4096,10 +4096,11 @@ public class NetworkServiceImpl extends ManagerBase implements NetworkService, C
                 throw new InvalidParameterValueException("Updating network failed since guest CIDR needs to be changed!");
             }
 
-            // check if the network is moveable
-            if (!canMoveToPhysicalNetwork(network, oldNtwkOff.getId(), newNtwkOff.getId())) {
-                throw new InvalidParameterValueException("Can't upgrade from network offering " + oldNtwkOff.getUuid() + " to " + newNtwkOff.getUuid() + "; check logs for more information");
+            if (oldNtwkOff.getGuestType() != GuestType.Isolated) {
+                throw new InvalidParameterValueException("NetworkOfferingId can be upgraded only for the network of type " + GuestType.Isolated);
             }
+
+            checkMoveToPhysicalNetwork(network, oldNtwkOff.getId(), newNtwkOff.getId());
 
             List<VMInstanceVO> vmInstances = _vmDao.listNonRemovedVmsByTypeAndNetwork(network.getId(), null);
             boolean vmStateIsNotTransitioning = vmInstances.stream().anyMatch(vm -> vm.getState() != VirtualMachine.State.Stopped && vm.getState() != VirtualMachine.State.Running);
@@ -4140,31 +4141,22 @@ public class NetworkServiceImpl extends ManagerBase implements NetworkService, C
         }
     }
 
-    private boolean canMoveToPhysicalNetwork(Network network, long oldNetworkOfferingId, long newNetworkOfferingId) {
+    private InvalidParameterValueException offeringChangeRefusal(NetworkOffering oldNetworkOffering, NetworkOffering newNetworkOffering, String reason) {
+        return new InvalidParameterValueException(String.format("Can't upgrade from network offering %s to %s: %s", oldNetworkOffering.getUuid(), newNetworkOffering.getUuid(), reason));
+    }
+
+    private void checkMoveToPhysicalNetwork(Network network, long oldNetworkOfferingId, long newNetworkOfferingId) {
         NetworkOffering oldNetworkOffering = _networkOfferingDao.findByIdIncludingRemoved(oldNetworkOfferingId);
         NetworkOffering newNetworkOffering = _networkOfferingDao.findById(newNetworkOfferingId);
 
-        // can move only Isolated networks for now
-        if (oldNetworkOffering.getGuestType() != GuestType.Isolated) {
-            throw new InvalidParameterValueException("NetworkOfferingId can be upgraded only for the network of type " + GuestType.Isolated);
-        }
-
-        // Type of the network should be the same
         if (oldNetworkOffering.getGuestType() != newNetworkOffering.getGuestType()) {
-            logger.debug("Network offerings {} and {} are of different types, can't upgrade", newNetworkOffering, oldNetworkOffering);
-            return false;
+            throw offeringChangeRefusal(oldNetworkOffering, newNetworkOffering, "the offerings have different guest types");
         }
-
-        // Traffic types should be the same
         if (oldNetworkOffering.getTrafficType() != newNetworkOffering.getTrafficType()) {
-            logger.debug("Network offerings {} and {} have different traffic types, can't upgrade", newNetworkOffering, oldNetworkOffering);
-            return false;
+            throw offeringChangeRefusal(oldNetworkOffering, newNetworkOffering, "the offerings have different traffic types");
         }
-
-        // specify ipRanges should be the same
         if (oldNetworkOffering.isSpecifyIpRanges() != newNetworkOffering.isSpecifyIpRanges()) {
-            logger.debug("Network offerings {} and {} have different values for specifyIpRangess, can't upgrade", newNetworkOffering, oldNetworkOffering);
-            return false;
+            throw offeringChangeRefusal(oldNetworkOffering, newNetworkOffering, "the offerings differ in specifyipranges");
         }
 
         // Check all IPs
@@ -4176,10 +4168,8 @@ public class NetworkServiceImpl extends ManagerBase implements NetworkService, C
                 publicIps.add(publicIp);
             }
         }
-        if (oldNetworkOffering.isConserveMode() && !newNetworkOffering.isConserveMode()) {
-            if (!canIpsUsedForNonConserve(publicIps)) {
-                return false;
-            }
+        if (oldNetworkOffering.isConserveMode() && !newNetworkOffering.isConserveMode() && !canIpsUsedForNonConserve(publicIps)) {
+            throw offeringChangeRefusal(oldNetworkOffering, newNetworkOffering, "the network's public IPs carry more services than a non-conserve-mode offering allows");
         }
 
         //can't update from internal LB to public LB
@@ -4189,47 +4179,56 @@ public class NetworkServiceImpl extends ManagerBase implements NetworkService, C
             }
         }
 
-        return canIpsUseOffering(publicIps, newNetworkOfferingId);
+        if (!canIpsUseOffering(publicIps, newNetworkOfferingId)) {
+            throw offeringChangeRefusal(oldNetworkOffering, newNetworkOffering, "the network's public IPs use services the new offering does not provide");
+        }
     }
 
-    protected boolean canUpgrade(Network network, long oldNetworkOfferingId, long newNetworkOfferingId) {
+    /**
+     * A Shared network keeps what its creation fixed: its guest type, VLAN and IP ranges with their IPv6, its CIDR and
+     * whether security groups isolate its VMs. Its services and their providers can change.
+     */
+    protected void checkSharedNetworkOfferingChange(Network network, NetworkOffering oldOffering, NetworkOffering newOffering, boolean changesGuestCidr) {
+        String refusal = null;
+        if (newOffering.getGuestType() != GuestType.Shared) {
+            refusal = "a Shared network can only move to another Shared network offering";
+        } else if (oldOffering.isSpecifyVlan() != newOffering.isSpecifyVlan() || oldOffering.isSpecifyIpRanges() != newOffering.isSpecifyIpRanges()) {
+            refusal = "the offerings differ in specifyvlan or specifyipranges, with which the network's VLAN and IP ranges were given";
+        } else if (areServicesSupportedByNetworkOffering(oldOffering.getId(), Service.SecurityGroup) != areServicesSupportedByNetworkOffering(newOffering.getId(), Service.SecurityGroup)) {
+            refusal = "the offerings differ in the SecurityGroup service, which isolates the network's VMs";
+        } else if (_networkOfferingDao.isIpv6Supported(oldOffering.getId()) != _networkOfferingDao.isIpv6Supported(newOffering.getId())) {
+            refusal = "the offerings differ in internet protocol, while a Shared network's IPv6 comes from its IP ranges";
+        } else if (changesGuestCidr) {
+            refusal = "a Shared network keeps the CIDR of its IP ranges, so neither changecidr nor providers that need another guest CIDR apply";
+        } else if (network.getCidr() == null && _networkModel.isProviderForNetworkOffering(Provider.VirtualRouter, newOffering.getId())) {
+            refusal = "an IPv6-only Shared network cannot use the Virtual Router provider";
+        }
+        if (refusal != null) {
+            throw new InvalidParameterValueException(String.format("Can't change the offering of network %s to %s: %s", network.getUuid(), newOffering.getUuid(), refusal));
+        }
+    }
+
+    protected void checkOfferingUpgrade(Network network, long oldNetworkOfferingId, long newNetworkOfferingId) {
         NetworkOffering oldNetworkOffering = _networkOfferingDao.findByIdIncludingRemoved(oldNetworkOfferingId);
         NetworkOffering newNetworkOffering = _networkOfferingDao.findById(newNetworkOfferingId);
 
-        // security group service should be the same
         if (areServicesSupportedByNetworkOffering(oldNetworkOfferingId, Service.SecurityGroup) != areServicesSupportedByNetworkOffering(newNetworkOfferingId, Service.SecurityGroup)) {
-            logger.debug("Offerings {} and {} have different securityGroupProperty, can't upgrade", newNetworkOffering, oldNetworkOffering);
-            return false;
+            throw offeringChangeRefusal(oldNetworkOffering, newNetworkOffering, "the offerings differ in the SecurityGroup service");
         }
-
-        // tags should be the same
-        if (newNetworkOffering.getTags() != null) {
-            if (oldNetworkOffering.getTags() == null) {
-                logger.debug("New network offering id={} has tags and old network offering id={} doesn't, can't upgrade", newNetworkOffering, oldNetworkOffering);
-                return false;
-            }
-
-            if (!com.cloud.utils.StringUtils.areTagsEqual(oldNetworkOffering.getTags(), newNetworkOffering.getTags())) {
-                logger.debug("Network offerings {} and {} have different tags, can't upgrade", newNetworkOffering, oldNetworkOffering);
-                return false;
-            }
+        if (newNetworkOffering.getTags() != null
+                && (oldNetworkOffering.getTags() == null || !com.cloud.utils.StringUtils.areTagsEqual(oldNetworkOffering.getTags(), newNetworkOffering.getTags()))) {
+            throw offeringChangeRefusal(oldNetworkOffering, newNetworkOffering, "the offerings have different tags");
         }
-
-        // specify vlan should be the same
         if (oldNetworkOffering.isSpecifyVlan() != newNetworkOffering.isSpecifyVlan()) {
-            logger.debug("Network offerings {} and {} have different values for specifyVlan, can't upgrade", newNetworkOffering, oldNetworkOffering);
-            return false;
+            throw offeringChangeRefusal(oldNetworkOffering, newNetworkOffering, "the offerings differ in specifyvlan");
         }
-
-        // network mode should be the same
         NetworkOffering.NetworkMode oldNetworkMode = oldNetworkOffering.getNetworkMode() == null ? NetworkOffering.NetworkMode.NATTED: oldNetworkOffering.getNetworkMode();
         NetworkOffering.NetworkMode newNetworkMode = newNetworkOffering.getNetworkMode() == null ? NetworkOffering.NetworkMode.NATTED: newNetworkOffering.getNetworkMode();
         if (!oldNetworkMode.equals(newNetworkMode)) {
-            logger.debug("Network offerings {} and {} have different values for network mode, can't upgrade", newNetworkOffering, oldNetworkOffering);
-            return false;
+            throw offeringChangeRefusal(oldNetworkOffering, newNetworkOffering, "the offerings have different network modes");
         }
 
-        return canMoveToPhysicalNetwork(network, oldNetworkOfferingId, newNetworkOfferingId);
+        checkMoveToPhysicalNetwork(network, oldNetworkOfferingId, newNetworkOfferingId);
     }
 
     @Override

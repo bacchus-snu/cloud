@@ -35,6 +35,8 @@ def merge(dbag, data):
         for remove_key in remove_keys:
             del dbag[remove_key]
 
-        dbag[data['ipv4_address']] = data
+        # a removal takes away its MAC's entry only, never the entry now holding its address
+        if not data.get('remove'):
+            dbag[data['ipv4_address']] = data
 
     return dbag

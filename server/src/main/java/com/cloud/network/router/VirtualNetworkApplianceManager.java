@@ -28,8 +28,11 @@ import com.cloud.network.RemoteAccessVpn;
 import com.cloud.network.VirtualNetworkApplianceService;
 import com.cloud.user.Account;
 import com.cloud.user.User;
+import com.cloud.uservm.UserVm;
 import com.cloud.utils.component.Manager;
 import com.cloud.vm.DomainRouterVO;
+import com.cloud.vm.NicVO;
+import com.cloud.vm.VirtualMachine;
 
 /**
  * NetworkManager manages the network for the different end users.
@@ -153,4 +156,30 @@ public interface VirtualNetworkApplianceManager extends Manager, VirtualNetworkA
     public boolean prepareAggregatedExecution(Network network, List<DomainRouterVO> routers) throws AgentUnavailableException, ResourceUnavailableException;
 
     public boolean completeAggregatedExecution(Network network, List<DomainRouterVO> routers) throws AgentUnavailableException, ResourceUnavailableException;
+
+    /**
+     * Gives the NIC's current DHCP entry to the routers of its network when they answer guest names per account
+     * (see {@link #answersGuestNamesPerAccount}). A router that does not take it now keeps it pending (see
+     * {@link #keepDhcpEntryPending}), unless it gets every entry afresh before it runs again.
+     */
+    void refreshDhcpEntry(UserVm vm, NicVO nic);
+
+    /**
+     * Records that a router missed a change of the DHCP entry of the NIC with this MAC address, and alerts. Until it
+     * takes the change, the router is given again the entry the database holds for that NIC, or the entry's removal
+     * (with the addresses given here) when the NIC is gone; an entry it keeps failing is left to its next start.
+     */
+    void keepDhcpEntryPending(VirtualRouter router, String macAddress, String ipv4Address, String ipv6Address);
+
+    /**
+     * Whether the network's routers answer each guest's queries for the network's names with its own account's
+     * names only, which they learn from the DHCP entries. A router starts in that mode exactly when this holds, so a
+     * change of what it depends on reaches a router when it restarts.
+     */
+    boolean answersGuestNamesPerAccount(Network network);
+
+    /** Whether a VM in this state gets its DHCP entries afresh before it runs again: a router every entry, a guest its own. */
+    static boolean takesDhcpEntriesAfresh(VirtualMachine.State state) {
+        return state == VirtualMachine.State.Stopped || state == VirtualMachine.State.Destroyed || state == VirtualMachine.State.Expunging;
+    }
 }

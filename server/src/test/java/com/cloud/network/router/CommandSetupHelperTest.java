@@ -17,6 +17,8 @@
 package com.cloud.network.router;
 
 import com.cloud.agent.api.Command;
+import com.cloud.agent.api.routing.DhcpEntryCommand;
+import com.cloud.agent.api.routing.NetworkElementCommand;
 import com.cloud.agent.api.routing.SetBgpPeersCommand;
 import com.cloud.agent.api.routing.VmDataCommand;
 import com.cloud.agent.manager.Commands;
@@ -44,8 +46,11 @@ import com.cloud.offerings.dao.NetworkOfferingDao;
 import com.cloud.offerings.dao.NetworkOfferingDetailsDao;
 import com.cloud.utils.net.Ip;
 import com.cloud.vm.NicVO;
+import com.cloud.vm.UserVmVO;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.dao.NicDao;
+import com.cloud.vm.dao.NicSecondaryIpDao;
+import com.cloud.vm.dao.NicSecondaryIpVO;
 import org.apache.cloudstack.engine.orchestration.service.NetworkOrchestrationService;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.network.BgpPeerVO;
@@ -102,6 +107,8 @@ public class CommandSetupHelperTest {
     ASNumberDao asNumberDao;
     @Mock
     BgpPeerDetailsDao bgpPeerDetailsDao;
+    @Mock
+    NicSecondaryIpDao nicSecondaryIpDao;
 
     @Before
     public void setUp() {
@@ -116,6 +123,7 @@ public class CommandSetupHelperTest {
         ReflectionTestUtils.setField(commandSetupHelper, "_vpcDao", vpcDao);
         ReflectionTestUtils.setField(commandSetupHelper, "_routerControlHelper", routerControlHelper);
         ReflectionTestUtils.setField(commandSetupHelper, "_dcDao", dcDao);
+        ReflectionTestUtils.setField(commandSetupHelper, "_nicSecondaryIpDao", nicSecondaryIpDao);
     }
 
     @Test
@@ -310,5 +318,50 @@ public class CommandSetupHelperTest {
         // Test that the ConfigKey is dynamic (can be updated at runtime)
         ConfigKey<Integer> configKey = NetworkOrchestrationService.DhcpLeaseTimeout;
         Assert.assertTrue("ConfigKey should be dynamic", configKey.isDynamic());
+    }
+
+    @Test
+    public void createDhcpEntryCommandNamesTheVmsAccount() {
+        VirtualRouter router = Mockito.mock(VirtualRouter.class);
+        UserVmVO vm = Mockito.mock(UserVmVO.class);
+        NicVO nic = Mockito.mock(NicVO.class);
+        DataCenterVO dc = Mockito.mock(DataCenterVO.class);
+        when(router.getDataCenterId()).thenReturn(1L);
+        when(vm.getAccountId()).thenReturn(7L);
+        when(nic.getId()).thenReturn(3L);
+        when(nic.getMacAddress()).thenReturn("02:00:00:00:00:0a");
+        when(dcDao.findById(1L)).thenReturn(dc);
+        when(dc.getNetworkType()).thenReturn(DataCenter.NetworkType.Advanced);
+        NicSecondaryIpVO v4 = Mockito.mock(NicSecondaryIpVO.class);
+        NicSecondaryIpVO v6 = Mockito.mock(NicSecondaryIpVO.class);
+        when(v4.getIp4Address()).thenReturn("10.1.1.12");
+        when(v6.getIp6Address()).thenReturn("fd00:1::12");
+        when(nicSecondaryIpDao.listByNicId(3L)).thenReturn(Arrays.asList(v4, v6));
+
+        Commands cmds = new Commands(Command.OnError.Continue);
+        commandSetupHelper.createDhcpEntryCommand(router, vm, nic, false, cmds);
+
+        DhcpEntryCommand entry = (DhcpEntryCommand) cmds.toCommands()[0];
+        Assert.assertEquals(Long.valueOf(7L), entry.getVmAccountId());
+        Assert.assertEquals(Arrays.asList("10.1.1.12", "fd00:1::12"), entry.getVmSecondaryAddresses());
+    }
+
+    @Test
+    public void createDhcpEntryRemovalCommandRemovesTheEntryOfAMacAddress() {
+        VirtualRouter router = Mockito.mock(VirtualRouter.class);
+        DataCenterVO dc = Mockito.mock(DataCenterVO.class);
+        when(router.getDataCenterId()).thenReturn(1L);
+        when(router.getInstanceName()).thenReturn("r-7-VM");
+        when(dcDao.findById(1L)).thenReturn(dc);
+        when(dc.getNetworkType()).thenReturn(DataCenter.NetworkType.Advanced);
+
+        Commands cmds = new Commands(Command.OnError.Continue);
+        commandSetupHelper.createDhcpEntryRemovalCommand(router, "02:00:00:00:00:0a", "10.1.1.10", null, cmds);
+
+        DhcpEntryCommand entry = (DhcpEntryCommand) cmds.toCommands()[0];
+        Assert.assertTrue(entry.isRemove());
+        Assert.assertEquals("02:00:00:00:00:0a", entry.getVmMac());
+        Assert.assertEquals("10.1.1.10", entry.getVmIpAddress());
+        Assert.assertEquals("r-7-VM", entry.getAccessDetail(NetworkElementCommand.ROUTER_NAME));
     }
 }

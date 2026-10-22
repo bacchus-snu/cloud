@@ -577,4 +577,73 @@ public class VirtualRouterElementTest {
         Assert.assertTrue(result);
         verify(networkTopology).applyBgpPeers(any(), any(), any());
     }
+
+    private NetworkTopology removalSetup(NetworkVO network, VirtualMachineProfile profile, DomainRouterVO... routers) {
+        when(network.getId()).thenReturn(11L);
+        when(network.getDataCenterId()).thenReturn(10L);
+        when(network.getVpcId()).thenReturn(null);
+        when(virtualRouterElement._networkMdl.getPhysicalNetworkId(network)).thenReturn(3L);
+        when(virtualRouterElement._networkMdl.isProviderEnabledInPhysicalNetwork(3L, Network.Provider.VirtualRouter.getName())).thenReturn(true);
+        when(virtualRouterElement._networkMdl.isProviderSupportServiceInNetwork(11L, Network.Service.Dhcp, Network.Provider.VirtualRouter)).thenReturn(true);
+        when(profile.getType()).thenReturn(VirtualMachine.Type.User);
+        when(_routerDao.listByNetworkAndRole(11L, VirtualRouter.Role.VIRTUAL_ROUTER)).thenReturn(Arrays.asList(routers));
+        DataCenterVO dc = Mockito.mock(DataCenterVO.class);
+        when(_dcDao.findById(10L)).thenReturn(dc);
+        NetworkTopology networkTopology = Mockito.mock(NetworkTopology.class);
+        when(networkTopologyContext.retrieveNetworkTopology(dc)).thenReturn(networkTopology);
+        return networkTopology;
+    }
+
+    private DomainRouterVO routerIn(VirtualMachine.State state) {
+        DomainRouterVO router = Mockito.mock(DomainRouterVO.class);
+        when(router.getState()).thenReturn(state);
+        return router;
+    }
+
+    @Test
+    public void aRouterThatDoesNotRemoveADhcpEntryOfANetworkWithNamesPerAccountKeepsTheRemovalPending() throws ResourceUnavailableException {
+        VpcVirtualNetworkApplianceManagerImpl routerMgr = Mockito.mock(VpcVirtualNetworkApplianceManagerImpl.class);
+        virtualRouterElement._routerMgr = routerMgr;
+        NetworkVO network = Mockito.mock(NetworkVO.class);
+        VirtualMachineProfile profile = Mockito.mock(VirtualMachineProfile.class);
+        NicProfile nic = new NicProfile("10.1.1.10", null, "02:00:00:00:00:0a");
+        DomainRouterVO unreachable = routerIn(VirtualMachine.State.Running);
+        DomainRouterVO reachable = routerIn(VirtualMachine.State.Running);
+        DomainRouterVO starting = routerIn(VirtualMachine.State.Starting);
+        DomainRouterVO stopped = routerIn(VirtualMachine.State.Stopped);
+        NetworkTopology networkTopology = removalSetup(network, profile, unreachable, starting, stopped, reachable);
+        when(routerMgr.answersGuestNamesPerAccount(network)).thenReturn(true);
+        when(networkTopology.removeDhcpEntry(network, nic, profile, unreachable)).thenThrow(new ResourceUnavailableException("unreachable", DataCenter.class, 10L));
+        when(networkTopology.removeDhcpEntry(network, nic, profile, reachable)).thenReturn(true);
+
+        Assert.assertThrows(ResourceUnavailableException.class, () -> virtualRouterElement.removeDhcpEntry(network, nic, profile));
+
+        verify(routerMgr).keepDhcpEntryPending(unreachable, "02:00:00:00:00:0a", "10.1.1.10", null);
+        verify(routerMgr).keepDhcpEntryPending(starting, "02:00:00:00:00:0a", "10.1.1.10", null);
+        verify(routerMgr, Mockito.never()).keepDhcpEntryPending(Mockito.eq(reachable), any(), any(), any());
+        verify(routerMgr, Mockito.never()).keepDhcpEntryPending(Mockito.eq(stopped), any(), any(), any());
+        verify(networkTopology).removeDhcpEntry(network, nic, profile, reachable);
+        verify(networkTopology, Mockito.never()).removeDhcpEntry(network, nic, profile, starting);
+    }
+
+    @Test
+    public void everyRouterOfANetworkWithOneViewOfNamesIsAskedToRemoveADhcpEntryWithNothingKeptPending() throws ResourceUnavailableException {
+        VpcVirtualNetworkApplianceManagerImpl routerMgr = Mockito.mock(VpcVirtualNetworkApplianceManagerImpl.class);
+        virtualRouterElement._routerMgr = routerMgr;
+        NetworkVO network = Mockito.mock(NetworkVO.class);
+        VirtualMachineProfile profile = Mockito.mock(VirtualMachineProfile.class);
+        NicProfile nic = new NicProfile("10.1.1.10", null, "02:00:00:00:00:0a");
+        DomainRouterVO unreachable = routerIn(VirtualMachine.State.Running);
+        DomainRouterVO reachable = routerIn(VirtualMachine.State.Running);
+        DomainRouterVO starting = routerIn(VirtualMachine.State.Starting);
+        NetworkTopology networkTopology = removalSetup(network, profile, unreachable, starting, reachable);
+        when(routerMgr.answersGuestNamesPerAccount(network)).thenReturn(false);
+        when(networkTopology.removeDhcpEntry(network, nic, profile, unreachable)).thenThrow(new ResourceUnavailableException("unreachable", DataCenter.class, 10L));
+        when(networkTopology.removeDhcpEntry(network, nic, profile, reachable)).thenReturn(true);
+
+        Assert.assertThrows(ResourceUnavailableException.class, () -> virtualRouterElement.removeDhcpEntry(network, nic, profile));
+
+        verify(networkTopology).removeDhcpEntry(network, nic, profile, reachable);
+        verify(routerMgr, Mockito.never()).keepDhcpEntryPending(any(), any(), any(), any());
+    }
 }

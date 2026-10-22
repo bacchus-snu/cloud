@@ -65,7 +65,7 @@ public class LibvirtPrepareVolumeFileCopyCommandWrapperTest {
         resource = Mockito.mock(LibvirtComputingResource.class);
         Mockito.when(resource.isHostSecured()).thenReturn(true);
         wrapper = Mockito.spy(new LibvirtPrepareVolumeFileCopyCommandWrapper());
-        Mockito.doReturn(new VolumeFileTransfer(new FakeProcessRunner(command -> null), tlsDir)).when(wrapper).getTransfer();
+        Mockito.doReturn(new VolumeFileTransfer(new FakeProcessRunner(command -> null), tlsDir, tlsDir.resolve("state"))).when(wrapper).getTransfer();
     }
 
     @Test

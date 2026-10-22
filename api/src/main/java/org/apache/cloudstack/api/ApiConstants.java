@@ -1409,6 +1409,9 @@ public class ApiConstants {
     public static final String RESOURCE_REQUEST_EXPIRY_TIMEZONE = "resourcerequestexpirytimezone";
     public static final String RESOURCE_LIMIT_REQUEST_ALLOWED = "resourcelimitrequestallowed";
     public static final String REMAINING_STORAGE_QUOTA = "remainingstoragequota";
+    public static final String STORAGE_QUOTA_COMBINED = "storagequotacombined";
+    public static final String AUTOMIGRATE_ALLOWED = "automigrateallowed";
+    public static final String QUOTA_GPU_TYPES = "quotagputypes";
 
     // Object Storage related
     public static final String BUCKET_AVAILABLE = "bucketavailable";

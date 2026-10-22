@@ -42,4 +42,10 @@ public interface ConfigDepot {
      * @return whether a gathered Configurable names the setting in {@link Configurable#getAccessControlConfigKeyNames()}
      */
     boolean isAccessControlConfigKey(String name);
+
+    /**
+     * @return whether the setting of this name is stored encrypted (category Secure or Hidden), by the category of its
+     *         key when a component declares one, else by its stored row; its value is a credential
+     */
+    boolean isEncryptedSetting(String name);
 }

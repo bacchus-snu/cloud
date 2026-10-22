@@ -52,6 +52,13 @@ import org.mockito.InOrder;
 import org.mockito.Mockito;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import org.apache.cloudstack.engine.subsystem.api.storage.HostScope;
+import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStore;
+import com.cloud.agent.AgentManager;
+import com.cloud.agent.api.Answer;
+import com.cloud.agent.api.Command;
+import com.cloud.agent.api.storage.AbortVolumeFileCopyCommand;
+import com.cloud.agent.api.storage.StopVolumeExportCommand;
 import com.cloud.storage.VMTemplateStoragePoolVO;
 import com.cloud.storage.dao.VMTemplatePoolDao;
 import com.cloud.utils.exception.CloudRuntimeException;
@@ -161,6 +168,48 @@ public class VolumeServiceImplEnsureTemplateTest {
         InOrder order = inOrder(templateOnDestination);
         order.verify(templateOnDestination).processEvent(Event.OperationFailed);
         order.verify(templateOnDestination).processEvent(Event.CreateOnlyRequested);
+    }
+
+    @Test
+    public void transferOfABaseLeftCreatingIsStoppedBeforeItIsCopiedAgain() throws Exception {
+        AgentManager agentMgr = mock(AgentManager.class);
+        ReflectionTestUtils.setField(volumeService, "agentMgr", agentMgr);
+        when(agentMgr.send(anyLong(), any(Command.class))).thenAnswer(invocation -> new Answer(invocation.getArgument(1)));
+        PrimaryDataStore source = primary(SRC_POOL, 1L);
+        PrimaryDataStore destination = primary(DEST_POOL, 2L);
+        when(templateFactory.getTemplate(TEMPLATE_ID, source)).thenReturn(templateOnSource);
+        when(templateOnSource.getId()).thenReturn(TEMPLATE_ID);
+        when(templateOnSource.getUuid()).thenReturn("tmpl-uuid");
+        when(destination.create(templateOnSource)).thenReturn(templateOnDestination);
+        VMTemplateStoragePoolVO creating = ref(DEST_REF, ObjectInDataStoreStateMachine.State.Creating, null);
+        when(templatePoolDao.findByPoolTemplate(DEST_POOL, TEMPLATE_ID, null)).thenReturn(creating);
+        when(templatePoolDao.acquireInLockTable(DEST_REF, 3600)).thenReturn(creating);
+        VMTemplateStoragePoolVO copied = ref(DEST_REF, ObjectInDataStoreStateMachine.State.Ready, "tmpl-uuid");
+        when(templatePoolDao.findById(DEST_REF)).thenReturn(creating, copied);
+        doAnswer(invocation -> {
+            ((AsyncCompletionCallback<CopyCommandResult>)invocation.getArgument(2)).complete(new CopyCommandResult(null, mock(CopyCmdAnswer.class)));
+            return null;
+        }).when(motionService).copyAsync(eq(templateOnSource), eq(templateOnDestination), any(AsyncCompletionCallback.class));
+
+        assertEquals("tmpl-uuid", volumeService.ensureTemplateOnPool(TEMPLATE_ID, destination, source));
+
+        InOrder order = inOrder(agentMgr, templateOnDestination);
+        order.verify(agentMgr).send(eq(2L), Mockito.<Command>argThat(command -> command instanceof AbortVolumeFileCopyCommand
+                && "template-5-12".equals(((AbortVolumeFileCopyCommand)command).getExportName())
+                && "tmpl-uuid".equals(((AbortVolumeFileCopyCommand)command).getPath())));
+        order.verify(templateOnDestination).processEvent(Event.OperationFailed);
+        verify(agentMgr).send(eq(1L), Mockito.<Command>argThat(command -> command instanceof StopVolumeExportCommand
+                && "template-5-12".equals(((StopVolumeExportCommand)command).getName())));
+    }
+
+    private static PrimaryDataStore primary(long id, long hostId) {
+        PrimaryDataStore store = mock(PrimaryDataStore.class);
+        when(store.getId()).thenReturn(id);
+        when(store.getName()).thenReturn("pool-" + id);
+        when(store.getUuid()).thenReturn("uuid-pool-" + id);
+        when(store.getPoolType()).thenReturn(com.cloud.storage.Storage.StoragePoolType.Filesystem);
+        when(store.getScope()).thenReturn(new HostScope(hostId, 1L, 1L));
+        return store;
     }
 
     @Test

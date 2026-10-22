@@ -16,9 +16,16 @@
 // under the License.
 package com.cloud.hypervisor.kvm.storage;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
+
+import org.apache.commons.codec.binary.Hex;
 
 /**
  * Records the commands a {@link VolumeFileTransfer} runs and answers them from a function;
@@ -39,6 +46,18 @@ public class FakeProcessRunner implements VolumeFileTransfer.ProcessRunner {
 
     public static VolumeFileTransfer.ProcessResult failed(int exitCode, String output) {
         return new VolumeFileTransfer.ProcessResult(exitCode, output, false);
+    }
+
+    public static String sha256(byte[] data) {
+        try {
+            return Hex.encodeHexString(MessageDigest.getInstance("SHA-256").digest(data));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    public static String sha256(Path file) throws IOException {
+        return sha256(Files.readAllBytes(file));
     }
 
     public static VolumeFileTransfer.ProcessResult timedOut() {

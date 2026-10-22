@@ -185,7 +185,7 @@ public class CapacityManagerImplTest {
         doReturn(true).when(capacityManager).checkIfHostHasCpuCapability(any(Host.class), eq(OFFERING_CPU),
                 eq(OFFERING_CPU_SPEED));
         doReturn(true).when(capacityManager).checkIfHostHasCapacity(eq(host), eq(OFFERING_CPU * OFFERING_CPU_SPEED),
-                eq(ByteScaleUtils.mebibytesToBytes(OFFERING_MEMORY)), eq(false), eq(cpuOvercommit), eq(memoryOvercommit), eq(false));
+                eq(ByteScaleUtils.mebibytesToBytes(OFFERING_MEMORY)), eq(false), eq(cpuOvercommit), eq(memoryOvercommit), eq(false), Mockito.isNull());
         Pair<Boolean, Boolean> result = capacityManager.checkIfHostHasCpuCapabilityAndCapacity(host, offering, false);
         assertTrue(result.first());
         assertTrue(result.second());
@@ -193,7 +193,7 @@ public class CapacityManagerImplTest {
         verify(capacityManager).checkIfHostHasCpuCapability(any(Host.class), eq(OFFERING_CPU), eq(OFFERING_CPU_SPEED));
         verify(capacityManager).checkIfHostHasCapacity(eq(host), eq(OFFERING_CPU * OFFERING_CPU_SPEED),
                 eq(ByteScaleUtils.mebibytesToBytes(OFFERING_MEMORY)),
-                eq(false), eq(cpuOvercommit), eq(memoryOvercommit), eq(false));
+                eq(false), eq(cpuOvercommit), eq(memoryOvercommit), eq(false), Mockito.isNull());
     }
 
     @Test
@@ -205,7 +205,7 @@ public class CapacityManagerImplTest {
         doReturn(false).when(capacityManager).checkIfHostHasCpuCapability(any(Host.class), eq(OFFERING_CPU),
                 eq(OFFERING_CPU_SPEED));
         doReturn(true).when(capacityManager).checkIfHostHasCapacity(eq(host), eq(OFFERING_CPU * OFFERING_CPU_SPEED),
-                eq(ByteScaleUtils.mebibytesToBytes(OFFERING_MEMORY)), eq(false), eq(cpuOvercommit), eq(memoryOvercommit), eq(false));
+                eq(ByteScaleUtils.mebibytesToBytes(OFFERING_MEMORY)), eq(false), eq(cpuOvercommit), eq(memoryOvercommit), eq(false), Mockito.isNull());
         Pair<Boolean, Boolean> result = capacityManager.checkIfHostHasCpuCapabilityAndCapacity(host, offering, false);
         assertFalse(result.first());
         assertTrue(result.second());
@@ -213,7 +213,7 @@ public class CapacityManagerImplTest {
         verify(capacityManager).checkIfHostHasCpuCapability(any(Host.class), eq(OFFERING_CPU), eq(OFFERING_CPU_SPEED));
         verify(capacityManager).checkIfHostHasCapacity(eq(host), eq(OFFERING_CPU * OFFERING_CPU_SPEED),
                 eq(ByteScaleUtils.mebibytesToBytes(OFFERING_MEMORY)),
-                eq(false), eq(cpuOvercommit), eq(memoryOvercommit), eq(false));
+                eq(false), eq(cpuOvercommit), eq(memoryOvercommit), eq(false), Mockito.isNull());
     }
 
     @Test
@@ -225,7 +225,7 @@ public class CapacityManagerImplTest {
         doReturn(true).when(capacityManager).checkIfHostHasCpuCapability(any(Host.class), eq(OFFERING_CPU),
                 eq(OFFERING_CPU_SPEED));
         doReturn(false).when(capacityManager).checkIfHostHasCapacity(eq(host), eq(OFFERING_CPU * OFFERING_CPU_SPEED),
-                eq(ByteScaleUtils.mebibytesToBytes(OFFERING_MEMORY)), eq(false), eq(cpuOvercommit), eq(memoryOvercommit), eq(false));
+                eq(ByteScaleUtils.mebibytesToBytes(OFFERING_MEMORY)), eq(false), eq(cpuOvercommit), eq(memoryOvercommit), eq(false), Mockito.isNull());
         Pair<Boolean, Boolean> result = capacityManager.checkIfHostHasCpuCapabilityAndCapacity(host, offering, false);
         assertTrue(result.first());
         assertFalse(result.second());
@@ -233,7 +233,7 @@ public class CapacityManagerImplTest {
         verify(capacityManager).checkIfHostHasCpuCapability(any(Host.class), eq(OFFERING_CPU), eq(OFFERING_CPU_SPEED));
         verify(capacityManager).checkIfHostHasCapacity(eq(host), eq(OFFERING_CPU * OFFERING_CPU_SPEED),
                 eq(ByteScaleUtils.mebibytesToBytes(OFFERING_MEMORY)),
-                eq(false), eq(cpuOvercommit), eq(memoryOvercommit), eq(false));
+                eq(false), eq(cpuOvercommit), eq(memoryOvercommit), eq(false), Mockito.isNull());
     }
 
     private HostVO mockHost(int cpus, long speed, long memory) {
@@ -1020,6 +1020,113 @@ public class CapacityManagerImplTest {
         } finally {
             setDetachOnStop(original);
         }
+    }
+
+    private static final long RESTARTING_VM_ID = 3L;
+    private static final long OTHER_VM_ID = 4L;
+
+    /** A 16 GiB, 8-vCPU VM whose forced reboot holds its capacity reserved on its last host; the host's other VMs use 40 GiB. */
+    private HostVO hostWithARestartReservation(VirtualMachine.State restartingVmState) {
+        ReflectionTestUtils.setField(capacityManager, "_vmCapacityReleaseInterval", 0);
+        HostVO host = mockHost(32, 2000L, 64 * GIB);
+        lenient().when(hostDao.findById(HOST_ID)).thenReturn(host);
+        mockCapacityRows(capacity(1L, Capacity.CAPACITY_TYPE_CPU, 40000L, 16000L, 64000L),
+                capacity(2L, Capacity.CAPACITY_TYPE_MEMORY, 40 * GIB, 16 * GIB, 64 * GIB),
+                capacity(3L, Capacity.CAPACITY_TYPE_CPU_CORE, 20L, 8L, 32L));
+        mockClusterRatios("1.0", "1.0");
+        ServiceOfferingVO sixteenGib = mockOffering(CPU_OFFERING_ID, 8, 2000, 16 * 1024, null);
+        lenient().doReturn(sixteenGib).when(capacityManager).getServiceOffering(CPU_OFFERING_ID);
+        lenient().when(serviceOfferingDao.findById(anyLong(), eq(CPU_OFFERING_ID))).thenReturn(sixteenGib);
+        VMInstanceVO restarting = mockVm(RESTARTING_VM_ID, CPU_OFFERING_ID, null, HOST_ID);
+        lenient().when(restarting.getState()).thenReturn(restartingVmState);
+        lenient().when(vmInstanceDao.findById(RESTARTING_VM_ID)).thenReturn(restarting);
+        markRestart(RESTARTING_VM_ID);
+        return host;
+    }
+
+    @Test
+    public void reservationOfARestartServesOnlyThatVm() {
+        HostVO host = hostWithARestartReservation(VirtualMachine.State.Stopped);
+
+        assertTrue("the restarting VM takes its reservation", capacityManager.checkIfHostHasCapacity(host, 16000, 16 * GIB, true, 1.0f, 1.0f, true,
+                RESTARTING_VM_ID));
+        assertFalse("another VM whose last host it is does not", capacityManager.checkIfHostHasCapacity(host, 16000, 16 * GIB, true, 1.0f, 1.0f, true,
+                OTHER_VM_ID));
+        assertFalse("nor does a start that disregards reserved capacity", capacityManager.checkIfHostHasCapacity(host, 16000, 16 * GIB, false, 1.0f, 1.0f,
+                false, OTHER_VM_ID));
+        assertTrue("which still finds what is free beside the reservation", capacityManager.checkIfHostHasCapacity(host, 8000, 8 * GIB, false, 1.0f, 1.0f,
+                false, OTHER_VM_ID));
+        assertFalse("a check for no particular VM leaves every restart's reservation alone", capacityManager.checkIfHostHasCapacity(host, 16000, 16 * GIB,
+                false, 1.0f, 1.0f, false));
+        assertFalse(capacityManager.checkIfHostHasCpuCapabilityAndCapacity(host, mockOffering(CPU_OFFERING_ID, 8, 2000, 16 * 1024, null), false, OTHER_VM_ID)
+                .second());
+    }
+
+    @Test
+    public void reservationOfARestartStaysWhileItsStartHasNoHostYet() {
+        HostVO host = hostWithARestartReservation(VirtualMachine.State.Starting);
+
+        assertFalse(capacityManager.checkIfHostHasCapacity(host, 16000, 16 * GIB, true, 1.0f, 1.0f, true, OTHER_VM_ID));
+        assertTrue(capacityManager.checkIfHostHasCapacity(host, 16000, 16 * GIB, true, 1.0f, 1.0f, true, RESTARTING_VM_ID));
+
+        ReflectionTestUtils.setField(capacityManager, "clusterValuesCache",
+                new LazyCache<Long, Pair<String, String>>(16, 60, clusterId -> new Pair<>("1.0", "1.0")));
+        when(vmInstanceDao.listIdServiceOfferingForUpVmsByHostId(HOST_ID)).thenReturn(new ArrayList<>());
+        when(vmInstanceDao.listIdServiceOfferingForVmsMigratingFromHost(HOST_ID)).thenReturn(new ArrayList<>());
+        when(vmInstanceDao.listByLastHostId(HOST_ID)).thenReturn(new ArrayList<>());
+        CapacityVO cpu = capacity(4L, Capacity.CAPACITY_TYPE_CPU, 0L, 0L, 64000L);
+        CapacityVO memory = capacity(5L, Capacity.CAPACITY_TYPE_MEMORY, 0L, 0L, 64 * GIB);
+        CapacityVO cpuCore = capacity(6L, Capacity.CAPACITY_TYPE_CPU_CORE, 0L, 0L, 32L);
+        when(capacityDao.listByHostIdTypes(eq(HOST_ID), anyList())).thenReturn(List.of(cpu, memory, cpuCore));
+
+        capacityManager.updateCapacityForHost(host);
+
+        assertEquals("a recalculation keeps the reservation of a restart whose start has no host yet", 16 * GIB, memory.getReservedCapacity());
+        assertEquals(16000L, cpu.getReservedCapacity());
+    }
+
+    @Test
+    public void startOfAnotherVmOnItsLastHostIsBookedBesideARestartsReservation() {
+        hostWithARestartReservation(VirtualMachine.State.Stopped);
+        VMInstanceVO other = mockVm(OTHER_VM_ID, CPU_OFFERING_ID + 1, HOST_ID, HOST_ID);
+        ServiceOfferingVO eightGib = mockOffering(CPU_OFFERING_ID + 1, 4, 2000, 8 * 1024, null);
+        when(serviceOfferingDao.findById(OTHER_VM_ID, CPU_OFFERING_ID + 1)).thenReturn(eightGib);
+        VMInstanceVO restarting = vmInstanceDao.findById(RESTARTING_VM_ID);
+        CapacityVO memory = capacity(8L, Capacity.CAPACITY_TYPE_MEMORY, 40 * GIB, 16 * GIB, 64 * GIB);
+        // the allocation updates the locked rows; a read within it sees the rows as last committed
+        Map<Short, CapacityVO> committed = new HashMap<>();
+        for (CapacityVO row : List.of(capacity(7L, Capacity.CAPACITY_TYPE_CPU, 40000L, 16000L, 64000L), memory,
+                capacity(9L, Capacity.CAPACITY_TYPE_CPU_CORE, 20L, 8L, 32L))) {
+            committed.put(row.getCapacityType(), capacity(row.getId(), row.getCapacityType(), row.getUsedCapacity(), row.getReservedCapacity(),
+                    row.getTotalCapacity()));
+            lenient().when(capacityDao.lockRow(row.getId(), true)).thenReturn(row);
+            lenient().when(capacityDao.findByHostIdType(HOST_ID, row.getCapacityType())).thenAnswer(invocation -> committed.get(row.getCapacityType()));
+        }
+        lenient().when(capacityDao.update(anyLong(), any(CapacityVO.class))).thenAnswer(invocation -> {
+            CapacityVO row = invocation.getArgument(1);
+            committed.put(row.getCapacityType(), capacity(row.getId(), row.getCapacityType(), row.getUsedCapacity(), row.getReservedCapacity(),
+                    row.getTotalCapacity()));
+            return true;
+        });
+
+        try (MockedStatic<Transaction> ignored = mockTransaction()) {
+            capacityManager.allocateVmCapacity(other, true);
+            assertEquals("the other VM is booked from free capacity", 48 * GIB, memory.getUsedCapacity());
+            assertEquals("the restart's reservation stays", 16 * GIB, memory.getReservedCapacity());
+
+            when(restarting.getHostId()).thenReturn(HOST_ID);
+            capacityManager.allocateVmCapacity(restarting, true);
+            assertEquals("the restart then takes its own reservation", 64 * GIB, memory.getUsedCapacity());
+            assertEquals(0L, memory.getReservedCapacity());
+        }
+    }
+
+    @Test
+    public void powerReportDuringTheStopOfARestartKeepsItsReservation() {
+        markRestart(VM_ID);
+
+        assertRows(stopCpuOnlyVm(0, VirtualMachine.State.Stopping, VirtualMachine.Event.AgentReportStopped), 0, 1);
+        assertRows(stopCpuOnlyVm(0, VirtualMachine.State.Stopping, VirtualMachine.Event.FollowAgentPowerOffReport), 0, 1);
     }
 
     @Test

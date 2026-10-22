@@ -274,6 +274,11 @@ public class AccountResponse extends BaseResponse implements ResourceLimitAndCou
             since = "4.23.0.100")
     private Long remainingStorageQuota;
 
+    @SerializedName(ApiConstants.STORAGE_QUOTA_COMBINED)
+    @Param(description = "whether the account's volumes and snapshots count together against its storage quota (resource.limit.storage.combined at "
+            + "the account's scope). Returned by listAccounts only when its details include storagequota", since = "4.23.0.100")
+    private Boolean storageQuotaCombined;
+
     @SerializedName(ApiConstants.BUCKET_LIMIT)
     @Param(description = "the total number of buckets which can be stored by this account", since = "4.21.0")
     private String bucketLimit;
@@ -655,6 +660,14 @@ public class AccountResponse extends BaseResponse implements ResourceLimitAndCou
 
     public void setRemainingStorageQuota(Long remainingStorageQuota) {
         this.remainingStorageQuota = remainingStorageQuota;
+    }
+
+    public Boolean getStorageQuotaCombined() {
+        return storageQuotaCombined;
+    }
+
+    public void setStorageQuotaCombined(Boolean storageQuotaCombined) {
+        this.storageQuotaCombined = storageQuotaCombined;
     }
 
     @Override

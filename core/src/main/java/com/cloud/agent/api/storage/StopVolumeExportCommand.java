@@ -22,7 +22,7 @@ package com.cloud.agent.api.storage;
 import com.cloud.agent.api.Command;
 
 /**
- * Stops the export of the given name; succeeds when no such export runs.
+ * Stops the export and the hashing of the given name; succeeds when neither runs.
  */
 public class StopVolumeExportCommand extends Command {
     private String name;
@@ -32,6 +32,8 @@ public class StopVolumeExportCommand extends Command {
 
     public StopVolumeExportCommand(String name) {
         this.name = name;
+        // It touches only the units and the partial file of this transfer, so it reaches a host in maintenance.
+        setBypassHostMaintenance(true);
     }
 
     public String getName() {

@@ -1377,6 +1377,21 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
     }
 
     @Override
+    public void checkQuotaOfSessionStart(VirtualMachine vm) throws ResourceAllocationException {
+        checkQuotaOfSessionStart(vm, _entityMgr.findById(Account.class, vm.getAccountId()), _offeringDao.findById(vm.getId(), vm.getServiceOfferingId()),
+                _entityMgr.findByIdIncludingRemoved(VirtualMachineTemplate.class, vm.getTemplateId()));
+    }
+
+    protected void checkQuotaOfSessionStart(VirtualMachine vm, Account owner, ServiceOffering offering, VirtualMachineTemplate template)
+            throws ResourceAllocationException {
+        if (vm.getType() != VirtualMachine.Type.User || vm.getState() != State.Stopped
+                || vmInstanceDetailsDao.findDetail(vm.getId(), VmDetailConstants.RESTART_IN_PROGRESS) != null) {
+            return;
+        }
+        _resourceLimitMgr.checkWithinQuota(owner, offering, template);
+    }
+
+    @Override
     public void orchestrateStart(final String vmUuid, final Map<VirtualMachineProfile.Param, Object> params, final DeploymentPlan planToDeploy, final DeploymentPlanner planner)
             throws InsufficientCapacityException, ConcurrentOperationException, ResourceUnavailableException {
 
@@ -1394,6 +1409,11 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
         final Account owner = _entityMgr.findById(Account.class, vm.getAccountId());
         final ServiceOfferingVO offering = _offeringDao.findById(vm.getId(), vm.getServiceOfferingId());
         final VirtualMachineTemplate template = _entityMgr.findByIdIncludingRemoved(VirtualMachineTemplate.class, vm.getTemplateId());
+        try {
+            checkQuotaOfSessionStart(vm, owner, offering, template);
+        } catch (ResourceAllocationException e) {
+            throw new CloudRuntimeException(e.getMessage(), e);
+        }
         final Ternary<VMInstanceVO, ReservationContext, ItWorkVO> start = changeToStartState(vmGuru, vm, caller, account, owner, offering, template);
         if (start == null) {
             return;

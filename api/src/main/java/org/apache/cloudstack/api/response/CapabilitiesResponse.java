@@ -16,6 +16,7 @@
 // under the License.
 package org.apache.cloudstack.api.response;
 
+import java.util.List;
 import java.util.Map;
 
 import org.apache.cloudstack.acl.RoleType;
@@ -201,6 +202,15 @@ public class CapabilitiesResponse extends BaseResponse {
     @Param(description = "The time zone in which the expiry date of a resource limit grant ends, at 23:59:59", since = "4.23.0.100")
     private String resourceRequestExpiryTimezone;
 
+    @SerializedName(ApiConstants.AUTOMIGRATE_ALLOWED)
+    @Param(description = "Whether the calling Account's role may let a volume move to another storage pool on its own (automigrate=true)",
+            since = "4.23.0.100")
+    private Boolean automigrateAllowed;
+
+    @SerializedName(ApiConstants.QUOTA_GPU_TYPES)
+    @Param(description = "The GPU types that resource limit requests and grants are sized in, sorted", since = "4.23.0.100")
+    private List<String> quotaGpuTypes;
+
     public void setSecurityGroupsEnabled(boolean securityGroupsEnabled) {
         this.securityGroupsEnabled = securityGroupsEnabled;
     }
@@ -371,5 +381,13 @@ public class CapabilitiesResponse extends BaseResponse {
 
     public void setResourceRequestExpiryTimezone(String resourceRequestExpiryTimezone) {
         this.resourceRequestExpiryTimezone = resourceRequestExpiryTimezone;
+    }
+
+    public void setAutomigrateAllowed(Boolean automigrateAllowed) {
+        this.automigrateAllowed = automigrateAllowed;
+    }
+
+    public void setQuotaGpuTypes(List<String> quotaGpuTypes) {
+        this.quotaGpuTypes = quotaGpuTypes;
     }
 }

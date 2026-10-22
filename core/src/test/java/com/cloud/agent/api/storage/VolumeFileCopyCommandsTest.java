@@ -74,12 +74,11 @@ public class VolumeFileCopyCommandsTest {
         assertFalse(cmd.executeInSequence());
 
         InspectVolumeFileAnswer answer = (InspectVolumeFileAnswer)answerOverTheWire(
-                new InspectVolumeFileAnswer(cmd, "qcow2", 4294967296L, 25624576L, SHA, "/var/lib/libvirt/images/0c7f2a6e", "raw", 1));
+                new InspectVolumeFileAnswer(cmd, "qcow2", 4294967296L, 25624576L, "/var/lib/libvirt/images/0c7f2a6e", "raw", 1));
         assertTrue(answer.getResult());
         assertEquals("qcow2", answer.getFormat());
         assertEquals(4294967296L, answer.getVirtualSize());
         assertEquals(25624576L, answer.getLength());
-        assertEquals(SHA, answer.getSha256());
         assertEquals("/var/lib/libvirt/images/0c7f2a6e", answer.getBackingFile());
         assertEquals("raw", answer.getBackingFormat());
         assertEquals(1, answer.getChainDepth());
@@ -114,31 +113,52 @@ public class VolumeFileCopyCommandsTest {
     @Test
     public void copyRoundTrip() {
         CopyVolumeFileFromHostCommand cmd = (CopyVolumeFileFromHostCommand)overTheWire(new CopyVolumeFileFromHostCommand("10.0.0.11", 10810, "f00dcafe-1",
-                pool(), "f00dcafe-1", "qcow2", 25624576L, SHA, "0c7f2a6e", "raw", 10800, 12000));
+                pool(), "f00dcafe-1", 25624576L, 11400));
         assertEquals("10.0.0.11", cmd.getSourceAddress());
         assertEquals(10810, cmd.getSourcePort());
         assertEquals("f00dcafe-1", cmd.getExportName());
         assertEquals("f00dcafe-1", cmd.getPath());
-        assertEquals("qcow2", cmd.getFormat());
         assertEquals(25624576L, cmd.getExpectedLength());
-        assertEquals(SHA, cmd.getExpectedSha256());
-        assertEquals("0c7f2a6e", cmd.getBackingInstallPath());
-        assertEquals("raw", cmd.getBackingFormat());
-        assertEquals(10800, cmd.getTransferTimeout());
-        assertEquals("the command also covers reading back, rebasing and checking", 12000, cmd.getWait());
+        assertEquals(11400, cmd.getLifetime());
         assertFalse(cmd.executeInSequence());
 
-        CopyVolumeFileFromHostCommand noBacking = (CopyVolumeFileFromHostCommand)overTheWire(new CopyVolumeFileFromHostCommand("10.0.0.11", 10810, "x",
-                pool(), "x", "raw", 1L, SHA, null, null, 60, 660));
+        CheckVolumeFileTransferCommand check = (CheckVolumeFileTransferCommand)overTheWire(
+                new CheckVolumeFileTransferCommand(CheckVolumeFileTransferCommand.Kind.PULL, "f00dcafe-1"));
+        assertEquals(CheckVolumeFileTransferCommand.Kind.PULL, check.getKind());
+        assertEquals("f00dcafe-1", check.getName());
+        assertFalse(check.executeInSequence());
+        CheckVolumeFileTransferAnswer checked = (CheckVolumeFileTransferAnswer)answerOverTheWire(
+                new CheckVolumeFileTransferAnswer(check, CheckVolumeFileTransferAnswer.State.SUCCEEDED, SHA, 25624576L, null));
+        assertTrue(checked.getResult());
+        assertEquals(CheckVolumeFileTransferAnswer.State.SUCCEEDED, checked.getState());
+        assertEquals(SHA, checked.getSha256());
+        assertEquals(25624576L, checked.getLength());
+        CheckVolumeFileTransferAnswer failedPull = (CheckVolumeFileTransferAnswer)answerOverTheWire(
+                new CheckVolumeFileTransferAnswer(check, CheckVolumeFileTransferAnswer.State.FAILED, null, 0, "authz check is denied"));
+        assertEquals(CheckVolumeFileTransferAnswer.State.FAILED, failedPull.getState());
+        assertEquals("authz check is denied", failedPull.getDetails());
+
+        FinishVolumeFileCopyCommand finish = (FinishVolumeFileCopyCommand)overTheWire(new FinishVolumeFileCopyCommand(pool(), "f00dcafe-1", "f00dcafe-1",
+                "qcow2", 25624576L, SHA, "0c7f2a6e", "raw"));
+        assertEquals("f00dcafe-1", finish.getPath());
+        assertEquals("f00dcafe-1", finish.getExportName());
+        assertEquals("qcow2", finish.getFormat());
+        assertEquals(25624576L, finish.getExpectedLength());
+        assertEquals(SHA, finish.getExpectedSha256());
+        assertEquals("0c7f2a6e", finish.getBackingInstallPath());
+        assertEquals("raw", finish.getBackingFormat());
+        assertFalse(finish.executeInSequence());
+        FinishVolumeFileCopyCommand noBacking = (FinishVolumeFileCopyCommand)overTheWire(new FinishVolumeFileCopyCommand(pool(), "x", "x", "raw", 1L, SHA,
+                null, null));
         assertNull(noBacking.getBackingInstallPath());
         assertNull(noBacking.getBackingFormat());
 
-        CopyVolumeFileFromHostAnswer answer = (CopyVolumeFileFromHostAnswer)answerOverTheWire(new CopyVolumeFileFromHostAnswer(cmd, 25624576L, SHA, 24608L * 1024));
+        FinishVolumeFileCopyAnswer answer = (FinishVolumeFileCopyAnswer)answerOverTheWire(new FinishVolumeFileCopyAnswer(finish, 25624576L, SHA, 24608L * 1024));
         assertTrue(answer.getResult());
         assertEquals(25624576L, answer.getLength());
         assertEquals(SHA, answer.getSha256());
         assertEquals(24608L * 1024, answer.getAllocatedSize());
-        CopyVolumeFileFromHostAnswer failed = (CopyVolumeFileFromHostAnswer)answerOverTheWire(new CopyVolumeFileFromHostAnswer(cmd, "hash mismatch"));
+        FinishVolumeFileCopyAnswer failed = (FinishVolumeFileCopyAnswer)answerOverTheWire(new FinishVolumeFileCopyAnswer(finish, "hash mismatch"));
         assertFalse(failed.getResult());
         assertEquals("hash mismatch", failed.getDetails());
 
@@ -147,5 +167,15 @@ public class VolumeFileCopyCommandsTest {
         assertEquals("f00dcafe-1", abort.getExportName());
         assertEquals(StoragePoolType.Filesystem, abort.getPool().getType());
         assertFalse(abort.executeInSequence());
+    }
+
+    @Test
+    public void hashRoundTrip() {
+        StartVolumeFileHashCommand cmd = (StartVolumeFileHashCommand)overTheWire(new StartVolumeFileHashCommand(pool(), "8e1d4c2b", "f00dcafe-1", 11400));
+        assertEquals("8e1d4c2b", cmd.getPath());
+        assertEquals("f00dcafe-1", cmd.getName());
+        assertEquals(11400, cmd.getLifetime());
+        assertEquals("a1b2c3d4-0000-4000-8000-000000000007", cmd.getPool().getUuid());
+        assertFalse(cmd.executeInSequence());
     }
 }

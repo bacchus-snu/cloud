@@ -22,6 +22,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import com.cloud.resource.ResourceState;
+import com.cloud.host.Status;
 import com.cloud.exception.ResourceAllocationException;
 import com.cloud.storage.Storage;
 import com.cloud.utils.Pair;
@@ -102,8 +104,47 @@ public interface VolumeOrchestrationService {
                     + "that copy is deleted as soon as the volume uses its new location, and the move needs no quota for it.",
             true, ConfigKey.Scope.Domain, null);
 
+    ConfigKey<Integer> VolumeMoveConcurrencyPerHost = new ConfigKey<>(Integer.class, "volume.move.concurrency.per.host", ConfigKey.CATEGORY_ADVANCED,
+            "2", "The most direct volume copies between the local storage of two hosts that one host takes part in at a time, as source or "
+                    + "destination; a further copy waits for a free slot on both of its hosts, at most copy.volume.wait seconds. 0 or less sets no bound.",
+            true, ConfigKey.Scope.Global, null);
+
     /** The volume detail, on a volume that holds the copy of another volume being moved, naming that volume's id. */
     String RELOCATION_OF = "relocation.of";
+
+    /**
+     * The volume detail, on the volume a direct copy between hosts goes to, that holds one of the copy slots of its
+     * source and destination hosts while the copy runs: {@code <source host id>,<destination host id>,<async job id>}.
+     */
+    String TRANSFER_SLOT = "volume.transfer.slot";
+
+    /**
+     * The volume detail, on the volume a direct copy between hosts goes to, that names the transfer of the template base
+     * the copy needs while that transfer runs: {@code <transfer name>,<base file on the destination pool>}.
+     */
+    String RELOCATION_BASE = "relocation.base";
+
+    /**
+     * @return whether the host can serve the files of its local pool to a direct copy: it is Up and in no maintenance
+     *         state, in which its agent takes only the commands of the maintenance
+     */
+    static boolean servesLocalVolumes(Host host) {
+        return host != null && host.getStatus() == Status.Up && !inMaintenance(host);
+    }
+
+    /**
+     * @return whether the host is in a maintenance state, in which it serves no files of its local pool to a copy
+     */
+    static boolean inMaintenance(Host host) {
+        return host != null && ResourceState.isMaintenanceState(host.getResourceState());
+    }
+
+    /**
+     * @return the name of the direct transfer of a template's base to a local pool
+     */
+    static String templateBaseTransferName(long templateId, long destPoolId) {
+        return String.format("template-%d-%d", templateId, destPoolId);
+    }
 
     VolumeInfo moveVolume(VolumeInfo volume, long destPoolDcId, Long destPoolPodId, Long destPoolClusterId, HypervisorType dataDiskHyperType)
         throws ConcurrentOperationException, StorageUnavailableException;

@@ -20,6 +20,7 @@ import java.sql.PreparedStatement;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import javax.annotation.PostConstruct;
 import javax.naming.ConfigurationException;
@@ -44,6 +45,7 @@ public class ConfigurationDaoImpl extends GenericDaoBase<ConfigurationVO, String
     final SearchBuilder<ConfigurationVO> InstanceSearch;
     final SearchBuilder<ConfigurationVO> NameSearch;
     final SearchBuilder<ConfigurationVO> PartialSearch;
+    final SearchBuilder<ConfigurationVO> EncryptedSearch;
 
     public static final String UPDATE_CONFIGURATION_SQL = "UPDATE configuration SET value = ? WHERE name = ?";
 
@@ -59,6 +61,10 @@ public class ConfigurationDaoImpl extends GenericDaoBase<ConfigurationVO, String
         PartialSearch.select("name", SearchCriteria.Func.NATIVE, PartialSearch.entity().getName());
         PartialSearch.select("groupId", SearchCriteria.Func.NATIVE, PartialSearch.entity().getGroupId());
         PartialSearch.select("subGroupId", SearchCriteria.Func.NATIVE, PartialSearch.entity().getSubGroupId());
+
+        EncryptedSearch = createSearchBuilder();
+        EncryptedSearch.select("name", SearchCriteria.Func.NATIVE, EncryptedSearch.entity().getName());
+        EncryptedSearch.and("category", EncryptedSearch.entity().getCategory(), SearchCriteria.Op.IN);
     }
 
     @Override
@@ -217,5 +223,12 @@ public class ConfigurationDaoImpl extends GenericDaoBase<ConfigurationVO, String
     public List<ConfigurationVO> searchPartialConfigurations() {
         SearchCriteria<ConfigurationVO> sc = PartialSearch.create();
         return searchIncludingRemoved(sc, null, null, false);
+    }
+
+    @Override
+    public List<String> listEncryptedSettingNames() {
+        SearchCriteria<ConfigurationVO> sc = EncryptedSearch.create();
+        sc.setParameters("category", "Secure", "Hidden");
+        return searchIncludingRemoved(sc, null, null, false).stream().map(ConfigurationVO::getName).collect(Collectors.toList());
     }
 }

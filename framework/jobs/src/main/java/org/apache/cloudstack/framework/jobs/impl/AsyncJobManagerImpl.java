@@ -25,7 +25,9 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -46,8 +48,10 @@ import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotService;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeDataFactory;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeInfo;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeService;
+import org.apache.cloudstack.framework.config.ConfigDepot;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.Configurable;
+import org.apache.cloudstack.framework.config.EncryptedSettingParameters;
 import org.apache.cloudstack.framework.jobs.AsyncJob;
 import org.apache.cloudstack.framework.jobs.AsyncJobDispatcher;
 import org.apache.cloudstack.framework.jobs.AsyncJobExecutionContext;
@@ -65,6 +69,7 @@ import org.apache.cloudstack.jobs.JobInfo.Status;
 import org.apache.cloudstack.managed.context.ManagedContextRunnable;
 import org.apache.cloudstack.management.ManagementServerHost;
 import org.apache.cloudstack.utils.identity.ManagementServerNode;
+import org.apache.commons.lang3.StringEscapeUtils;
 import org.apache.logging.log4j.ThreadContext;
 
 import com.cloud.cluster.ClusterManagerListener;
@@ -113,6 +118,9 @@ import com.cloud.vm.snapshot.VMSnapshot;
 import com.cloud.vm.snapshot.VMSnapshotService;
 import com.cloud.vm.snapshot.VMSnapshotVO;
 import com.cloud.vm.snapshot.dao.VMSnapshotDao;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.reflect.TypeToken;
 
 public class AsyncJobManagerImpl extends ManagerBase implements AsyncJobManager, ClusterManagerListener, Configurable {
 
@@ -135,6 +143,8 @@ public class AsyncJobManagerImpl extends ManagerBase implements AsyncJobManager,
 
     @Inject
     private SyncQueueItemDao _queueItemDao;
+    @Inject
+    private ConfigDepot configDepot;
     @Inject
     private SyncQueueManager _queueMgr;
     @Inject
@@ -271,6 +281,46 @@ public class AsyncJobManagerImpl extends ManagerBase implements AsyncJobManager,
         return false;
     }
 
+    private static final Gson CMD_INFO_GSON = new GsonBuilder().disableHtmlEscaping().create();
+
+    /**
+     * The job as it is logged: the value of a setting stored encrypted that the command passes is masked in the logged
+     * command info, which the job itself keeps as it is.
+     */
+    String loggable(AsyncJob job) {
+        String text = job.toString();
+        String info = job.getCmdInfo();
+        String maskedInfo = maskedCmdInfo(info);
+        if (!Objects.equals(maskedInfo, info)) {
+            String embedded = StringEscapeUtils.escapeJson(info);
+            text = text.contains(embedded) ? text.replace(embedded, StringEscapeUtils.escapeJson(maskedInfo))
+                    : String.format("AsyncJob {\"id\":%d,\"cmd\":\"%s\"}", job.getId(), job.getCmd());
+        }
+        return StringUtils.cleanString(text);
+    }
+
+    String maskedCmdInfo(String info) {
+        if (org.apache.commons.lang3.StringUtils.isBlank(info) || configDepot == null) {
+            return info;
+        }
+        Map<String, String> params;
+        try {
+            params = CMD_INFO_GSON.fromJson(info, new TypeToken<java.util.LinkedHashMap<String, String>>() { }.getType());
+        } catch (RuntimeException e) {
+            // not the parameters of an API command
+            return info;
+        }
+        if (params == null) {
+            return info;
+        }
+        Set<String> masked = EncryptedSettingParameters.inSingleValued(params, configDepot::isEncryptedSetting);
+        if (masked.isEmpty()) {
+            return info;
+        }
+        masked.forEach(name -> params.put(name, EncryptedSettingParameters.MASK));
+        return CMD_INFO_GSON.toJson(params);
+    }
+
     @SuppressWarnings("unchecked")
     @DB
     public long submitAsyncJob(AsyncJob job, boolean scheduleJobExecutionInContext) {
@@ -286,7 +336,7 @@ public class AsyncJobManagerImpl extends ManagerBase implements AsyncJobManager,
         publishOnEventBus(job, "submit");
         scheduleExecution(job, scheduleJobExecutionInContext);
         if (logger.isDebugEnabled()) {
-            logger.debug("submit async job-" + job.getId() + ", details: " + StringUtils.cleanString(job.toString()));
+            logger.debug("submit async job-" + job.getId() + ", details: " + loggable(job));
         }
         return job.getId();
     }
@@ -669,7 +719,7 @@ public class AsyncJobManagerImpl extends ManagerBase implements AsyncJobManager,
 
                     // execute the job
                     if (logger.isDebugEnabled()) {
-                        logger.debug("Executing " + StringUtils.cleanString(job.toString()));
+                        logger.debug("Executing " + loggable(job));
                     }
 
                     if ((getAndResetPendingSignals(job) & AsyncJob.Constants.SIGNAL_MASK_WAKEUP) != 0) {
@@ -679,7 +729,7 @@ public class AsyncJobManagerImpl extends ManagerBase implements AsyncJobManager,
                         } else {
                             // TODO, job wakeup is not in use yet
                             if (logger.isTraceEnabled())
-                                logger.trace("Unable to find a wakeup dispatcher from the joined job: {}", () -> StringUtils.cleanString(job.toString()));
+                                logger.trace("Unable to find a wakeup dispatcher from the joined job: {}", () -> loggable(job));
                         }
                     } else {
                         AsyncJobDispatcher jobDispatcher = getDispatcher(job.getDispatcher());

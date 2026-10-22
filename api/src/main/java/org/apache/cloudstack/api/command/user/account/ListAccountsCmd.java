@@ -72,7 +72,8 @@ public class ListAccountsCmd extends BaseListDomainResourcesCmd implements UserC
                type = CommandType.LIST,
                collectionType = CommandType.STRING,
                description = "Comma separated list of account details requested, value can be a list of [ all, resource, min, storagequota]; " +
-                       "storagequota adds the storage each account can still add (remainingstoragequota), which no other value returns")
+                       "storagequota adds the storage each account can still add (remainingstoragequota) and whether its volumes and snapshots count "
+                       + "together against that quota (storagequotacombined), which no other value returns")
     private List<String> viewDetails;
 
     @Parameter(name = ApiConstants.API_KEY_ACCESS, type = CommandType.STRING, description = "List accounts by the Api key access value", since = "4.20.1.0", authorized = {RoleType.Admin})
@@ -176,6 +177,7 @@ public class ListAccountsCmd extends BaseListDomainResourcesCmd implements UserC
                 Account account = _accountService.getAccountByUuid(accountResponse.getObjectId());
                 if (account != null) {
                     accountResponse.setRemainingStorageQuota(toWholeGiB(_resourceLimitService.getRemainingStorageQuota(account)));
+                    accountResponse.setStorageQuotaCombined(_resourceLimitService.isStorageQuotaCombined(account));
                 }
             }
         }

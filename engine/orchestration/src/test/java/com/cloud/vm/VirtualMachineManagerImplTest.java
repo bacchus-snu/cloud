@@ -148,6 +148,8 @@ import com.cloud.host.Host;
 import org.apache.cloudstack.gpu.GpuService;
 import org.apache.cloudstack.backup.BackupManager;
 import com.cloud.vm.snapshot.VMSnapshotManager;
+import com.cloud.exception.ResourceAllocationException;
+import com.cloud.configuration.Resource;
 import com.cloud.host.HostVO;
 import com.cloud.host.dao.HostDao;
 import com.cloud.hypervisor.Hypervisor.HypervisorType;
@@ -183,6 +185,7 @@ import com.cloud.template.VirtualMachineTemplate;
 import com.cloud.user.Account;
 import com.cloud.user.AccountVO;
 import com.cloud.user.User;
+import com.cloud.user.ResourceLimitService;
 import com.cloud.user.dao.AccountDao;
 import com.cloud.utils.Journal;
 import com.cloud.utils.Pair;
@@ -216,6 +219,8 @@ public class VirtualMachineManagerImplTest {
     private VMInstanceVO vmInstanceMock;
     @Mock
     private VmWorkJobDao _workJobDao;
+    @Mock
+    private ResourceLimitService resourceLimitServiceMock;
 
     private long vmInstanceVoMockId = 1L;
 
@@ -2630,5 +2635,61 @@ public class VirtualMachineManagerImplTest {
         verify(virtualMachineManagerImpl, never()).stateTransitTo(any(VirtualMachine.class), eq(VirtualMachine.Event.OperationFailedToError), Mockito.nullable(Long.class));
         verify(alerts).sendAlert(eq(AlertManager.AlertType.ALERT_TYPE_USERVM), anyLong(), any(), eq("Failed to deploy Instance [ID: instance-from-volume]"),
                 Mockito.argThat(body -> body.contains("Mock for Volume") && !body.contains("host")));
+    }
+
+    private VMInstanceVO stoppedInstance(VirtualMachine.Type type, State state) {
+        VMInstanceVO vm = mock(VMInstanceVO.class);
+        Mockito.lenient().when(vm.getId()).thenReturn(7L);
+        Mockito.lenient().when(vm.getType()).thenReturn(type);
+        Mockito.lenient().when(vm.getState()).thenReturn(state);
+        Mockito.lenient().when(vm.getAccountId()).thenReturn(2L);
+        Mockito.lenient().when(vm.getServiceOfferingId()).thenReturn(3L);
+        Mockito.lenient().when(vm.getTemplateId()).thenReturn(4L);
+        return vm;
+    }
+
+    @Test
+    public void startOfAStoppedUserInstanceIsRefusedWhileItsOwnerIsOverQuota() throws Exception {
+        VMInstanceVO vm = stoppedInstance(VirtualMachine.Type.User, State.Stopped);
+        when(vmInstanceDaoMock.findByUuid("vm-uuid")).thenReturn(vm);
+        VirtualMachineGuru vmGuru = mock(VirtualMachineGuru.class);
+        doReturn(vmGuru).when(virtualMachineManagerImpl).getVmGuru(vm);
+        Account owner = mock(Account.class);
+        when(_entityMgr.findById(Account.class, 2L)).thenReturn(owner);
+        ServiceOfferingVO offering = mock(ServiceOfferingVO.class);
+        when(serviceOfferingDaoMock.findById(7L, 3L)).thenReturn(offering);
+        VirtualMachineTemplate template = mock(VirtualMachineTemplate.class);
+        when(_entityMgr.findByIdIncludingRemoved(VirtualMachineTemplate.class, 4L)).thenReturn(template);
+        Mockito.doThrow(new ResourceAllocationException("quota expired or insufficient: the gpu count of account a is 2, above its limit of 1",
+                Resource.ResourceType.gpu)).when(resourceLimitServiceMock).checkWithinQuota(owner, offering, template);
+        CallContext callContext = mock(CallContext.class);
+        try (MockedStatic<CallContext> ignored = Mockito.mockStatic(CallContext.class)) {
+            when(CallContext.current()).thenReturn(callContext);
+
+            CloudRuntimeException refused = assertThrows(CloudRuntimeException.class,
+                    () -> virtualMachineManagerImpl.orchestrateStart("vm-uuid", new HashMap<>(), null, null));
+
+            assertTrue(refused.getMessage(), refused.getMessage().contains("quota expired or insufficient"));
+        }
+        verify(virtualMachineManagerImpl, never()).changeToStartState(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    public void restartWithinARunningSessionAndSystemVmStartsAreNotQuotaChecked() throws Exception {
+        Account owner = mock(Account.class);
+        ServiceOfferingVO offering = mock(ServiceOfferingVO.class);
+        VirtualMachineTemplate template = mock(VirtualMachineTemplate.class);
+
+        VMInstanceVO restarting = stoppedInstance(VirtualMachine.Type.User, State.Stopped);
+        when(vmInstanceDetailsDao.findDetail(7L, VmDetailConstants.RESTART_IN_PROGRESS))
+                .thenReturn(new VMInstanceDetailVO(7L, VmDetailConstants.RESTART_IN_PROGRESS, "job:3", false));
+        virtualMachineManagerImpl.checkQuotaOfSessionStart(restarting, owner, offering, template);
+        virtualMachineManagerImpl.checkQuotaOfSessionStart(stoppedInstance(VirtualMachine.Type.DomainRouter, State.Stopped), owner, offering, template);
+        virtualMachineManagerImpl.checkQuotaOfSessionStart(stoppedInstance(VirtualMachine.Type.User, State.Running), owner, offering, template);
+        verify(resourceLimitServiceMock, never()).checkWithinQuota(any(), any(), any());
+
+        when(vmInstanceDetailsDao.findDetail(7L, VmDetailConstants.RESTART_IN_PROGRESS)).thenReturn(null);
+        virtualMachineManagerImpl.checkQuotaOfSessionStart(restarting, owner, offering, template);
+        verify(resourceLimitServiceMock).checkWithinQuota(owner, offering, template);
     }
 }

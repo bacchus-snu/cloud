@@ -260,6 +260,15 @@ public interface CapacityManager {
     boolean checkIfHostHasCapacity(Host host, Integer cpu, long ram, boolean checkFromReservedCapacity, float cpuOverprovisioningFactor, float memoryOvercommitRatio,
         boolean considerReservedCapacity);
 
+    /**
+     * As {@link #checkIfHostHasCapacity(Host, Integer, long, boolean, float, float, boolean)} for the given VM. The capacity a
+     * host holds reserved for the restart of a VM's running session serves only that VM's start: it is never available to
+     * another VM, whether from reserved capacity or with reserved capacity disregarded. Without a VM, every such reservation
+     * belongs to another VM.
+     */
+    boolean checkIfHostHasCapacity(Host host, Integer cpu, long ram, boolean checkFromReservedCapacity, float cpuOverprovisioningFactor, float memoryOvercommitRatio,
+        boolean considerReservedCapacity, Long vmId);
+
     void updateCapacityForHost(Host host);
 
     /**

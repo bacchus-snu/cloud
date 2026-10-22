@@ -2674,6 +2674,12 @@ public class AccountManagerImpl extends ManagerBase implements AccountManager, M
         long domainId = oldAccount.getDomainId();
 
         long newAccountId = getNewAccountId(domainId, cmd.getAccountName(), cmd.getAccountId());
+        if (newAccountId != user.getAccountId()) {
+            // the user acts under the destination account's role from now on, as if the caller had assigned that account
+            Account newAccount = _accountDao.findById(newAccountId);
+            checkCallerRoleTypeAllowedForUserOrAccountOperations(newAccount, null);
+            checkRoleEscalation(getCurrentCallingAccount(), newAccount);
+        }
 
         return moveUser(user, newAccountId);
     }

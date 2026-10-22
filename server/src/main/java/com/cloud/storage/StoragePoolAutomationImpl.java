@@ -25,6 +25,7 @@ import javax.inject.Inject;
 
 import com.cloud.exception.InsufficientCapacityException;
 import com.cloud.exception.OperationTimedoutException;
+import com.cloud.exception.ResourceAllocationException;
 import com.cloud.exception.ResourceUnavailableException;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreManager;
@@ -209,7 +210,7 @@ public class StoragePoolAutomationImpl implements StoragePoolAutomation {
         }
     }
 
-    private void cancelMigrationWorkloads(List<StoragePoolWorkVO> pendingWork) {
+    void cancelMigrationWorkloads(List<StoragePoolWorkVO> pendingWork) {
         for (StoragePoolWorkVO work : pendingWork) {
             try {
                 VMInstanceVO vmInstance = vmDao.findById(work.getVmId());
@@ -366,6 +367,8 @@ public class StoragePoolAutomationImpl implements StoragePoolAutomation {
      *         // check if the vm has a root volume. If not, remove the item from the queue, the vm should be
      *         // started only when it has at least one root volume attached to it
      *         // don't allow to start vm that doesn't have a root volume
+     * The maintenance's stop ended the VM's running session, so its start begins a new one, which its owner's quota must
+     * allow; a VM whose owner is over quota stays stopped.
      * @param work work item to handle for this VM
      * @param vmInstance VM to start
      * @throws InsufficientCapacityException no migration target found
@@ -375,9 +378,16 @@ public class StoragePoolAutomationImpl implements StoragePoolAutomation {
     private void handleUserVmStart(StoragePoolWorkVO work, VMInstanceVO vmInstance) throws InsufficientCapacityException, ResourceUnavailableException, OperationTimedoutException {
         if (volumeDao.findByInstanceAndType(vmInstance.getId(), Volume.Type.ROOT).isEmpty()) {
             _storagePoolWorkDao.remove(work.getId());
-        } else {
-            handleVmStart(work, vmInstance);
+            return;
         }
+        try {
+            vmMgr.checkQuotaOfSessionStart(vmInstance);
+        } catch (ResourceAllocationException e) {
+            logger.warn("{} stays stopped after the maintenance of its storage pool: {}", vmInstance, e.getMessage());
+            _storagePoolWorkDao.remove(work.getId());
+            return;
+        }
+        handleVmStart(work, vmInstance);
     }
 
     private void addHeartbeatToHostsInPool(List<HostVO> hosts, StoragePool pool, Pair<Map<String, String>, Boolean> nfsMountOpts) {

@@ -78,7 +78,6 @@ import com.cloud.gpu.dao.VgpuProfileDao;
 import com.cloud.host.DetailVO;
 import com.cloud.host.Host;
 import com.cloud.host.HostVO;
-import com.cloud.host.Status;
 import com.cloud.host.dao.HostDao;
 import com.cloud.host.dao.HostDetailsDao;
 import com.cloud.hypervisor.Hypervisor.HypervisorType;
@@ -791,8 +790,7 @@ public class PlacementServiceImpl extends ManagerBase implements PlacementServic
             if (pool == null || pool.getPoolType() != Storage.StoragePoolType.Filesystem || sourceHosts.size() != 1) {
                 return REASON_LOCAL_STORAGE;
             }
-            HostVO source = hostDao.findById(sourceHosts.iterator().next());
-            if (source == null || source.getStatus() != Status.Up) {
+            if (!VolumeOrchestrationService.servesLocalVolumes(hostDao.findById(sourceHosts.iterator().next()))) {
                 return REASON_VOLUMES_UNAVAILABLE;
             }
             if (volume.getPassphraseId() != null || volume.getKmsKeyId() != null) {

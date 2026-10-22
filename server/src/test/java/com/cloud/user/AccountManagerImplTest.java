@@ -16,6 +16,9 @@
 // under the License.
 package com.cloud.user;
 
+import org.apache.cloudstack.api.command.admin.user.MoveUserCmd;
+import com.cloud.utils.db.Transaction;
+import com.cloud.utils.db.TransactionCallbackWithException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.nullable;
 
@@ -2487,5 +2490,78 @@ public class AccountManagerImplTest extends AccountManagentImplTestBase {
         Mockito.lenient().when(accountMock.getState()).thenReturn(Account.State.ENABLED);
         Mockito.when(userVoMock.getSource()).thenReturn(User.Source.OAUTH2);
         accountManagerImpl.validateAndUpdatePasswordChangeRequired(callingUser, UpdateUserCmdMock, userVoMock, accountMock);
+    }
+
+    private MoveUserCmd moveOwnUserInto(Account destination) {
+        String destinationName = destination.getAccountName();
+        MoveUserCmd cmd = Mockito.mock(MoveUserCmd.class);
+        Mockito.when(cmd.getId()).thenReturn(5L);
+        Mockito.when(cmd.getAccountName()).thenReturn(destinationName);
+        UserVO user = Mockito.mock(UserVO.class);
+        Mockito.lenient().when(user.getAccountId()).thenReturn(10L);
+        Mockito.doReturn(user).when(accountManagerImpl).getValidUserVO(5L);
+        AccountVO own = Mockito.mock(AccountVO.class);
+        Mockito.when(own.getDomainId()).thenReturn(1L);
+        Mockito.doReturn(own).when(_accountDao).findById(10L);
+        Mockito.doNothing().when(accountManagerImpl).checkAccountAndAccess(user, own);
+        Mockito.doNothing().when(accountManagerImpl).verifyCallerPrivilegeForUserOrAccountOperations(user);
+        Mockito.doReturn(destination).when(_accountDao).findEnabledAccount(destinationName, 1L);
+        Mockito.lenient().doReturn(callingAccount).when(accountManagerImpl).getCurrentCallingAccount();
+        return cmd;
+    }
+
+    private AccountVO destinationAccount(long id, String name) {
+        AccountVO destination = Mockito.mock(AccountVO.class);
+        Mockito.lenient().when(destination.getId()).thenReturn(id);
+        Mockito.lenient().when(destination.getAccountId()).thenReturn(id);
+        Mockito.lenient().when(destination.getAccountName()).thenReturn(name);
+        Mockito.lenient().when(destination.getDomainId()).thenReturn(1L);
+        Mockito.lenient().doReturn(destination).when(_accountDao).findById(id);
+        return destination;
+    }
+
+    @Test
+    public void moveUserIntoAnAccountWhoseRoleTheCallerLacksIsRefusedBeforeAnyChange() throws Exception {
+        AccountVO admin = destinationAccount(2L, "admin");
+        MoveUserCmd cmd = moveOwnUserInto(admin);
+        Mockito.doNothing().when(accountManagerImpl).checkCallerRoleTypeAllowedForUserOrAccountOperations(admin, null);
+        Mockito.doThrow(new PermissionDeniedException("can not create an account with access to more privileges")).when(accountManagerImpl)
+                .checkRoleEscalation(callingAccount, admin);
+
+        Assert.assertThrows(PermissionDeniedException.class, () -> accountManagerImpl.moveUser(cmd));
+
+        Mockito.verify(userDaoMock, Mockito.never()).persist(Mockito.any(UserVO.class));
+        Mockito.verify(userDaoMock, Mockito.never()).update(Mockito.anyLong(), Mockito.any(UserVO.class));
+    }
+
+    @Test
+    public void moveUserIntoAnAccountOfTheCallersRoleTypeIsRefusedBeforeAnyChange() throws Exception {
+        AccountVO otherAdmin = destinationAccount(2L, "admin");
+        MoveUserCmd cmd = moveOwnUserInto(otherAdmin);
+        Mockito.doThrow(new PermissionDeniedException("not allowed to perform this operation on users from other accounts of the same role type"))
+                .when(accountManagerImpl).checkCallerRoleTypeAllowedForUserOrAccountOperations(otherAdmin, null);
+        Mockito.lenient().doNothing().when(accountManagerImpl).checkRoleEscalation(callingAccount, otherAdmin);
+
+        Assert.assertThrows(PermissionDeniedException.class, () -> accountManagerImpl.moveUser(cmd));
+
+        Mockito.verify(userDaoMock, Mockito.never()).persist(Mockito.any(UserVO.class));
+        Mockito.verify(userDaoMock, Mockito.never()).update(Mockito.anyLong(), Mockito.any(UserVO.class));
+    }
+
+    @Test
+    public void moveUserIntoAnAccountTheCallerMayManageMovesIt() throws Exception {
+        AccountVO student = destinationAccount(20L, "student");
+        MoveUserCmd cmd = moveOwnUserInto(student);
+        Mockito.doNothing().when(accountManagerImpl).checkCallerRoleTypeAllowedForUserOrAccountOperations(student, null);
+        Mockito.doNothing().when(accountManagerImpl).checkRoleEscalation(callingAccount, student);
+        try (MockedStatic<Transaction> transaction = Mockito.mockStatic(Transaction.class)) {
+            transaction.when(() -> Transaction.execute(Mockito.any(TransactionCallbackWithException.class))).thenReturn(true);
+
+            Assert.assertTrue(accountManagerImpl.moveUser(cmd));
+        }
+
+        InOrder order = Mockito.inOrder(accountManagerImpl);
+        order.verify(accountManagerImpl).checkCallerRoleTypeAllowedForUserOrAccountOperations(student, null);
+        order.verify(accountManagerImpl).checkRoleEscalation(callingAccount, student);
     }
 }

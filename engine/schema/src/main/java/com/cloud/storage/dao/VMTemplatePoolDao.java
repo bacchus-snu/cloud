@@ -58,4 +58,10 @@ public interface VMTemplatePoolDao extends GenericDao<VMTemplateStoragePoolVO, L
     List<VMTemplateStoragePoolVO> listByPoolIdAndInstallPath(Long poolId, List<String> pathList);
 
     List<VMTemplateStoragePoolVO> listByTemplateId(long templateId, List<Long> poolIds);
+
+    /**
+     * Asks the lock table, without taking or waiting for the lock, whether the lock {@link #acquireInLockTable} takes
+     * for the reference of this id is held by another thread or management server.
+     */
+    boolean isLockHeldElsewhere(long id);
 }

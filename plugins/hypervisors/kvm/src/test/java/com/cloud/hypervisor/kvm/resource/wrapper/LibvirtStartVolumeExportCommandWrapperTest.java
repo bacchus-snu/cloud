@@ -22,6 +22,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -58,6 +59,7 @@ public class LibvirtStartVolumeExportCommandWrapperTest {
 
     private Path poolDir;
     private Path tlsDir;
+    private Path stateDir;
     private LibvirtComputingResource resource;
     private StartVolumeExportCommand command;
     private FakeProcessRunner runner;
@@ -66,6 +68,7 @@ public class LibvirtStartVolumeExportCommandWrapperTest {
     public void setUp() throws IOException {
         poolDir = folder.newFolder("pool").toPath();
         tlsDir = folder.newFolder("qemu").toPath();
+        stateDir = folder.getRoot().toPath().resolve("state");
         Files.write(poolDir.resolve(VOLUME), new byte[] {1, 2, 3});
         for (String file : Arrays.asList("ca-cert.pem", "server-cert.pem", "server-key.pem")) {
             Files.write(tlsDir.resolve(file), new byte[] {1});
@@ -86,7 +89,7 @@ public class LibvirtStartVolumeExportCommandWrapperTest {
 
     private LibvirtStartVolumeExportCommandWrapper wrapper(Function<List<String>, VolumeFileTransfer.ProcessResult> responder) {
         runner = new FakeProcessRunner(responder);
-        VolumeFileTransfer transfer = new VolumeFileTransfer(runner, tlsDir) {
+        VolumeFileTransfer transfer = new VolumeFileTransfer(runner, tlsDir, stateDir) {
             @Override
             protected boolean isPortFree(String address, int port) {
                 return true;
@@ -115,8 +118,8 @@ public class LibvirtStartVolumeExportCommandWrapperTest {
         assertEquals("10.0.0.11", answer.getAddress());
         assertEquals(10809, answer.getPort());
         List<String> start = runner.find("systemd-run");
-        assertEquals(Arrays.asList("systemd-run", "--unit=cloudstack-volume-export-" + NAME, "--collect", "--service-type=exec",
-                "--property=RuntimeMaxSec=11100", "--",
+        assertEquals(Arrays.asList("systemd-run", "--unit=cloudstack-volume-export-" + NAME, "--slice=volumetransfer.slice", "--collect",
+                "--service-type=exec", "--property=RuntimeMaxSec=11100", "--",
                 "qemu-nbd", "--read-only", "--persistent", "--format=raw", "--export-name=" + NAME,
                 "--object", "tls-creds-x509,id=tls0,endpoint=server,dir=" + tlsDir + ",verify-peer=on",
                 "--object", "{\"qom-type\":\"authz-simple\",\"id\":\"authz0\",\"identity\":\"" + DN + "\"}",
@@ -134,7 +137,7 @@ public class LibvirtStartVolumeExportCommandWrapperTest {
                 return null;
             }
             if (command.get(0).equals("systemctl") && command.get(1).equals("is-active")) {
-                return starts.get() == 1 ? FakeProcessRunner.failed(3, "inactive") : FakeProcessRunner.ok("active");
+                return starts.get() == 1 ? FakeProcessRunner.failed(4, "inactive") : FakeProcessRunner.ok("active");
             }
             if (command.get(0).equals("journalctl")) {
                 return FakeProcessRunner.ok("qemu-nbd: Failed to find an available port: Address already in use");
@@ -151,7 +154,7 @@ public class LibvirtStartVolumeExportCommandWrapperTest {
     public void exportThatEndsForAnotherReasonFails() {
         StartVolumeExportAnswer answer = (StartVolumeExportAnswer)wrapper(command -> {
             if (command.get(0).equals("systemctl") && command.get(1).equals("is-active")) {
-                return FakeProcessRunner.failed(3, "inactive");
+                return FakeProcessRunner.failed(4, "inactive");
             }
             if (command.get(0).equals("journalctl")) {
                 return FakeProcessRunner.ok("qemu-nbd: Failed to get shared \"resize\" lock");
@@ -160,6 +163,20 @@ public class LibvirtStartVolumeExportCommandWrapperTest {
         }).execute(command, resource);
         assertFalse(answer.getResult());
         assertTrue(answer.getDetails(), answer.getDetails().contains("lock"));
+        assertEquals("no other port is tried", 1, runner.commands.stream().filter(c -> c.get(0).equals("systemd-run")).count());
+    }
+
+    @Test
+    public void exportWhoseStateSystemdCannotTellIsNotReadAsEnded() {
+        Answer answer = wrapper(command -> {
+            if (FakeProcessRunner.matches(command, "systemctl", "is-active")) {
+                return FakeProcessRunner.failed(1, "Failed to connect to bus: No such file or directory");
+            }
+            return listening(command, -1);
+        }).execute(command, resource);
+
+        assertFalse(answer.getResult());
+        assertTrue(answer.getDetails(), answer.getDetails().contains("Unable to read the state"));
         assertEquals("no other port is tried", 1, runner.commands.stream().filter(c -> c.get(0).equals("systemd-run")).count());
     }
 
@@ -183,12 +200,30 @@ public class LibvirtStartVolumeExportCommandWrapperTest {
     }
 
     @Test
-    public void stopStopsTheUnitAndToleratesAMissingOne() {
+    public void stopStopsTheExportAndTheHashingAndToleratesMissingOnes() throws IOException {
         FakeProcessRunner stopRunner = new FakeProcessRunner(command -> FakeProcessRunner.failed(5, "Failed to stop x.service: Unit x.service not loaded."));
         LibvirtStopVolumeExportCommandWrapper stop = Mockito.spy(new LibvirtStopVolumeExportCommandWrapper());
-        Mockito.doReturn(new VolumeFileTransfer(stopRunner, tlsDir)).when(stop).getTransfer();
+        Mockito.doReturn(new VolumeFileTransfer(stopRunner, tlsDir, stateDir)).when(stop).getTransfer();
+        Files.createDirectories(stateDir);
+        Files.write(stateDir.resolve("cloudstack-volume-hash-" + NAME + ".result"), "0 1".getBytes(StandardCharsets.UTF_8));
         Answer answer = stop.execute(new StopVolumeExportCommand(NAME), resource);
         assertTrue(answer.getDetails(), answer.getResult());
-        assertEquals(Arrays.asList("systemctl", "stop", "cloudstack-volume-export-" + NAME), stopRunner.commands.get(0));
+        assertEquals(Arrays.asList(Arrays.asList("systemctl", "stop", "cloudstack-volume-export-" + NAME),
+                Arrays.asList("systemctl", "stop", "cloudstack-volume-hash-" + NAME)), stopRunner.commands);
+        assertFalse("the hashing's outcome is forgotten", Files.exists(stateDir.resolve("cloudstack-volume-hash-" + NAME + ".result")));
+    }
+
+    @Test
+    public void exportRefusedWhileTheSliceMayRunOnOtherCpusThanTheHostsOwnProcesses() {
+        Answer answer = wrapper(command -> {
+            if (FakeProcessRunner.matches(command, "systemctl", "show", "AllowedCPUs")) {
+                return FakeProcessRunner.ok(command.contains("system.slice") ? "13 27" : "");
+            }
+            return listening(command, 10809);
+        }).execute(command, resource);
+
+        assertFalse(answer.getResult());
+        assertTrue(answer.getDetails(), answer.getDetails().contains("volumetransfer.slice"));
+        assertTrue("no unit starts", runner.commands.stream().noneMatch(c -> c.get(0).equals("systemd-run")));
     }
 }

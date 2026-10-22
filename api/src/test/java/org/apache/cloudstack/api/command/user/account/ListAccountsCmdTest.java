@@ -163,4 +163,36 @@ public class ListAccountsCmdTest {
         Assert.assertEquals("remainingstoragequota", ApiConstants.REMAINING_STORAGE_QUOTA);
         Assert.assertEquals("4.23.0.100", field.getAnnotation(Param.class).since());
     }
+
+    @Test
+    public void storageQuotaCombinedComesWithTheRemainingStorageQuota() {
+        ListAccountsCmd cmd = new ListAccountsCmd();
+        cmd._resourceLimitService = resourceLimitService;
+        cmd._accountService = accountService;
+        Account combined = Mockito.mock(Account.class);
+        Account separate = Mockito.mock(Account.class);
+        Mockito.when(accountService.getAccountByUuid("a-1")).thenReturn(combined);
+        Mockito.when(accountService.getAccountByUuid("a-2")).thenReturn(separate);
+        Mockito.when(resourceLimitService.isStorageQuotaCombined(combined)).thenReturn(true);
+        Mockito.when(resourceLimitService.isStorageQuotaCombined(separate)).thenReturn(false);
+        AccountResponse first = accountResponse("a-1");
+        AccountResponse second = accountResponse("a-2");
+
+        cmd.updateAccountResponse(List.of(first, second));
+        Assert.assertNull("not asked for", first.getStorageQuotaCombined());
+        Mockito.verify(resourceLimitService, Mockito.never()).isStorageQuotaCombined(Mockito.any());
+
+        ReflectionTestUtils.setField(cmd, "viewDetails", List.of("storagequota"));
+        cmd.updateAccountResponse(List.of(first, second));
+        Assert.assertEquals(Boolean.TRUE, first.getStorageQuotaCombined());
+        Assert.assertEquals(Boolean.FALSE, second.getStorageQuotaCombined());
+    }
+
+    @Test
+    public void storageQuotaCombinedIsAFieldOfTheAccountResponse() throws NoSuchFieldException {
+        Field field = AccountResponse.class.getDeclaredField("storageQuotaCombined");
+        Assert.assertEquals("storagequotacombined", field.getAnnotation(SerializedName.class).value());
+        Assert.assertEquals(ApiConstants.STORAGE_QUOTA_COMBINED, field.getAnnotation(SerializedName.class).value());
+        Assert.assertEquals("4.23.0.100", field.getAnnotation(Param.class).since());
+    }
 }

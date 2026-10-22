@@ -45,6 +45,7 @@ import com.cloud.offerings.dao.NetworkOfferingDao;
 import com.cloud.service.ServiceOfferingVO;
 import com.cloud.service.dao.ServiceOfferingDao;
 import com.cloud.storage.VMTemplateVO;
+import com.cloud.storage.VolumeApiService;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.VMTemplateDao;
 import com.cloud.storage.dao.VolumeDao;
@@ -126,6 +127,8 @@ public class UserVmManagerTest {
     private VirtualMachineManager _itMgr;
     @Mock
     private VolumeOrchestrationService _storageMgr;
+    @Mock
+    private VolumeApiService _volumeService;
     @Mock
     private Account _account;
     @Mock

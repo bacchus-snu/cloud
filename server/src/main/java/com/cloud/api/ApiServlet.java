@@ -50,6 +50,8 @@ import org.apache.cloudstack.api.auth.APIAuthenticator;
 import org.apache.cloudstack.api.command.user.consoleproxy.CreateConsoleEndpointCmd;
 import org.apache.cloudstack.api.command.user.gui.theme.ListGuiThemesCmd;
 import org.apache.cloudstack.context.CallContext;
+import org.apache.cloudstack.framework.config.ConfigDepot;
+import org.apache.cloudstack.framework.config.EncryptedSettingParameters;
 import org.apache.cloudstack.managed.context.ManagedContext;
 import org.apache.cloudstack.utils.consoleproxy.ConsoleAccessUtils;
 import org.apache.commons.collections.MapUtils;
@@ -130,6 +132,8 @@ public class ApiServlet extends HttpServlet {
     APIAuthenticationManager authManager;
     @Inject
     private ProjectDao projectDao;
+    @Inject
+    ConfigDepot configDepot;
 
     public ApiServlet() {
     }
@@ -236,12 +240,13 @@ public class ApiServlet extends HttpServlet {
 
         // logging the request start and end in management log for easy debugging
         String reqStr = "";
-        String cleanQueryString = StringUtils.cleanString(req.getQueryString());
+        Set<String> maskedParams = encryptedSettingValueParams(reqParams);
+        String cleanQueryString = cleanQueryString(req.getQueryString(), maskedParams);
         if (LOGGER.isDebugEnabled()) {
             reqStr = auditTrailSb.toString() + " " + cleanQueryString;
             if (req.getMethod().equalsIgnoreCase("POST") && org.apache.commons.lang3.StringUtils.isNotBlank(command)) {
                 if (!POST_REQUESTS_TO_DISABLE_LOGGING.contains(command.toLowerCase()) && !reqParams.containsKey(ApiConstants.USER_DATA)) {
-                    String cleanParamsString = getCleanParamsString(reqParams);
+                    String cleanParamsString = getCleanParamsString(reqParams, maskedParams);
                     if (org.apache.commons.lang3.StringUtils.isNotBlank(cleanParamsString)) {
                         reqStr += "\n" + cleanParamsString;
                     }
@@ -763,7 +768,21 @@ public class ApiServlet extends HttpServlet {
         return null;
     }
 
-    private String getCleanParamsString(Map<String, String[]> reqParams) {
+    /**
+     * The parameters of a request that carry the value of a setting stored encrypted; their values are never logged.
+     */
+    protected Set<String> encryptedSettingValueParams(Map<String, String[]> params) {
+        return EncryptedSettingParameters.in(params, name -> configDepot != null && configDepot.isEncryptedSetting(name));
+    }
+
+    /**
+     * @return the query string as it may be logged: without credentials, and with the given parameters' values masked
+     */
+    static String cleanQueryString(String queryString, Set<String> maskedParams) {
+        return EncryptedSettingParameters.maskQueryString(StringUtils.cleanString(queryString), maskedParams);
+    }
+
+    protected String getCleanParamsString(Map<String, String[]> reqParams, Set<String> maskedParams) {
         if (MapUtils.isEmpty(reqParams)) {
             return "";
         }
@@ -787,6 +806,11 @@ public class ApiServlet extends HttpServlet {
 
             if (reqParam.getValue() == null || reqParam.getValue().length == 0) {
                 cleanParamsString.append("\n");
+                continue;
+            }
+
+            if (maskedParams != null && maskedParams.contains(reqParam.getKey())) {
+                cleanParamsString.append(EncryptedSettingParameters.MASK).append("\n");
                 continue;
             }
 

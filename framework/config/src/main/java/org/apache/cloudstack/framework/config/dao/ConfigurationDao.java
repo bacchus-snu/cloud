@@ -70,4 +70,9 @@ public interface ConfigurationDao extends GenericDao<ConfigurationVO, String> {
     void invalidateCache();
 
     List<ConfigurationVO> searchPartialConfigurations();
+
+    /**
+     * @return the names of the stored settings whose values are stored encrypted (category Secure or Hidden)
+     */
+    List<String> listEncryptedSettingNames();
 }

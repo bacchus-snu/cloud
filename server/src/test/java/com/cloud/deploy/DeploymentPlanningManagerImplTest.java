@@ -796,6 +796,20 @@ public class DeploymentPlanningManagerImplTest {
     }
 
     @Test
+    public void lastHostOffersFromItsReservedCapacityOnlyWhatTheVmOwns() {
+        HostVO lastHost = new HostVO("last");
+        ServiceOfferingVO poolOffering = new ServiceOfferingVO("pool", 4, 1024, 2000, 1, 1, false, "vm", false, Type.User, false);
+        Mockito.when(capacityMgr.checkIfHostHasCpuCapability(lastHost, 4, 2000)).thenReturn(true);
+        Mockito.when(capacityMgr.checkIfHostHasCapacity(lastHost, 8000, 1L << 30, true, 1f, 1f, true, instanceId)).thenReturn(true);
+        Mockito.when(capacityMgr.checkIfHostHasPoolCoresFor(lastHost, 4, instanceId)).thenReturn(true);
+
+        assertTrue(_dpm.lastHostHasCapacity(lastHost, poolOffering, instanceId, 8000, 1L << 30, 1f, 1f));
+
+        Mockito.verify(capacityMgr).checkIfHostHasCapacity(lastHost, 8000, 1L << 30, true, 1f, 1f, true, instanceId);
+        Mockito.verify(capacityMgr, Mockito.never()).checkIfHostHasCapacity(lastHost, 8000, 1L << 30, true, 1f, 1f, true);
+    }
+
+    @Test
     public void passEncRootPlannerHostSupportingEncryptionTest() throws Exception {
         HostVO host = Mockito.spy(new HostVO("host"));
         Map<String, String> hostDetails = new HashMap<>() {{
@@ -1439,7 +1453,8 @@ public class DeploymentPlanningManagerImplTest {
             for (boolean fromReserved : new boolean[] {true, false}) {
                 for (boolean fromFree : new boolean[] {true, false}) {
                     Mockito.when(capacityMgr.checkIfHostHasCapacity(ArgumentMatchers.eq(host), ArgumentMatchers.anyInt(), ArgumentMatchers.anyLong(),
-                            ArgumentMatchers.eq(true), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyBoolean())).thenReturn(fromReserved);
+                            ArgumentMatchers.eq(true), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyBoolean(),
+                            ArgumentMatchers.anyLong())).thenReturn(fromReserved);
                     Mockito.when(capacityMgr.checkIfHostHasCapacity(ArgumentMatchers.eq(host), ArgumentMatchers.anyInt(), ArgumentMatchers.anyLong(),
                             ArgumentMatchers.eq(false), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyBoolean())).thenReturn(fromFree);
 

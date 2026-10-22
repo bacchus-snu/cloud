@@ -30,14 +30,14 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -47,10 +47,11 @@ import javax.naming.ldap.LdapName;
 import javax.naming.ldap.Rdn;
 import javax.security.auth.x500.X500Principal;
 
-import org.apache.commons.codec.binary.Hex;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import com.cloud.agent.api.storage.CheckVolumeFileTransferAnswer;
+import com.cloud.agent.api.storage.CheckVolumeFileTransferCommand;
 import com.cloud.utils.exception.CloudRuntimeException;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -59,28 +60,59 @@ import com.google.gson.JsonParser;
 /**
  * Host side of a byte-for-byte volume file copy between the local pools of two hosts. The owning host
  * serves the file read-only with qemu-nbd over TLS to exactly one client certificate; the other host
- * pulls it with qemu-img. Both run as transient systemd units named after the transfer, so they are
- * bounded in time and can be stopped by name.
+ * pulls it with qemu-img. Every long-running step (the export, the pull with its read-back, the hashing
+ * of a file) runs as a transient systemd unit named after the transfer, in the transfer slice, so that it is
+ * bounded in time, can be stopped by name, yields to the host's guests and holds no request of the agent while
+ * it runs. A unit records its outcome in a state file that outlives it.
  */
 public class VolumeFileTransfer {
     protected Logger logger = LogManager.getLogger(getClass());
 
     public static final String QEMU_TLS_DIR = "/etc/pki/qemu";
+    public static final String STATE_DIR = "/run/cloudstack-volume-transfer";
     public static final String PART_SUFFIX = ".part";
     static final String EXPORT_UNIT_PREFIX = "cloudstack-volume-export-";
     static final String COPY_UNIT_PREFIX = "cloudstack-volume-copy-";
+    static final String HASH_UNIT_PREFIX = "cloudstack-volume-hash-";
+    static final String RESULT_SUFFIX = ".result";
+    static final String STARTED_SUFFIX = ".started";
+    /**
+     * The slice every transfer unit runs in. It sits at the top level, so that its low CPU and I/O weights compete with
+     * the guests' slice rather than only with the host's own processes, and it is confined to the same CPUs as
+     * system.slice; the agent package ships its unit file.
+     */
+    public static final String TRANSFER_SLICE = "volumetransfer.slice";
+    static final String HOST_SLICE = "system.slice";
+    /**
+     * Runs the pull given as its remaining arguments, makes the partial file durable, drops it from the page cache and
+     * records the SHA-256 of the bytes read back from the disk, up to the expected length, with the file's length.
+     */
+    public static final String PULL_SCRIPT = "set -e; part=$1; length=$2; result=$3; shift 3; \"$@\"; sync \"$part\"; "
+            + "dd if=\"$part\" iflag=nocache count=0 status=none; sum=$(head -c \"$length\" \"$part\" | sha256sum); "
+            + "printf '%s %s\\n' \"${sum%% *}\" \"$(stat -c %s \"$part\")\" > \"$result.tmp\"; mv \"$result.tmp\" \"$result\"";
+    /** Records the SHA-256 and the length of a file. */
+    public static final String HASH_SCRIPT = "set -e; file=$1; result=$2; sum=$(sha256sum < \"$file\"); "
+            + "printf '%s %s\\n' \"${sum%% *}\" \"$(stat -c %s \"$file\")\" > \"$result.tmp\"; mv \"$result.tmp\" \"$result\"";
+    private static final List<String> RUNNING_STATES = Arrays.asList("active", "activating", "deactivating", "reloading", "refreshing");
+    private static final List<String> ENDED_STATES = Arrays.asList("inactive", "failed", "unknown", "");
+    /** systemctl is-active exits with 0 for an active unit and 3 for any other state of a loaded unit. */
+    private static final int IS_ACTIVE_NOT_ACTIVE = 3;
+    /** systemctl is-active exits with 4 for a unit systemd does not hold, such as an ended unit it collected. */
+    private static final int IS_ACTIVE_NO_SUCH_UNIT = 4;
     static final int FIRST_EXPORT_PORT = 10809;
     static final int EXPORT_PORTS = 64;
     static final long COMMAND_TIMEOUT_MS = 120_000L;
     static final long EXPORT_READY_TIMEOUT_MS = 30_000L;
     static final long EXPORT_READY_POLL_MS = 250L;
-    private static final long UNIT_GRACE_SECONDS = 60L;
     private static final Pattern NAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,127}");
     private static final Pattern ADDRESS = Pattern.compile("[A-Za-z0-9.:-]{1,255}");
+    private static final Pattern SHA256 = Pattern.compile("[0-9a-f]{64}");
     private static final List<String> SERVER_CREDENTIALS = Arrays.asList("ca-cert.pem", "server-cert.pem", "server-key.pem");
     private static final List<String> CLIENT_CREDENTIALS = Arrays.asList("ca-cert.pem", "client-cert.pem", "client-key.pem");
     private static final int OUTPUT_LIMIT = 64 * 1024;
     private static final int SECTOR = 512;
+    /** QEMU aligns requests without the page cache to the device's logical block size, which it caps at this. */
+    private static final int MAX_BLOCK = 4096;
     private static final List<String> FORMATS = Arrays.asList("qcow2", "raw");
     private static final byte[] QCOW2_MAGIC = {'Q', 'F', 'I', (byte)0xfb};
 
@@ -120,16 +152,14 @@ public class VolumeFileTransfer {
         private final String format;
         private final long virtualSize;
         private final long length;
-        private final String sha256;
         private final String backingFile;
         private final String backingFormat;
         private final int chainDepth;
 
-        Inspection(String format, long virtualSize, long length, String sha256, String backingFile, String backingFormat, int chainDepth) {
+        Inspection(String format, long virtualSize, long length, String backingFile, String backingFormat, int chainDepth) {
             this.format = format;
             this.virtualSize = virtualSize;
             this.length = length;
-            this.sha256 = sha256;
             this.backingFile = backingFile;
             this.backingFormat = backingFormat;
             this.chainDepth = chainDepth;
@@ -147,10 +177,6 @@ public class VolumeFileTransfer {
             return length;
         }
 
-        public String getSha256() {
-            return sha256;
-        }
-
         public String getBackingFile() {
             return backingFile;
         }
@@ -164,16 +190,49 @@ public class VolumeFileTransfer {
         }
     }
 
-    private final ProcessRunner runner;
-    private final Path tlsDir;
+    /** What a unit of a transfer has come to: still running, or ended with the hash and length it recorded, or without them. */
+    public static final class Outcome {
+        private final CheckVolumeFileTransferAnswer.State state;
+        private final String sha256;
+        private final long length;
+        private final String details;
 
-    public VolumeFileTransfer() {
-        this(new SystemProcessRunner(), Paths.get(QEMU_TLS_DIR));
+        Outcome(CheckVolumeFileTransferAnswer.State state, String sha256, long length, String details) {
+            this.state = state;
+            this.sha256 = sha256;
+            this.length = length;
+            this.details = details;
+        }
+
+        public CheckVolumeFileTransferAnswer.State getState() {
+            return state;
+        }
+
+        public String getSha256() {
+            return sha256;
+        }
+
+        public long getLength() {
+            return length;
+        }
+
+        public String getDetails() {
+            return details;
+        }
     }
 
-    public VolumeFileTransfer(ProcessRunner runner, Path tlsDir) {
+    private final ProcessRunner runner;
+    private final Path tlsDir;
+    private final Path stateDir;
+
+    public VolumeFileTransfer() {
+        this(new SystemProcessRunner(), Paths.get(QEMU_TLS_DIR), Paths.get(STATE_DIR));
+    }
+
+    public VolumeFileTransfer(ProcessRunner runner, Path tlsDir, Path stateDir) {
         this.runner = runner;
         this.tlsDir = tlsDir;
+        this.stateDir = stateDir;
     }
 
     /**
@@ -235,27 +294,10 @@ public class VolumeFileTransfer {
         }
     }
 
-    public static String sha256(Path file) throws IOException {
-        MessageDigest digest;
-        try {
-            digest = MessageDigest.getInstance("SHA-256");
-        } catch (NoSuchAlgorithmException e) {
-            throw new CloudRuntimeException(e);
-        }
-        ByteBuffer buffer = ByteBuffer.allocateDirect(4 * 1024 * 1024);
-        try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
-            while (channel.read(buffer) >= 0) {
-                buffer.flip();
-                digest.update(buffer);
-                buffer.clear();
-            }
-        }
-        return Hex.encodeHexString(digest.digest());
-    }
-
     /**
      * Refuses a file another process has open for writing or that is not of its recorded format, then reports its
-     * format, sizes, backing chain and hash. The format is never probed from the file's contents.
+     * format, sizes and backing chain. The format is never probed from the file's contents. Reads no data beyond the
+     * image's metadata, so it ends quickly; {@link #startHash} hashes the file.
      */
     public Inspection inspect(Path file, String format) throws IOException {
         if (!FORMATS.contains(format)) {
@@ -287,7 +329,7 @@ public class VolumeFileTransfer {
             backing = top.get("backing-filename").getAsString();
         }
         String backingFormat = top.has("backing-filename-format") ? top.get("backing-filename-format").getAsString() : null;
-        return new Inspection(top.get("format").getAsString(), top.get("virtual-size").getAsLong(), Files.size(file), sha256(file), backing, backingFormat,
+        return new Inspection(top.get("format").getAsString(), top.get("virtual-size").getAsLong(), Files.size(file), backing, backingFormat,
                 chain.size() - 1);
     }
 
@@ -302,13 +344,13 @@ public class VolumeFileTransfer {
     }
 
     /**
-     * An NBD export of a file is a whole number of 512-byte sectors, so a file whose length is not a multiple of 512
-     * arrives padded with zeros; the padding is dropped so that the copy has the file's own length.
+     * A file whose length is not a multiple of the transfer's I/O unit arrives padded with zeros: an NBD export is a whole
+     * number of 512-byte sectors, and writes that bypass the page cache cover whole logical blocks of the destination
+     * device, at most {@link #MAX_BLOCK} bytes. Only such padding is dropped, so that the copy has the file's own length.
      */
     private static void dropSectorPadding(Path part, long expectedLength) throws IOException {
         long length = Files.size(part);
-        long padded = (expectedLength + SECTOR - 1) / SECTOR * SECTOR;
-        if (length == expectedLength || length != padded) {
+        if (length == expectedLength || (length != roundUp(expectedLength, SECTOR) && length != roundUp(expectedLength, MAX_BLOCK))) {
             return;
         }
         try (FileChannel channel = FileChannel.open(part, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
@@ -324,6 +366,10 @@ public class VolumeFileTransfer {
             }
             channel.truncate(expectedLength);
         }
+    }
+
+    private static long roundUp(long length, int unit) {
+        return (length + unit - 1) / unit * unit;
     }
 
     /**
@@ -344,6 +390,7 @@ public class VolumeFileTransfer {
         }
         String unit = EXPORT_UNIT_PREFIX + name;
         stopUnit(unit);
+        requireConfinedSlice();
         JsonObject authz = new JsonObject();
         authz.addProperty("qom-type", "authz-simple");
         authz.addProperty("id", "authz0");
@@ -354,12 +401,11 @@ public class VolumeFileTransfer {
                 continue;
             }
             long since = System.currentTimeMillis() / 1000;
-            List<String> command = new ArrayList<>(Arrays.asList("systemd-run", "--unit=" + unit, "--collect", "--service-type=exec",
-                    "--property=RuntimeMaxSec=" + lifetimeSeconds, "--",
+            List<String> command = unitCommand(unit, lifetimeSeconds,
                     "qemu-nbd", "--read-only", "--persistent", "--format=raw", "--export-name=" + name,
                     "--object", "tls-creds-x509,id=tls0,endpoint=server,dir=" + tlsDir + ",verify-peer=on",
                     "--object", authz.toString(),
-                    "--tls-creds=tls0", "--tls-authz=authz0", "--bind=" + address, "--port=" + port, file.toString()));
+                    "--tls-creds=tls0", "--tls-authz=authz0", "--bind=" + address, "--port=" + port, file.toString());
             ProcessResult started = run(command, COMMAND_TIMEOUT_MS);
             if (!started.succeeded()) {
                 throw new CloudRuntimeException(String.format("Unable to start the export of %s: %s", file, started.getOutput().trim()));
@@ -387,9 +433,7 @@ public class VolumeFileTransfer {
             if (listening.succeeded() && !listening.getOutput().trim().isEmpty()) {
                 return null;
             }
-            ProcessResult state = run(Arrays.asList("systemctl", "is-active", unit), COMMAND_TIMEOUT_MS);
-            String unitState = state.getOutput().trim();
-            if (!"active".equals(unitState) && !"activating".equals(unitState)) {
+            if (!isRunning(unit)) {
                 ProcessResult journal = run(Arrays.asList("journalctl", "--no-pager", "-o", "cat", "-n", "20", "-u", unit, "--since=@" + sinceEpochSeconds),
                         COMMAND_TIMEOUT_MS);
                 return "the export ended: " + journal.getOutput();
@@ -420,8 +464,194 @@ public class VolumeFileTransfer {
         }
     }
 
-    public void stopExport(String name) {
+    /**
+     * Stops the export and the hashing of the given name and forgets the hashing's outcome.
+     */
+    public void stopExport(String name) throws IOException {
         stopUnit(EXPORT_UNIT_PREFIX + checkName(name));
+        String hash = HASH_UNIT_PREFIX + name;
+        stopUnit(hash);
+        clearState(hash);
+    }
+
+    /**
+     * The command that starts the given program as a transient unit of the given name in the transfer slice, ended after
+     * {@code lifetimeSeconds}; it returns once the program runs.
+     */
+    static List<String> unitCommand(String unit, int lifetimeSeconds, String... program) {
+        List<String> command = new ArrayList<>(Arrays.asList("systemd-run", "--unit=" + unit, "--slice=" + TRANSFER_SLICE, "--collect",
+                "--service-type=exec", "--property=RuntimeMaxSec=" + lifetimeSeconds, "--"));
+        command.addAll(Arrays.asList(program));
+        return command;
+    }
+
+    /**
+     * Refuses to start a transfer unit unless the transfer slice may use exactly the CPUs the host's own processes may
+     * use, so that a transfer never runs on CPUs given to guests, whatever was installed or configured first.
+     */
+    void requireConfinedSlice() {
+        Set<Integer> slice = allowedCpus(TRANSFER_SLICE);
+        Set<Integer> host = allowedCpus(HOST_SLICE);
+        if (!slice.equals(host)) {
+            throw new CloudRuntimeException(String.format("%s may use CPUs %s, but the host's own processes in %s use %s; volume transfers are refused "
+                    + "until %s is confined like %s.", TRANSFER_SLICE, slice, HOST_SLICE, host, TRANSFER_SLICE, HOST_SLICE));
+        }
+    }
+
+    /**
+     * @return the CPUs the unit is confined to; empty when it is not confined
+     */
+    private Set<Integer> allowedCpus(String unit) {
+        ProcessResult shown = run(Arrays.asList("systemctl", "show", "-p", "AllowedCPUs", "--value", unit), COMMAND_TIMEOUT_MS);
+        if (!shown.succeeded()) {
+            throw new CloudRuntimeException(String.format("Unable to read the CPUs of %s: %s", unit, shown.getOutput().trim()));
+        }
+        Set<Integer> cpus = new TreeSet<>();
+        for (String range : shown.getOutput().trim().split("[\\s,]+")) {
+            if (range.isEmpty()) {
+                continue;
+            }
+            String[] ends = range.split("-");
+            try {
+                for (int cpu = Integer.parseInt(ends[0]); cpu <= Integer.parseInt(ends[ends.length - 1]); cpu++) {
+                    cpus.add(cpu);
+                }
+            } catch (NumberFormatException e) {
+                throw new CloudRuntimeException(String.format("Unable to read the CPUs of %s: %s", unit, shown.getOutput().trim()), e);
+            }
+        }
+        return cpus;
+    }
+
+    private Path stateFile(String unit, String suffix) {
+        return stateDir.resolve(unit + suffix);
+    }
+
+    private void clearState(String unit) throws IOException {
+        Files.deleteIfExists(stateFile(unit, RESULT_SUFFIX));
+        Files.deleteIfExists(stateFile(unit, RESULT_SUFFIX + ".tmp"));
+        Files.deleteIfExists(stateFile(unit, STARTED_SUFFIX));
+    }
+
+    /**
+     * Starts a unit that records its outcome in its state file; any earlier unit of the name and its outcome are gone first.
+     */
+    private void startUnit(String unit, int lifetimeSeconds, List<String> program) throws IOException {
+        stopUnit(unit);
+        requireConfinedSlice();
+        Files.createDirectories(stateDir);
+        clearState(unit);
+        Files.write(stateFile(unit, STARTED_SUFFIX), String.valueOf(System.currentTimeMillis() / 1000).getBytes(StandardCharsets.UTF_8));
+        ProcessResult started = run(unitCommand(unit, lifetimeSeconds, program.toArray(new String[0])), COMMAND_TIMEOUT_MS);
+        if (!started.succeeded()) {
+            throw new CloudRuntimeException(String.format("Unable to start %s: %s", unit, started.getOutput().trim()));
+        }
+    }
+
+    /**
+     * Starts hashing {@code file} as the unit of the given name; {@link #check} reports the hash and the length it read.
+     */
+    public void startHash(String name, Path file, int lifetimeSeconds) throws IOException {
+        checkName(name);
+        if (!Files.isRegularFile(file)) {
+            throw new CloudRuntimeException(String.format("Volume file %s does not exist.", file));
+        }
+        String unit = HASH_UNIT_PREFIX + name;
+        startUnit(unit, lifetimeSeconds, Arrays.asList("sh", "-c", HASH_SCRIPT, "sh", file.toString(), stateFile(unit, RESULT_SUFFIX).toString()));
+        logger.info("Hashing {} as {}", file, unit);
+    }
+
+    /**
+     * Starts pulling an export into {@code file}.part as the unit of the given export name, which then makes the part
+     * durable, drops it from the page cache and hashes what it reads back; {@link #check} follows it and
+     * {@link #finishPull} puts the file in place. A {@code file} that already exists is not pulled again: when it has
+     * the expected length its bytes are hashed instead, so that {@link #finishPull} can tell whether it is the copy.
+     */
+    public void startPull(String sourceAddress, int sourcePort, String exportName, Path file, long expectedLength, int lifetimeSeconds) throws IOException {
+        checkName(exportName);
+        checkAddress(sourceAddress);
+        requireCredentials(false);
+        String unit = COPY_UNIT_PREFIX + exportName;
+        String result = stateFile(unit, RESULT_SUFFIX).toString();
+        if (Files.exists(file)) {
+            if (Files.size(file) != expectedLength) {
+                throw new CloudRuntimeException(String.format("Destination file %s already exists.", file));
+            }
+            startUnit(unit, lifetimeSeconds, Arrays.asList("sh", "-c", HASH_SCRIPT, "sh", file.toString(), result));
+            logger.info("{} already exists; hashing it as {}", file, unit);
+            return;
+        }
+        Path part = Paths.get(file + PART_SUFFIX);
+        stopUnit(unit);
+        Files.deleteIfExists(part);
+        startUnit(unit, lifetimeSeconds, Arrays.asList("sh", "-c", PULL_SCRIPT, "sh", part.toString(), String.valueOf(expectedLength), result,
+                "qemu-img", "convert", "-p", "-t", "none", "-O", "raw",
+                "--object", "tls-creds-x509,id=tls0,endpoint=client,dir=" + tlsDir,
+                "--image-opts", String.format("driver=raw,file.driver=nbd,file.host=%s,file.port=%d,file.export=%s,file.tls-creds=tls0",
+                        sourceAddress, sourcePort, exportName),
+                part.toString()));
+        logger.info("Pulling {} from {}:{} into {} as {}", exportName, sourceAddress, sourcePort, part, unit);
+    }
+
+    /**
+     * @return whether the pull or the hashing of the given name still runs, or what it recorded when it ended
+     */
+    public Outcome check(CheckVolumeFileTransferCommand.Kind kind, String name) throws IOException {
+        String unit = (kind == CheckVolumeFileTransferCommand.Kind.PULL ? COPY_UNIT_PREFIX : HASH_UNIT_PREFIX) + checkName(name);
+        if (isRunning(unit)) {
+            return new Outcome(CheckVolumeFileTransferAnswer.State.RUNNING, null, 0, null);
+        }
+        Outcome recorded = readOutcome(unit);
+        if (recorded != null) {
+            return recorded;
+        }
+        return new Outcome(CheckVolumeFileTransferAnswer.State.FAILED, null, 0, String.format("%s ended without completing: %s", unit, tail(unitLog(unit))));
+    }
+
+    /**
+     * Only a state systemctl reports is an answer; any other outcome, such as a lost connection to systemd, says
+     * nothing about the unit.
+     */
+    private boolean isRunning(String unit) {
+        ProcessResult state = run(Arrays.asList("systemctl", "is-active", unit), COMMAND_TIMEOUT_MS);
+        String output = state.getOutput().trim();
+        if (!state.isTimedOut()) {
+            if ((state.getExitCode() == 0 || state.getExitCode() == IS_ACTIVE_NOT_ACTIVE) && RUNNING_STATES.contains(output)) {
+                return true;
+            }
+            if ((state.getExitCode() == IS_ACTIVE_NOT_ACTIVE || state.getExitCode() == IS_ACTIVE_NO_SUCH_UNIT) && ENDED_STATES.contains(output)) {
+                return false;
+            }
+        }
+        throw new CloudRuntimeException(String.format("Unable to read the state of %s: %s", unit, state.isTimedOut() ? "systemctl timed out" : tail(output)));
+    }
+
+    /**
+     * @return the hash and length the unit recorded, or null when it recorded none
+     */
+    private Outcome readOutcome(String unit) throws IOException {
+        Path result = stateFile(unit, RESULT_SUFFIX);
+        if (!Files.isRegularFile(result)) {
+            return null;
+        }
+        String[] fields = new String(Files.readAllBytes(result), StandardCharsets.UTF_8).trim().split("\\s+");
+        if (fields.length != 2 || !SHA256.matcher(fields[0]).matches()) {
+            return null;
+        }
+        try {
+            return new Outcome(CheckVolumeFileTransferAnswer.State.SUCCEEDED, fields[0], Long.parseLong(fields[1]), null);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private String unitLog(String unit) throws IOException {
+        Path started = stateFile(unit, STARTED_SUFFIX);
+        List<String> command = new ArrayList<>(Arrays.asList("journalctl", "--no-pager", "-o", "cat", "-n", "20", "-u", unit));
+        if (Files.isRegularFile(started)) {
+            command.add("--since=@" + new String(Files.readAllBytes(started), StandardCharsets.UTF_8).trim());
+        }
+        return run(command, COMMAND_TIMEOUT_MS).getOutput();
     }
 
     private void stopUnit(String unit) {
@@ -432,70 +662,53 @@ public class VolumeFileTransfer {
     }
 
     /**
-     * Pulls an export into {@code file} through {@code file}.part. The part is synced, dropped from the page
-     * cache and read back; only when its length and SHA-256 match does it take the file's name. A qcow2 file
-     * that had a backing file is then pointed at {@code backing}, of {@code backingFormat}, without touching its data,
-     * and checked.
-     * An existing file is never overwritten; one that already holds exactly the expected bytes counts as copied.
+     * Puts the file pulled by the ended unit of the given export name in place: only when the length and the SHA-256 it
+     * read back match does {@code file}.part take the file's name; a qcow2 file that had a backing file is then pointed
+     * at {@code backing}, of {@code backingFormat}, without touching its data, and checked. An existing file is never
+     * overwritten; one that the unit found to hold exactly the expected bytes counts as copied. Reads no data itself.
      *
      * @return the SHA-256 of the bytes read back
      */
-    public String pull(String sourceAddress, int sourcePort, String exportName, Path file, String format, long expectedLength,
-            String expectedSha256, Path backing, String backingFormat, int timeoutSeconds) throws IOException {
+    public String finishPull(String exportName, Path file, String format, long expectedLength, String expectedSha256, Path backing, String backingFormat)
+            throws IOException {
         checkName(exportName);
-        checkAddress(sourceAddress);
         if (backing != null && !FORMATS.contains(backingFormat)) {
             throw new CloudRuntimeException(String.format("Only qcow2 and raw base files are referenced, not %s.", backingFormat));
         }
-        requireCredentials(false);
-        Path part = Paths.get(file + PART_SUFFIX);
-        if (Files.exists(file)) {
-            if (backing == null && Files.size(file) == expectedLength && expectedSha256.equalsIgnoreCase(sha256(file))) {
-                logger.info("{} already holds the expected bytes", file);
-                return expectedSha256;
-            }
-            throw new CloudRuntimeException(String.format("Destination file %s already exists.", file));
-        }
-        if (backing != null && !Files.isRegularFile(backing)) {
-            throw new CloudRuntimeException(String.format("Base file %s is not on the destination pool.", backing));
-        }
         String unit = COPY_UNIT_PREFIX + exportName;
-        stopUnit(unit);
-        Files.deleteIfExists(part);
-        long since = System.currentTimeMillis() / 1000;
+        if (isRunning(unit)) {
+            throw new CloudRuntimeException(String.format("The pull into %s still runs.", file));
+        }
+        Path part = Paths.get(file + PART_SUFFIX);
         try {
-            List<String> command = Arrays.asList("systemd-run", "--unit=" + unit, "--collect", "--wait", "--service-type=exec",
-                    "--property=RuntimeMaxSec=" + timeoutSeconds, "--",
-                    "qemu-img", "convert", "-p", "-O", "raw",
-                    "--object", "tls-creds-x509,id=tls0,endpoint=client,dir=" + tlsDir,
-                    "--image-opts", String.format("driver=raw,file.driver=nbd,file.host=%s,file.port=%d,file.export=%s,file.tls-creds=tls0",
-                            sourceAddress, sourcePort, exportName),
-                    part.toString());
-            ProcessResult copied = run(command, TimeUnit.SECONDS.toMillis(timeoutSeconds + UNIT_GRACE_SECONDS));
-            if (copied.isTimedOut()) {
-                stopUnit(unit);
-                throw new CloudRuntimeException(String.format("Copy into %s did not finish within %d seconds.", file, timeoutSeconds));
+            Outcome pulled = readOutcome(unit);
+            if (pulled == null) {
+                throw new CloudRuntimeException(String.format("The pull into %s did not complete: %s", file, tail(unitLog(unit))));
             }
-            if (copied.getExitCode() != 0) {
-                ProcessResult journal = run(Arrays.asList("journalctl", "--no-pager", "-o", "cat", "-n", "20", "-u", unit, "--since=@" + since),
-                        COMMAND_TIMEOUT_MS);
-                throw new CloudRuntimeException(String.format("Copy into %s failed: %s %s", file, tail(copied.getOutput()), tail(journal.getOutput())));
+            if (Files.exists(file) && !Files.exists(part)) {
+                if (backing == null && pulled.getLength() == expectedLength && expectedSha256.equalsIgnoreCase(pulled.getSha256())) {
+                    logger.info("{} already holds the expected bytes", file);
+                    return pulled.getSha256();
+                }
+                throw new CloudRuntimeException(String.format("Destination file %s already exists.", file));
+            }
+            if (!Files.isRegularFile(part)) {
+                throw new CloudRuntimeException(String.format("The pull into %s left no partial file.", file));
+            }
+            if (backing != null && !Files.isRegularFile(backing)) {
+                throw new CloudRuntimeException(String.format("Base file %s is not on the destination pool.", backing));
             }
             dropSectorPadding(part, expectedLength);
-            try (FileChannel channel = FileChannel.open(part, StandardOpenOption.WRITE)) {
-                channel.force(true);
-            }
-            ProcessResult dropped = run(Arrays.asList("dd", "if=" + part, "iflag=nocache", "count=0", "status=none"), COMMAND_TIMEOUT_MS);
-            if (!dropped.succeeded()) {
-                throw new CloudRuntimeException(String.format("Unable to drop %s from the page cache: %s", part, dropped.getOutput().trim()));
-            }
             long length = Files.size(part);
             if (length != expectedLength) {
                 throw new CloudRuntimeException(String.format("Length mismatch after copying into %s: expected %d, read back %d.", file, expectedLength, length));
             }
-            String sha256 = sha256(part);
-            if (!sha256.equalsIgnoreCase(expectedSha256)) {
-                throw new CloudRuntimeException(String.format("SHA-256 mismatch after copying into %s: expected %s, read back %s.", file, expectedSha256, sha256));
+            if (!expectedSha256.equalsIgnoreCase(pulled.getSha256())) {
+                throw new CloudRuntimeException(String.format("SHA-256 mismatch after copying into %s: expected %s, read back %s.", file, expectedSha256,
+                        pulled.getSha256()));
+            }
+            try (FileChannel channel = FileChannel.open(part, StandardOpenOption.WRITE)) {
+                channel.force(true);
             }
             if (Files.exists(file)) {
                 throw new CloudRuntimeException(String.format("Destination file %s appeared during the copy.", file));
@@ -503,9 +716,10 @@ public class VolumeFileTransfer {
             Files.move(part, file, StandardCopyOption.ATOMIC_MOVE);
             syncDirectory(file.getParent());
             finish(file, format, backing, backingFormat);
-            return sha256;
+            return pulled.getSha256();
         } finally {
             Files.deleteIfExists(part);
+            clearState(unit);
         }
     }
 
@@ -532,11 +746,17 @@ public class VolumeFileTransfer {
     }
 
     /**
-     * Stops a pull of the given export and removes its partial file; the completed file is left alone.
+     * Stops the pull and the hashing of the given name, removes the pull's partial file and forgets both outcomes; the
+     * completed file is left alone.
      */
     public void abort(String exportName, Path file) throws IOException {
-        stopUnit(COPY_UNIT_PREFIX + checkName(exportName));
+        String unit = COPY_UNIT_PREFIX + checkName(exportName);
+        stopUnit(unit);
         Files.deleteIfExists(Paths.get(file + PART_SUFFIX));
+        clearState(unit);
+        String hash = HASH_UNIT_PREFIX + exportName;
+        stopUnit(hash);
+        clearState(hash);
     }
 
     private void syncDirectory(Path directory) {

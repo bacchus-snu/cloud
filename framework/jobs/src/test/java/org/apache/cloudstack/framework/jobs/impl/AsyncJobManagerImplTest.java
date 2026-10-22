@@ -30,6 +30,9 @@ import org.apache.cloudstack.api.ApiCommandResourceType;
 import org.apache.cloudstack.engine.orchestration.service.NetworkOrchestrationService;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeDataFactory;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeInfo;
+import org.apache.cloudstack.framework.config.ConfigDepot;
+import org.junit.Assert;
+import com.cloud.utils.StringUtils;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.InjectMocks;
@@ -55,6 +58,8 @@ public class AsyncJobManagerImplTest {
     NetworkDao networkDao;
     @Mock
     NetworkOrchestrationService networkOrchestrationService;
+    @Mock
+    ConfigDepot configDepot;
 
     @Test
     public void testCleanupVolumeResource() {
@@ -92,5 +97,31 @@ public class AsyncJobManagerImplTest {
         asyncJobManager.cleanupResources(job);
         Mockito.verify(networkOrchestrationService, Mockito.times(1)).stateTransitTo(networkVO,
                 Network.Event.OperationFailed);
+    }
+
+    private static final String ADD_RESOURCE_DETAIL = "org.apache.cloudstack.api.command.user.volume.AddResourceDetailCmd";
+
+    @Test
+    public void valueOfASecureSettingInAJobsParametersIsMaskedWhereTheJobIsLogged() {
+        when(configDepot.isEncryptedSetting("resource.request.smtp.password")).thenReturn(true);
+        AsyncJobVO job = new AsyncJobVO(null, 2L, 2L, ADD_RESOURCE_DETAIL,
+                "{\"details[0].key\":\"resource.request.smtp.password\",\"details[0].value\":\"s3cret\",\"resourcetype\":\"Zone\"}", null, null, null);
+
+        String logged = asyncJobManager.loggable(job);
+
+        Assert.assertFalse(logged, logged.contains("s3cret"));
+        Assert.assertTrue(logged, logged.contains("*****"));
+        Assert.assertTrue("the rest of the job is logged as before", logged.contains("resourcetype") && logged.contains(ADD_RESOURCE_DETAIL));
+        Assert.assertTrue("the job keeps its parameters", job.getCmdInfo().contains("s3cret"));
+    }
+
+    @Test
+    public void jobWithoutTheValueOfASecureSettingIsLoggedAsBefore() {
+        AsyncJobVO plain = new AsyncJobVO(null, 2L, 2L, ADD_RESOURCE_DETAIL, "{\"details[0].key\":\"guest.domain.suffix\",\"details[0].value\":\"example.org\"}",
+                null, null, null);
+        AsyncJobVO work = new AsyncJobVO(null, 2L, 2L, "com.cloud.vm.VmWorkStart", "{\"vmId\":7,\"params\":{\"a\":\"b\"}}", null, null, null);
+
+        Assert.assertEquals(StringUtils.cleanString(plain.toString()), asyncJobManager.loggable(plain));
+        Assert.assertEquals(StringUtils.cleanString(work.toString()), asyncJobManager.loggable(work));
     }
 }

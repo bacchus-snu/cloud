@@ -265,7 +265,7 @@ public class CAManagerImplTest {
         Mockito.when(hostA.getPublicIpAddress()).thenReturn("10.0.1.11");
         Mockito.when(hostA.getStorageIpAddress()).thenReturn("10.0.0.11");
         Mockito.when(hostDao.listAll()).thenReturn(List.of(hostA));
-        provisionsWith(hostCsr("hosta.example.org", List.of("10.0.0.11", "147.46.240.204", "192.168.122.1")));
+        provisionsWith(hostCsr("hosta.example.org", List.of("10.0.0.11", "198.51.100.4", "192.168.122.1")));
 
         Assert.assertTrue(caManager.provisionCertificate(hostA, false, null, false));
 
@@ -285,7 +285,7 @@ public class CAManagerImplTest {
         Mockito.lenient().when(caProvider.issueCertificateWithNames(anyString(), anyList(), anyList(), anyInt())).thenReturn(new Certificate(x509, null, List.of(x509)));
         try (MockedStatic<SSHCmdHelper> sshCmdHelperMock = Mockito.mockStatic(SSHCmdHelper.class)) {
             sshCmdHelperMock.when(() -> SSHCmdHelper.sshExecuteCmdWithResult(Mockito.eq(sshConnection), Mockito.anyString()))
-                    .thenReturn(new SSHCmdHelper.SSHCmdResult(0, hostCsr("hosta.example.org", List.of("10.0.0.11", "147.46.240.204")), ""));
+                    .thenReturn(new SSHCmdHelper.SSHCmdResult(0, hostCsr("hosta.example.org", List.of("10.0.0.11", "198.51.100.4")), ""));
 
             caManager.provisionCertificateViaSsh(sshConnection, "root", "10.0.0.11", "hosta", "root");
         }

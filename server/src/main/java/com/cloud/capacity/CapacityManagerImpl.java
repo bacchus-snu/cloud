@@ -19,9 +19,11 @@ package com.cloud.capacity;
 import static com.cloud.utils.NumbersUtil.toHumanReadableSize;
 
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -258,6 +260,90 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
         return _vmInstanceDetailsDao.findDetail(vmId, VmDetailConstants.RESTART_IN_PROGRESS) != null;
     }
 
+    private static final long[] NO_RESERVATION = {0, 0, 0};
+
+    /**
+     * A VM whose running session is being restarted holds the capacity of its last host reserved for itself from its
+     * stop until its start is placed on a host.
+     */
+    private static boolean holdsRestartReservationOn(VMInstanceVO vm, long hostId) {
+        return vm != null && vm.getRemoved() == null && vm.getHostId() == null && Objects.equals(vm.getLastHostId(), hostId)
+                && (vm.getState() == State.Stopped || vm.getState() == State.Starting);
+    }
+
+    /**
+     * @return the CPU, memory and cores the host holds reserved for the restarts of the running sessions of VMs other
+     *         than the given one, as the recalculation of the host's capacity counts them
+     */
+    protected long[] reservedForOtherRestarts(Host host, Long vmId) {
+        List<VMInstanceDetailVO> markers = _vmInstanceDetailsDao.findDetails(VmDetailConstants.RESTART_IN_PROGRESS);
+        if (CollectionUtils.isEmpty(markers)) {
+            return NO_RESERVATION;
+        }
+        long[] reserved = {0, 0, 0};
+        Pair<String, String> clusterValues = null;
+        for (VMInstanceDetailVO marker : markers) {
+            if (Objects.equals(marker.getResourceId(), vmId)) {
+                continue;
+            }
+            VMInstanceVO vm = _vmDao.findById(marker.getResourceId());
+            if (!holdsRestartReservationOn(vm, host.getId())) {
+                continue;
+            }
+            if (clusterValues == null) {
+                clusterValues = getClusterValues(host.getClusterId());
+            }
+            long[] reservation = reservationOf(vm, Float.parseFloat(clusterValues.first()), Float.parseFloat(clusterValues.second()));
+            for (int i = 0; i < reserved.length; i++) {
+                reserved[i] += reservation[i];
+            }
+        }
+        return reserved;
+    }
+
+    private ServiceOffering offeringOf(VMInstanceVO vm) {
+        ServiceOffering so = getServiceOffering(vm.getServiceOfferingId());
+        return so != null ? so : _offeringsDao.findByIdIncludingRemoved(vm.getServiceOfferingId());
+    }
+
+    /**
+     * @return the CPU, memory and cores a VM that does not run holds reserved on its last host; nothing for a VM whose
+     *         offering is exempt from host capacity
+     */
+    private long[] reservationOf(VMInstanceVO vm, float clusterCpuOvercommitRatio, float clusterRamOvercommitRatio) {
+        ServiceOffering so = offeringOf(vm);
+        if (CapacityManager.isHostCapacityExempt(so)) {
+            return NO_RESERVATION;
+        }
+        float cpuOvercommitRatio = 1.0f;
+        float ramOvercommitRatio = 1.0f;
+        Map<String, String> vmDetails = getVmDetailsForCapacityCalculation(vm.getId());
+        String vmDetailCpu = vmDetails.get(VmDetailConstants.CPU_OVER_COMMIT_RATIO);
+        String vmDetailRam = vmDetails.get(VmDetailConstants.MEMORY_OVER_COMMIT_RATIO);
+        if (vmDetailCpu != null) {
+            //if vmDetail_cpu is not null it means it is running in a overcommited cluster.
+            cpuOvercommitRatio = Float.parseFloat(vmDetailCpu);
+        }
+        if (vmDetailRam != null) {
+            ramOvercommitRatio = Float.parseFloat(vmDetailRam);
+        }
+        if (so.isDynamic()) {
+            long memory = (long) (((Integer.parseInt(vmDetails.get(UsageEventVO.DynamicParameters.memory.name())) * 1024L * 1024L) / ramOvercommitRatio) *
+                    clusterRamOvercommitRatio);
+            long cpu;
+            if (vmDetails.containsKey(UsageEventVO.DynamicParameters.cpuSpeed.name())) {
+                cpu = (long) (((Long.parseLong(vmDetails.get(UsageEventVO.DynamicParameters.cpuNumber.name())) * Integer.parseInt(vmDetails.get(UsageEventVO.DynamicParameters.cpuSpeed.name()))) / cpuOvercommitRatio) *
+                        clusterCpuOvercommitRatio);
+            } else {
+                cpu = (long) (((Long.parseLong(vmDetails.get(UsageEventVO.DynamicParameters.cpuNumber.name())) * so.getSpeed()) / cpuOvercommitRatio) *
+                        clusterCpuOvercommitRatio);
+            }
+            return new long[] {cpu, memory, Integer.parseInt(vmDetails.get(UsageEventVO.DynamicParameters.cpuNumber.name()))};
+        }
+        return new long[] {(long) (((long) so.getCpu() * so.getSpeed() / cpuOvercommitRatio) * clusterCpuOvercommitRatio),
+                (long) (((so.getRamSize() * 1024L * 1024L) / ramOvercommitRatio) * clusterRamOvercommitRatio), so.getCpu()};
+    }
+
     @DB
     @Override
     public boolean releaseVmCapacity(VirtualMachine vm, final boolean moveFromReserved, final boolean moveToReservered, final Long hostId) {
@@ -417,6 +503,7 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
         final int cpucore = svo.getCpu();
         final int cpuspeed = svo.getSpeed();
         final long ram = svo.getRamSize() * 1024L * 1024L;
+        final long[] reservedForOthers = fromLastHost ? reservedForOtherRestarts(host, vm.getId()) : NO_RESERVATION;
 
         try {
             final long capacityCpuId = capacityCpu.getId();
@@ -463,7 +550,7 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
                             logger.debug("Reserved CPU: " + reservedCpu + " , Requested CPU: " + cpu);
                             logger.debug("Reserved RAM: " + toHumanReadableSize(reservedMem) + " , Requested RAM: " + toHumanReadableSize(ram));
                         }
-                        if (reservedCpu >= cpu && reservedMem >= ram) {
+                        if (reservedCpu - reservedForOthers[0] >= cpu && reservedMem - reservedForOthers[1] >= ram) {
                             capacityCpu.setReservedCapacity(reservedCpu - cpu);
                             capacityMem.setReservedCapacity(reservedMem - ram);
                             capacityCpuCore.setReservedCapacity(reservedCpuCore - cpucore);
@@ -503,11 +590,11 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
 
                     if (hostHasCpuCapability) {
                         // first check from reserved capacity
-                        hostHasCapacity = checkIfHostHasCapacity(host, cpu, ram, true, cpuOvercommitRatio, memoryOvercommitRatio, true);
+                        hostHasCapacity = checkIfHostHasCapacity(host, cpu, ram, true, cpuOvercommitRatio, memoryOvercommitRatio, true, vm.getId());
 
                         // if not reserved, check the free capacity
                         if (!hostHasCapacity)
-                            hostHasCapacity = checkIfHostHasCapacity(host, cpu, ram, false, cpuOvercommitRatio, memoryOvercommitRatio, true);
+                            hostHasCapacity = checkIfHostHasCapacity(host, cpu, ram, false, cpuOvercommitRatio, memoryOvercommitRatio, true, vm.getId());
                     }
 
                     if (!hostHasCapacity || !hostHasCpuCapability) {
@@ -546,6 +633,12 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
     @Override
     public boolean checkIfHostHasCapacity(Host host, Integer cpu, long ram, boolean checkFromReservedCapacity, float cpuOvercommitRatio, float memoryOvercommitRatio,
         boolean considerReservedCapacity) {
+        return checkIfHostHasCapacity(host, cpu, ram, checkFromReservedCapacity, cpuOvercommitRatio, memoryOvercommitRatio, considerReservedCapacity, null);
+    }
+
+    @Override
+    public boolean checkIfHostHasCapacity(Host host, Integer cpu, long ram, boolean checkFromReservedCapacity, float cpuOvercommitRatio, float memoryOvercommitRatio,
+        boolean considerReservedCapacity, Long vmId) {
         boolean hasCapacity = false;
 
         if (logger.isDebugEnabled()) {
@@ -582,6 +675,8 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
             logger.debug("Hosts's actual total CPU: " + actualTotalCpu + " and CPU after applying overprovisioning: " + totalCpu);
         }
 
+        // reserved capacity counts these in; capacity that disregards reserved capacity still leaves them out
+        long[] reservedForOthers = checkFromReservedCapacity || !considerReservedCapacity ? reservedForOtherRestarts(host, vmId) : NO_RESERVATION;
         String failureReason = "";
         if (checkFromReservedCapacity) {
             if (logger.isDebugEnabled()) {
@@ -590,8 +685,8 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
                 logger.debug("Reserved RAM: " + toHumanReadableSize(reservedMem) + " , Requested RAM: " + toHumanReadableSize(ram));
             }
             /* alloc from reserved */
-            if (reservedCpu >= cpu) {
-                if (reservedMem >= ram) {
+            if (reservedCpu - reservedForOthers[0] >= cpu) {
+                if (reservedMem - reservedForOthers[1] >= ram) {
                     hasCapacity = true;
                 } else {
                     failureReason = "Host does not have enough reserved RAM available";
@@ -606,8 +701,8 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
                     logger.debug("considerReservedCapacity is" + considerReservedCapacity + " , not considering reserved capacity for calculating free capacity");
                 }
             }
-            long freeCpu = freeCapacity(capacityCpu, cpuOvercommitRatio, considerReservedCapacity);
-            long freeMem = freeCapacity(capacityMem, memoryOvercommitRatio, considerReservedCapacity);
+            long freeCpu = freeCapacity(capacityCpu, cpuOvercommitRatio, considerReservedCapacity) - (considerReservedCapacity ? 0 : reservedForOthers[0]);
+            long freeMem = freeCapacity(capacityMem, memoryOvercommitRatio, considerReservedCapacity) - (considerReservedCapacity ? 0 : reservedForOthers[1]);
 
             if (logger.isDebugEnabled()) {
                 logger.debug("Free CPU: " + freeCpu + " , Requested CPU: " + cpu);
@@ -841,54 +936,26 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
             }
         }
 
-        List<VMInstanceVO> vmsByLastHostId = _vmDao.listByLastHostId(host.getId());
+        List<VMInstanceVO> vmsByLastHostId = new ArrayList<>(_vmDao.listByLastHostId(host.getId()));
         logger.debug("Found {} VM, not running on {}", vmsByLastHostId.size(), host);
         // a VM between the stop and the start of a restart within its running session keeps its capacity reserved
         Set<Long> restarting = _vmInstanceDetailsDao.findDetails(VmDetailConstants.RESTART_IN_PROGRESS).stream()
                 .map(VMInstanceDetailVO::getResourceId).collect(Collectors.toSet());
+        for (Long restartingVmId : restarting) {
+            VMInstanceVO vm = _vmDao.findById(restartingVmId);
+            if (vm != null && vm.getState() == State.Starting && holdsRestartReservationOn(vm, host.getId())) {
+                vmsByLastHostId.add(vm);
+            }
+        }
 
         for (VMInstanceVO vm : vmsByLastHostId) {
-            float cpuOvercommitRatio = 1.0f;
-            float ramOvercommitRatio = 1.0f;
             long lastModificationTime = Optional.ofNullable(vm.getUpdateTime()).orElse(vm.getCreated()).getTime();
             long secondsSinceLastUpdate = (DateUtil.currentGMTTime().getTime() - lastModificationTime) / 1000;
             if (secondsSinceLastUpdate < _vmCapacityReleaseInterval || restarting.contains(vm.getId())) {
-                ServiceOffering so = getServiceOffering(vm.getServiceOfferingId());
-                if (so == null) {
-                    so = _offeringsDao.findByIdIncludingRemoved(vm.getServiceOfferingId());
-                }
-                if (CapacityManager.isHostCapacityExempt(so)) {
-                    continue;
-                }
-                Map<String, String> vmDetails = getVmDetailsForCapacityCalculation(vm.getId());
-                String vmDetailCpu = vmDetails.get(VmDetailConstants.CPU_OVER_COMMIT_RATIO);
-                String vmDetailRam = vmDetails.get(VmDetailConstants.MEMORY_OVER_COMMIT_RATIO);
-                if (vmDetailCpu != null) {
-                    //if vmDetail_cpu is not null it means it is running in a overcommited cluster.
-                    cpuOvercommitRatio = Float.parseFloat(vmDetailCpu);
-                }
-                if (vmDetailRam != null) {
-                    ramOvercommitRatio = Float.parseFloat(vmDetailRam);
-                }
-                if (so.isDynamic()) {
-                    reservedMemory +=
-                            (long) (((Integer.parseInt(vmDetails.get(UsageEventVO.DynamicParameters.memory.name())) * 1024L * 1024L) / ramOvercommitRatio) *
-                                                        clusterRamOvercommitRatio);
-                    if(vmDetails.containsKey(UsageEventVO.DynamicParameters.cpuSpeed.name())) {
-                        reservedCpu +=
-                                (long) (((Long.parseLong(vmDetails.get(UsageEventVO.DynamicParameters.cpuNumber.name())) * Integer.parseInt(vmDetails.get(UsageEventVO.DynamicParameters.cpuSpeed.name()))) / cpuOvercommitRatio) *
-                                                                        clusterCpuOvercommitRatio);
-                    } else {
-                        reservedCpu +=
-                                (long) (((Long.parseLong(vmDetails.get(UsageEventVO.DynamicParameters.cpuNumber.name())) * so.getSpeed()) / cpuOvercommitRatio) *
-                                                                        clusterCpuOvercommitRatio);
-                    }
-                    reservedCpuCore += Integer.parseInt(vmDetails.get(UsageEventVO.DynamicParameters.cpuNumber.name()));
-                } else {
-                    reservedMemory += (long) (((so.getRamSize() * 1024L * 1024L) / ramOvercommitRatio) * clusterRamOvercommitRatio);
-                    reservedCpu += (long) (((long) so.getCpu() * so.getSpeed() / cpuOvercommitRatio) * clusterCpuOvercommitRatio);
-                    reservedCpuCore += so.getCpu();
-                }
+                long[] reservation = reservationOf(vm, clusterCpuOvercommitRatio, clusterRamOvercommitRatio);
+                reservedCpu += reservation[0];
+                reservedMemory += reservation[1];
+                reservedCpuCore += reservation[2];
             } else {
                 // signal if not done already, that the VM has been stopped for skip.counting.hours,
                 // hence capacity will not be reserved anymore.
@@ -1128,7 +1195,7 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
         if (event == Event.OperationSucceeded) {
           releaseVmCapacity(vm, false, reserveOnStop, oldHost);
         } else if (reportedStopped) {
-          releaseVmCapacity(vm, false, false, oldHost);
+          releaseVmCapacity(vm, false, newState == State.Stopped && restartInProgress(vm.getId()), oldHost);
         } else if (event == Event.AgentReportMigrated) {
           releaseVmCapacity(vm, false, false, oldHost);
         }
@@ -1234,7 +1301,7 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
 
         boolean hostHasCpuCapability = checkIfHostHasCpuCapability(host, offering.getCpu(), offering.getSpeed());
         boolean hostHasCapacity = checkIfHostHasCapacity(host, cpu_requested, ram_requested, false, cpuOvercommitRatio, memoryOvercommitRatio,
-                considerReservedCapacity) && (vmId == null ? checkIfHostHasPoolCores(host, offering.getCpu())
+                considerReservedCapacity, vmId) && (vmId == null ? checkIfHostHasPoolCores(host, offering.getCpu())
                 : checkIfHostHasPoolCoresFor(host, offering.getCpu(), vmId));
 
         return new Pair<>(hostHasCpuCapability, hostHasCapacity);

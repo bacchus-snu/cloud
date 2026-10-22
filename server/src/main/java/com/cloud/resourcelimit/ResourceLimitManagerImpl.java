@@ -610,6 +610,11 @@ public class ResourceLimitManagerImpl extends ManagerBase implements ResourceLim
         }
     }
 
+    @Override
+    public boolean isStorageQuotaCombined(Account account) {
+        return ResourceLimitStorageCombined.valueInScope(ConfigKey.Scope.Account, account.getId());
+    }
+
     protected boolean isCombinedStorageCheck(ResourceType type, String tag, ConfigKey.Scope ownerScope, long ownerId) {
         return ResourceLimitService.isStorageQuotaType(type, tag) && ResourceLimitStorageCombined.valueInScope(ownerScope, ownerId);
     }

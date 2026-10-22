@@ -19,6 +19,7 @@ package org.apache.cloudstack.resourcelimit;
 
 import java.time.DateTimeException;
 import java.time.ZoneId;
+import java.util.List;
 import java.util.function.Predicate;
 
 import org.apache.cloudstack.framework.config.ConfigKey;
@@ -101,6 +102,11 @@ public interface ResourceLimitGrantService {
      * {@code resource.request.smtp.*} settings. Without a relay host nothing is sent and one line is logged.
      */
     void notifyAccount(Account account, String subject, String body);
+
+    /**
+     * @return the GPU types that requests and grants are sized in, sorted: those an active one-GPU offering sizes
+     */
+    List<String> quotaGpuTypes();
 
     /**
      * @return whether the account's limits follow its grants, so that it may request them: root admin accounts are

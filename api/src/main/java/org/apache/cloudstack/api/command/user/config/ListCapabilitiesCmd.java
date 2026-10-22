@@ -16,6 +16,7 @@
 // under the License.
 package org.apache.cloudstack.api.command.user.config;
 
+import java.util.List;
 import java.util.Map;
 
 import org.apache.cloudstack.api.APICommand;
@@ -98,6 +99,8 @@ public class ListCapabilitiesCmd extends BaseCmd {
         response.setResourceRequestExpiryDefaultDays((Integer) capabilities.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_DEFAULT_DAYS));
         response.setResourceRequestExpiryMaxDays((Integer) capabilities.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_MAX_DAYS));
         response.setResourceRequestExpiryTimezone((String) capabilities.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_TIMEZONE));
+        response.setAutomigrateAllowed((Boolean) capabilities.get(ApiConstants.AUTOMIGRATE_ALLOWED));
+        response.setQuotaGpuTypes((List<String>) capabilities.get(ApiConstants.QUOTA_GPU_TYPES));
         if (capabilities.containsKey(ApiConstants.VPN_CUSTOMER_GATEWAY_PARAMETERS)) {
             Map<String, Object> vpnCustomerGatewayParameters = (Map<String, Object>) capabilities.get(ApiConstants.VPN_CUSTOMER_GATEWAY_PARAMETERS);
             response.setVpnCustomerGatewayParameters(vpnCustomerGatewayParameters);

@@ -16,14 +16,18 @@
 // under the License.
 package org.apache.cloudstack.framework.config.impl;
 
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import javax.annotation.PostConstruct;
 import javax.inject.Inject;
@@ -78,6 +82,7 @@ import com.cloud.utils.exception.CloudRuntimeException;
 public class ConfigDepotImpl implements ConfigDepot, ConfigDepotAdmin {
     protected Logger logger = LogManager.getLogger(getClass());
     protected final static long CONFIG_CACHE_EXPIRE_SECONDS = 30;
+    private static final Pattern COMBINING_MARKS = Pattern.compile("\\p{M}+");
     @Inject
     ConfigurationDao _configDao;
     @Inject
@@ -90,6 +95,7 @@ public class ConfigDepotImpl implements ConfigDepot, ConfigDepotAdmin {
     Set<String> newConfigs = Collections.synchronizedSet(new HashSet<>());
     final Set<String> accessControlConfigKeys = ConcurrentHashMap.newKeySet();
     LazyCache<Ternary<String, ConfigKey.Scope, Long>, String> configCache;
+    LazyCache<Boolean, Set<String>> encryptedStoredSettingNames;
 
     private HashMap<String, Pair<String, ConfigKey<?>>> _allKeys = new HashMap<String, Pair<String, ConfigKey<?>>>(1007);
 
@@ -98,6 +104,8 @@ public class ConfigDepotImpl implements ConfigDepot, ConfigDepotAdmin {
     public ConfigDepotImpl() {
         configCache = new LazyCache<>(512,
                 CONFIG_CACHE_EXPIRE_SECONDS, this::getConfigStringValueInternal);
+        encryptedStoredSettingNames = new LazyCache<>(1, CONFIG_CACHE_EXPIRE_SECONDS,
+                all -> _configDao.listEncryptedSettingNames().stream().map(ConfigDepotImpl::comparableSettingName).collect(Collectors.toSet()));
         ConfigKey.init(this);
         createEmptyScopeLevelMappings();
     }
@@ -115,6 +123,28 @@ public class ConfigDepotImpl implements ConfigDepot, ConfigDepotAdmin {
         _scopeLevelConfigsMap.put(ConfigKey.Scope.ImageStore, new HashSet<ConfigKey<?>>());
         _scopeLevelConfigsMap.put(ConfigKey.Scope.Domain, new HashSet<ConfigKey<?>>());
         _scopeLevelConfigsMap.put(ConfigKey.Scope.ManagementServer, new HashSet<ConfigKey<?>>());
+    }
+
+    @Override
+    public boolean isEncryptedSetting(String name) {
+        if (StringUtils.isBlank(name)) {
+            return false;
+        }
+        ConfigKey<?> key = get(name);
+        if (key != null) {
+            return StringUtils.equalsAny(key.category(), "Hidden", "Secure");
+        }
+        return encryptedStoredSettingNames.get(Boolean.TRUE).contains(comparableSettingName(name));
+    }
+
+    /**
+     * Approximates the configuration table's case- and accent-insensitive comparison of setting names: surrounding white
+     * space, case and accents are disregarded, and the sharp s compares equal to s.
+     */
+    static String comparableSettingName(String name) {
+        String decomposed = Normalizer.normalize(name.strip(), Normalizer.Form.NFD);
+        String unaccented = COMBINING_MARKS.matcher(decomposed).replaceAll("").replace('ß', 's').replace('ẞ', 's');
+        return unaccented.toUpperCase(Locale.ROOT).toLowerCase(Locale.ROOT);
     }
 
     @Override

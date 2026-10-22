@@ -33,6 +33,7 @@ import org.apache.cloudstack.api.response.DomainResponse;
 import org.apache.cloudstack.api.response.TaggedResourceLimitAndCountResponse;
 import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.framework.config.ConfigKey;
+import org.apache.cloudstack.framework.config.impl.ConfigDepotImpl;
 import org.apache.cloudstack.reservation.dao.ReservationDao;
 import org.apache.cloudstack.resourcelimit.Reserver;
 import org.apache.cloudstack.storage.datastore.db.SnapshotDataStoreDao;
@@ -1549,6 +1550,21 @@ public class ResourceLimitManagerImplTest {
     }
 
     private static final long QUOTA_ACCOUNT_ID = 11L;
+
+    @Test
+    public void storageQuotaCombinedIsTheSettingAtTheAccountsScope() {
+        Account account = quotaAccount();
+        ConfigDepotImpl depot = Mockito.mock(ConfigDepotImpl.class);
+        Mockito.when(depot.getConfigStringValue(ResourceLimitService.ResourceLimitStorageCombined.key(), ConfigKey.Scope.Account, QUOTA_ACCOUNT_ID))
+                .thenReturn("false", "true");
+        ConfigKey.init(depot);
+        try {
+            Assert.assertFalse(resourceLimitManager.isStorageQuotaCombined(account));
+            Assert.assertTrue(resourceLimitManager.isStorageQuotaCombined(account));
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
 
     private Account quotaAccount() {
         Account account = Mockito.mock(Account.class);

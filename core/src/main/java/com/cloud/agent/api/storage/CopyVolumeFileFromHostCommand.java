@@ -23,10 +23,12 @@ import com.cloud.agent.api.Command;
 import com.cloud.agent.api.to.StorageFilerTO;
 
 /**
- * Pulls the bytes of a volume file that another host exports (see {@link StartVolumeExportCommand}) into
- * a file of a local pool, byte for byte. The file appears under its name only after its length and
- * SHA-256 match the source's; a qcow2 file with a backing file is then pointed at the given base
- * file of the destination pool. The partial file never survives a failure.
+ * Starts pulling the bytes of a volume file that another host exports (see {@link StartVolumeExportCommand}) into the
+ * partial file of a file of a local pool, byte for byte, and answers at once. The pull runs as a transient unit of the
+ * host, bounded by the given lifetime; the same unit syncs the partial file, drops it from the page cache and hashes
+ * what it reads back. {@link CheckVolumeFileTransferCommand} follows it and {@link FinishVolumeFileCopyCommand} puts the
+ * file in place. A destination file that already exists is not pulled again: its bytes are hashed instead, so that a
+ * copy whose completion was not recorded can still be recognised.
  */
 public class CopyVolumeFileFromHostCommand extends Command {
     private String sourceAddress;
@@ -34,34 +36,24 @@ public class CopyVolumeFileFromHostCommand extends Command {
     private String exportName;
     private StorageFilerTO pool;
     private String path;
-    private String format;
     private long expectedLength;
-    private String expectedSha256;
-    private String backingInstallPath;
-    private String backingFormat;
-    private int transferTimeout;
+    private int lifetime;
 
     protected CopyVolumeFileFromHostCommand() {
     }
 
     /**
-     * @param transferTimeout seconds the pull itself may take
-     * @param wait seconds the whole command may take: the pull, then reading the file back, rebasing and checking it
+     * @param lifetime seconds the pull, with reading the file back, may take
      */
-    public CopyVolumeFileFromHostCommand(String sourceAddress, int sourcePort, String exportName, StorageFilerTO pool, String path, String format,
-            long expectedLength, String expectedSha256, String backingInstallPath, String backingFormat, int transferTimeout, int wait) {
+    public CopyVolumeFileFromHostCommand(String sourceAddress, int sourcePort, String exportName, StorageFilerTO pool, String path, long expectedLength,
+            int lifetime) {
         this.sourceAddress = sourceAddress;
         this.sourcePort = sourcePort;
         this.exportName = exportName;
         this.pool = pool;
         this.path = path;
-        this.format = format;
         this.expectedLength = expectedLength;
-        this.expectedSha256 = expectedSha256;
-        this.backingInstallPath = backingInstallPath;
-        this.backingFormat = backingFormat;
-        this.transferTimeout = transferTimeout;
-        setWait(wait);
+        this.lifetime = lifetime;
     }
 
     public String getSourceAddress() {
@@ -84,34 +76,12 @@ public class CopyVolumeFileFromHostCommand extends Command {
         return path;
     }
 
-    public String getFormat() {
-        return format;
-    }
-
     public long getExpectedLength() {
         return expectedLength;
     }
 
-    public String getExpectedSha256() {
-        return expectedSha256;
-    }
-
-    /**
-     * @return the base file, relative to the destination pool, the copied image is rebased onto; null when it has no backing file
-     */
-    public String getBackingInstallPath() {
-        return backingInstallPath;
-    }
-
-    /**
-     * @return the format of that base file, which the copied image records for it; null when it has no backing file
-     */
-    public String getBackingFormat() {
-        return backingFormat;
-    }
-
-    public int getTransferTimeout() {
-        return transferTimeout;
+    public int getLifetime() {
+        return lifetime;
     }
 
     @Override

@@ -119,6 +119,7 @@ import com.cloud.host.dao.HostDetailsDao;
 import com.cloud.hypervisor.Hypervisor.HypervisorType;
 import com.cloud.configuration.Resource.ResourceType;
 import com.cloud.resource.ResourceManager;
+import com.cloud.resource.ResourceState;
 import com.cloud.server.StatsCollector;
 import com.cloud.service.ServiceOfferingVO;
 import com.cloud.service.dao.ServiceOfferingDao;
@@ -395,6 +396,7 @@ public class PlacementServiceImplTest {
         when(host.getHypervisorType()).thenReturn(HypervisorType.KVM);
         when(host.getType()).thenReturn(Host.Type.Routing);
         when(host.getStatus()).thenReturn(Status.Up);
+        when(host.getResourceState()).thenReturn(ResourceState.Enabled);
         when(host.checkHostServiceOfferingTags(any())).thenReturn(true);
         when(hostDao.findById(id)).thenReturn(host);
         hosts.put(id, host);
@@ -1021,6 +1023,31 @@ public class PlacementServiceImplTest {
         assertEquals(PlacementServiceImpl.REASON_VOLUMES_UNAVAILABLE, verdict.getReason());
         assertNull(verdict.getToken());
         assertThrows(InsufficientServerCapacityException.class, () -> service.approvedMove(PlacementRequest.start(VM, null, ACCOUNT), true, "1-00"));
+    }
+
+    @Test
+    public void moveRefusedWhileTheVolumesHostIsInAnyMaintenanceState() throws Exception {
+        volume(201, Volume.Type.ROOT, HOST_A, 10);
+        full(HOST_A);
+        PlacementVerdict approvable = start();
+        assertEquals(PlacementVerdict.Verdict.move, approvable.getVerdict());
+
+        for (ResourceState state : Arrays.asList(ResourceState.PrepareForMaintenance, ResourceState.ErrorInPrepareForMaintenance, ResourceState.Maintenance,
+                ResourceState.ErrorInMaintenance)) {
+            when(hosts.get(HOST_A).getResourceState()).thenReturn(state);
+
+            PlacementVerdict verdict = start();
+
+            assertEquals(state.toString(), PlacementVerdict.Verdict.none, verdict.getVerdict());
+            assertEquals(state.toString(), PlacementServiceImpl.REASON_VOLUMES_UNAVAILABLE, verdict.getReason());
+            assertNull(verdict.getToken());
+            InsufficientServerCapacityException refused = assertThrows(InsufficientServerCapacityException.class,
+                    () -> service.approvedMove(PlacementRequest.start(VM, null, ACCOUNT), true, approvable.getToken()));
+            assertTrue(refused.getMessage(), refused.getMessage().contains(PlacementServiceImpl.REASON_VOLUMES_UNAVAILABLE));
+        }
+
+        when(hosts.get(HOST_A).getResourceState()).thenReturn(ResourceState.Disabled);
+        assertEquals("a disabled host still serves its volumes", PlacementVerdict.Verdict.move, start().getVerdict());
     }
 
     @Test

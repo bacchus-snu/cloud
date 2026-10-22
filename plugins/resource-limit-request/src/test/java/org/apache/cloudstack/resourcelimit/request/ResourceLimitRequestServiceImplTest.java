@@ -33,6 +33,7 @@ import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -180,6 +181,7 @@ public class ResourceLimitRequestServiceImplTest {
     private final List<String> events = new ArrayList<>();
     private final List<ServiceOfferingVO> oneGpuOfferings = new ArrayList<>();
     private final List<ServiceOfferingVO> offeringsWithoutGpu = new ArrayList<>();
+    private final List<ServiceOfferingVO> offeringsOfSeveralGpus = new ArrayList<>();
     private Date now = Date.from(Instant.parse("2026-11-01T03:00:00Z"));
     private boolean inTransaction;
     private int transactions;
@@ -228,6 +230,11 @@ public class ResourceLimitRequestServiceImplTest {
         doReturn((Executor)Runnable::run).when(service).mailExecutor();
         doAnswer(i -> new ArrayList<>(oneGpuOfferings)).when(service).listOneGpuOfferings();
         doAnswer(i -> new ArrayList<>(offeringsWithoutGpu)).when(service).listOfferingsWithoutGpu();
+        lenient().doAnswer(i -> {
+            List<ServiceOfferingVO> withGpus = new ArrayList<>(oneGpuOfferings);
+            withGpus.addAll(offeringsOfSeveralGpus);
+            return withGpus;
+        }).when(service).listGpuOfferings();
         ServiceOfferingVO cpuOffering = mock(ServiceOfferingVO.class);
         when(cpuOffering.getHostTag()).thenReturn("cpu");
         offeringsWithoutGpu.add(cpuOffering);
@@ -844,6 +851,44 @@ public class ResourceLimitRequestServiceImplTest {
 
         settings.put("max.account.cpus", "four");
         assertThrows("a default that is not a number grants nothing else", CloudRuntimeException.class, () -> service.recompute(accounts.get(STUDENT)));
+    }
+
+    @Test
+    public void quotaGpuTypesAreTheTypesRequestsAreSizedInSorted() {
+        ServiceOfferingVO twoTags = mock(ServiceOfferingVO.class);
+        when(twoTags.getId()).thenReturn(42L);
+        when(twoTags.getHostTag()).thenReturn("h100,cpu");
+        when(twoTags.getVgpuProfileId()).thenReturn(142L);
+        when(twoTags.getGpuCount()).thenReturn(1);
+        oneGpuOfferings.add(twoTags);
+
+        List<String> types = service.quotaGpuTypes();
+
+        assertEquals(Arrays.asList("a100-40g", "a100-80g", "a6000", "gtx1080"), types);
+        assertEquals("the same types a request is checked against", new ArrayList<>(service.gpuUnits().keySet()), types);
+    }
+
+    @Test
+    public void aGpuOfferingCountedAgainstSeveralLimitTagsIsReported() {
+        ServiceOfferingVO twoTags = mock(ServiceOfferingVO.class);
+        when(twoTags.getUuid()).thenReturn("offering-uuid");
+        when(twoTags.getName()).thenReturn("A100 x2 hand-made");
+        when(twoTags.getHostTag()).thenReturn("a100-40g,cpu");
+        offeringsOfSeveralGpus.add(twoTags);
+
+        service.sweep(now);
+        service.sweep(now);
+
+        ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
+        verify(alertManager, times(1)).sendAlert(eq(AlertManager.AlertType.ALERT_TYPE_RESOURCE_LIMIT_EXCEEDED), eq(0L), isNull(), subject.capture(), anyString());
+        assertTrue(subject.getValue(), subject.getValue().contains("A100 x2 hand-made (a100-40g,cpu)"));
+        assertTrue(settings.get(ResourceLimitRequestServiceImpl.REPORTED_UNSIZED_GPU_TYPES),
+                settings.get(ResourceLimitRequestServiceImpl.REPORTED_UNSIZED_GPU_TYPES).contains("offering-uuid"));
+
+        when(twoTags.getHostTag()).thenReturn("a100-40g,a100-40g-nvswitch");
+        service.sweep(now);
+        assertEquals("a tag that is not a limit tag counts nothing", "", settings.get(ResourceLimitRequestServiceImpl.REPORTED_UNSIZED_GPU_TYPES));
+        verify(alertManager, times(1)).sendAlert(any(), anyLong(), any(), anyString(), anyString());
     }
 
     @Test

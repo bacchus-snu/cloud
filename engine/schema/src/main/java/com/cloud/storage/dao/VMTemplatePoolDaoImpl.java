@@ -40,6 +40,7 @@ import com.cloud.storage.VMTemplateStoragePoolVO;
 import com.cloud.storage.VMTemplateStorageResourceAssoc;
 import com.cloud.storage.VMTemplateStorageResourceAssoc.Status;
 import com.cloud.utils.db.GenericDaoBase;
+import com.cloud.utils.db.Merovingian2;
 import com.cloud.utils.db.SearchBuilder;
 import com.cloud.utils.db.SearchCriteria;
 import com.cloud.utils.db.SearchCriteria.Op;
@@ -382,4 +383,9 @@ public class VMTemplatePoolDaoImpl extends GenericDaoBase<VMTemplateStoragePoolV
         return rows > 0;
     }
 
+    @Override
+    public boolean isLockHeldElsewhere(long id) {
+        Merovingian2 locks = Merovingian2.getLockController();
+        return locks != null && locks.owns(_table + id) < 0;
+    }
 }

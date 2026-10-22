@@ -159,6 +159,13 @@ public interface VirtualMachineManager extends Manager {
 
     boolean stateTransitTo(VirtualMachine vm, VirtualMachine.Event e, Long hostId) throws NoTransitionException;
 
+    /**
+     * A start of a stopped user Instance begins a new running session, which its owner's quota must allow; every start
+     * path is refused this way. The restart of a running session (the Instance carries the restart marker) continues
+     * that session and is not checked, nor is the start of a system VM.
+     */
+    void checkQuotaOfSessionStart(VirtualMachine vm) throws ResourceAllocationException;
+
     void advanceStart(String vmUuid, Map<VirtualMachineProfile.Param, Object> params, DeploymentPlanner planner) throws InsufficientCapacityException, ResourceUnavailableException,
             ConcurrentOperationException, OperationTimedoutException;
 

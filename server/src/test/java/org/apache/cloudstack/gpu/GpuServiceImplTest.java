@@ -2602,4 +2602,64 @@ public class GpuServiceImplTest {
             defaultValue.set(GpuService.GpuDetachOnStop, original);
         }
     }
+
+    @Test
+    public void syncKeepsTheDevicesOfAVmStartingOrStoppingWithinARestart() throws Exception {
+        java.lang.reflect.Field defaultValue = ConfigKey.class.getDeclaredField("_defaultValue");
+        defaultValue.setAccessible(true);
+        String original = GpuService.GpuDetachOnStop.defaultValue();
+        defaultValue.set(GpuService.GpuDetachOnStop, "true");
+        try {
+            Date reportTime = new Date(1_000_000L);
+            String[] buses = {GPU_BUS_ADDRESS, GPU_BUS_ADDRESS_2, GPU_BUS_ADDRESS_3};
+            // the restart's start before planning has set its host, the restart's stop before it has committed, a plain start without a host
+            VirtualMachine.State[] states = {VirtualMachine.State.Starting, VirtualMachine.State.Stopping, VirtualMachine.State.Starting};
+            Long[] hosts = {null, HOST_ID, null};
+            List<GpuDeviceVO> rows = new ArrayList<>();
+            List<VgpuTypesInfo> reported = new ArrayList<>();
+            for (int i = 0; i < buses.length; i++) {
+                GpuDeviceVO row = gpu(HOST_ID, 21L + i, buses[i], null, GpuDevice.State.Allocated);
+                row.setVmId(VM_ID_100 + i);
+                rows.add(row);
+                VMInstanceVO vm = mock(VMInstanceVO.class);
+                Mockito.lenient().when(vm.getId()).thenReturn(VM_ID_100 + i);
+                Mockito.lenient().when(vm.getState()).thenReturn(states[i]);
+                Mockito.lenient().when(vm.getHostId()).thenReturn(hosts[i]);
+                Mockito.lenient().when(vm.getUpdateTime()).thenReturn(new Date(reportTime.getTime() - 60_000L));
+                Mockito.lenient().when(vm.getDomainId()).thenReturn(1L);
+                when(vmInstanceDao.findById(VM_ID_100 + i)).thenReturn(vm);
+                VgpuTypesInfo info = mock(VgpuTypesInfo.class);
+                when(info.getBusAddress()).thenReturn(buses[i]);
+                when(info.getDeviceId()).thenReturn(GPU_DEVICE_ID);
+                when(info.getVendorId()).thenReturn(GPU_VENDOR_ID);
+                when(info.getModelName()).thenReturn(PASSTHROUGH_PROFILE);
+                reported.add(info);
+            }
+            for (long vmId : new long[] {VM_ID_100, VM_ID_100 + 1}) {
+                Mockito.lenient().when(vmInstanceDetailsDao.findDetail(vmId, VmDetailConstants.RESTART_IN_PROGRESS))
+                        .thenReturn(new VMInstanceDetailVO(vmId, VmDetailConstants.RESTART_IN_PROGRESS, "job:3", false));
+            }
+            when(gpuDeviceDao.listByHostId(HOST_ID)).thenReturn(rows);
+            when(gpuCardDao.findByVendorIdAndDeviceId(GPU_VENDOR_ID, GPU_DEVICE_ID)).thenReturn(mockGpuCard);
+            when(vgpuProfileDao.findByNameAndCardId(PASSTHROUGH_PROFILE, GPU_CARD_ID)).thenReturn(mockVgpuProfile);
+
+            try (MockedStatic<GlobalLock> ignored = Mockito.mockStatic(GlobalLock.class)) {
+                GlobalLock lock = mock(GlobalLock.class);
+                when(GlobalLock.getInternLock("add-gpu-devices-to-host-" + HOST_ID)).thenReturn(lock);
+                when(lock.lock(30)).thenReturn(true);
+                runTransactionsInline();
+
+                gpuService.addGpuDevicesToHost(mockHost, reported, reportTime);
+            }
+
+            assertEquals("the restart's start keeps the devices before its host is set", GpuDevice.State.Allocated, rows.get(0).getState());
+            assertEquals(Long.valueOf(VM_ID_100), rows.get(0).getVmId());
+            assertEquals("the restart's stop keeps the devices", GpuDevice.State.Allocated, rows.get(1).getState());
+            assertEquals(Long.valueOf(VM_ID_100 + 1), rows.get(1).getVmId());
+            assertEquals("a start that is no restart holds no device before it has a host", GpuDevice.State.Free, rows.get(2).getState());
+            assertNull(rows.get(2).getVmId());
+        } finally {
+            defaultValue.set(GpuService.GpuDetachOnStop, original);
+        }
+    }
 }

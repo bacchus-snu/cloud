@@ -23,8 +23,9 @@ import com.cloud.agent.api.Command;
 import com.cloud.agent.api.to.StorageFilerTO;
 
 /**
- * Stops a pull started by {@link CopyVolumeFileFromHostCommand} and removes its partial file. The
- * completed file, if any, is left alone. Succeeds when there is nothing to stop or remove.
+ * Stops a pull started by {@link CopyVolumeFileFromHostCommand} and the hashing of the same name, and removes the
+ * pull's partial file and both outcomes. The completed file, if any, is left alone. Succeeds when there is nothing to
+ * stop or remove.
  */
 public class AbortVolumeFileCopyCommand extends Command {
     private StorageFilerTO pool;
@@ -38,6 +39,8 @@ public class AbortVolumeFileCopyCommand extends Command {
         this.pool = pool;
         this.path = path;
         this.exportName = exportName;
+        // It touches only the units and the partial file of this transfer, so it reaches a host in maintenance.
+        setBypassHostMaintenance(true);
     }
 
     public StorageFilerTO getPool() {

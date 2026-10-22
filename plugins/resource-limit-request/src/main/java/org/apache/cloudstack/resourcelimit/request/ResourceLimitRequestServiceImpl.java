@@ -140,6 +140,7 @@ public class ResourceLimitRequestServiceImpl extends ManagerBase implements Reso
 
     private SearchBuilder<ServiceOfferingVO> unitOfferingSearch;
     private SearchBuilder<ServiceOfferingVO> offeringWithoutGpuSearch;
+    private SearchBuilder<ServiceOfferingVO> gpuOfferingSearch;
     private ScheduledExecutorService sweepExecutor;
     private ExecutorService mailExecutor;
 
@@ -207,6 +208,11 @@ public class ResourceLimitRequestServiceImpl extends ManagerBase implements Reso
         offeringWithoutGpuSearch.and("state", offeringWithoutGpuSearch.entity().getState(), SearchCriteria.Op.EQ);
         offeringWithoutGpuSearch.and("systemUse", offeringWithoutGpuSearch.entity().isSystemUse(), SearchCriteria.Op.EQ);
         offeringWithoutGpuSearch.done();
+        gpuOfferingSearch = serviceOfferingDao.createSearchBuilder();
+        gpuOfferingSearch.and("vgpuProfileId", gpuOfferingSearch.entity().getVgpuProfileId(), SearchCriteria.Op.NNULL);
+        gpuOfferingSearch.and("state", gpuOfferingSearch.entity().getState(), SearchCriteria.Op.EQ);
+        gpuOfferingSearch.and("systemUse", gpuOfferingSearch.entity().isSystemUse(), SearchCriteria.Op.EQ);
+        gpuOfferingSearch.done();
         sweepExecutor = Executors.newScheduledThreadPool(1, new NamedThreadFactory("ResourceLimitRequestSweep"));
         mailExecutor = Executors.newSingleThreadExecutor(new NamedThreadFactory("ResourceLimitRequestMail"));
         return true;
@@ -786,6 +792,11 @@ public class ResourceLimitRequestServiceImpl extends ManagerBase implements Reso
         return units;
     }
 
+    @Override
+    public List<String> quotaGpuTypes() {
+        return new ArrayList<>(gpuUnits().keySet());
+    }
+
     protected List<ServiceOfferingVO> listOfferingsWithoutGpu() {
         SearchCriteria<ServiceOfferingVO> sc = offeringWithoutGpuSearch.create();
         sc.setParameters("state", ServiceOffering.State.Active);
@@ -796,8 +807,10 @@ public class ResourceLimitRequestServiceImpl extends ManagerBase implements Reso
     /**
      * Reports the GPU types that no active one-GPU offering sizes: those named by an approved, unexpired grant, and the
      * resource limit host tags that no one-GPU offering sizes and no active offering without a GPU carries. Their grants
-     * count nothing until such an offering exists. Logged on every run; an alert is raised when the set differs from the
-     * one last reported, which is kept in the database so that a restart or another management server does not repeat it.
+     * count nothing until such an offering exists. Also reports the active GPU offerings that carry more than one resource
+     * limit host tag: each start of one needs room under every such tag, and no grant sizes it, so every start is refused
+     * for quota. Logged on every run; an alert is raised when the report differs from the one last made, which is kept in
+     * the database so that a restart or another management server does not repeat it.
      */
     protected void reportUnsizedGpuTypes(Date now) {
         Set<String> sized = gpuUnits().keySet();
@@ -811,27 +824,56 @@ public class ResourceLimitRequestServiceImpl extends ManagerBase implements Reso
         for (ServiceOfferingVO offering : listOfferingsWithoutGpu()) {
             tagsWithoutGpu.addAll(com.cloud.utils.StringUtils.csvTagsToList(offering.getHostTag()));
         }
+        Set<String> limitTags = new TreeSet<>();
         for (String tag : resourceLimitService.getResourceLimitHostTags()) {
-            if (StringUtils.isNotBlank(tag) && !sized.contains(tag) && !tagsWithoutGpu.contains(tag)) {
-                unsized.add(tag);
+            if (StringUtils.isNotBlank(tag)) {
+                limitTags.add(tag);
+                if (!sized.contains(tag) && !tagsWithoutGpu.contains(tag)) {
+                    unsized.add(tag);
+                }
             }
         }
-        String current = String.join(",", unsized);
+        Map<String, String> severalTags = new TreeMap<>();
+        for (ServiceOfferingVO offering : listGpuOfferings()) {
+            List<String> counted = com.cloud.utils.StringUtils.csvTagsToList(offering.getHostTag()).stream().filter(limitTags::contains).distinct()
+                    .collect(Collectors.toList());
+            if (counted.size() > 1) {
+                severalTags.put(offering.getUuid(), String.format("%s (%s)", offering.getName(), String.join(",", counted)));
+            }
+        }
+        String current = String.join(",", unsized) + (severalTags.isEmpty() ? "" : ";" + String.join(",", severalTags.keySet()));
         String reported = StringUtils.defaultString(configurationDao.getValueAndInitIfNotExist(REPORTED_UNSIZED_GPU_TYPES, "Hidden", ""));
-        if (unsized.isEmpty()) {
+        if (unsized.isEmpty() && severalTags.isEmpty()) {
             if (!reported.isEmpty()) {
                 configurationDao.update(REPORTED_UNSIZED_GPU_TYPES, "Hidden", "");
             }
             return;
         }
-        logger.warn("GPU types {} have no active one-GPU offering; their grants count nothing until one exists", unsized);
+        List<String> subjects = new ArrayList<>();
+        List<String> bodies = new ArrayList<>();
+        if (!unsized.isEmpty()) {
+            logger.warn("GPU types {} have no active one-GPU offering; their grants count nothing until one exists", unsized);
+            subjects.add(String.format("GPU types without a one-GPU offering: %s", String.join(", ", unsized)));
+            bodies.add("Resource limit grants of these GPU types count nothing, and their resource limit host tags get no GPUs, until an active offering "
+                    + "with one GPU of the type exists.");
+        }
+        if (!severalTags.isEmpty()) {
+            logger.warn("GPU offerings {} carry more than one resource limit host tag; every start of them is refused for quota", severalTags.values());
+            subjects.add(String.format("GPU offerings counted against several resource limit host tags: %s", String.join(", ", severalTags.values())));
+            bodies.add("Each start of such an offering needs room under every resource limit host tag it carries, and no grant sizes it, so every start "
+                    + "is refused for quota. Give a GPU offering one resource limit host tag.");
+        }
         if (!current.equals(reported)) {
-            alertManager.sendAlert(AlertManager.AlertType.ALERT_TYPE_RESOURCE_LIMIT_EXCEEDED, 0L, null,
-                    String.format("GPU types without a one-GPU offering: %s", String.join(", ", unsized)),
-                    "Resource limit grants of these GPU types count nothing, and their resource limit host tags get no GPUs, until an active offering "
-                            + "with one GPU of the type exists.");
+            alertManager.sendAlert(AlertManager.AlertType.ALERT_TYPE_RESOURCE_LIMIT_EXCEEDED, 0L, null, String.join("; ", subjects), String.join(" ", bodies));
             configurationDao.update(REPORTED_UNSIZED_GPU_TYPES, "Hidden", current);
         }
+    }
+
+    protected List<ServiceOfferingVO> listGpuOfferings() {
+        SearchCriteria<ServiceOfferingVO> sc = gpuOfferingSearch.create();
+        sc.setParameters("state", ServiceOffering.State.Active);
+        sc.setParameters("systemUse", false);
+        return serviceOfferingDao.search(sc, null);
     }
 
     protected List<ServiceOfferingVO> listOneGpuOfferings() {

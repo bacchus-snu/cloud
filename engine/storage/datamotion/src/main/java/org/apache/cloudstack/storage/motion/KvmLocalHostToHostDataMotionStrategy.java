@@ -19,10 +19,12 @@
 package org.apache.cloudstack.storage.motion;
 
 import java.nio.file.Paths;
+import java.util.HashMap;
 import java.util.Map;
 
 import javax.inject.Inject;
 
+import org.apache.cloudstack.engine.orchestration.service.VolumeOrchestrationService;
 import org.apache.cloudstack.engine.subsystem.api.storage.CopyCommandResult;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataMotionStrategy;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataObject;
@@ -35,6 +37,10 @@ import org.apache.cloudstack.engine.subsystem.api.storage.VolumeInfo;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeService;
 import org.apache.cloudstack.framework.async.AsyncCompletionCallback;
 import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
+import org.apache.cloudstack.framework.jobs.AsyncJob;
+import org.apache.cloudstack.framework.jobs.AsyncJobExecutionContext;
+import org.apache.cloudstack.framework.jobs.AsyncJobManager;
+import org.apache.cloudstack.jobs.JobInfo;
 import org.apache.cloudstack.storage.command.CopyCmdAnswer;
 import org.apache.cloudstack.storage.to.TemplateObjectTO;
 import org.apache.cloudstack.storage.to.VolumeObjectTO;
@@ -45,20 +51,26 @@ import com.cloud.agent.AgentManager;
 import com.cloud.agent.api.Answer;
 import com.cloud.agent.api.Command;
 import com.cloud.agent.api.storage.AbortVolumeFileCopyCommand;
-import com.cloud.agent.api.storage.CopyVolumeFileFromHostAnswer;
+import com.cloud.agent.api.storage.CheckVolumeFileTransferAnswer;
+import com.cloud.agent.api.storage.CheckVolumeFileTransferCommand;
 import com.cloud.agent.api.storage.CopyVolumeFileFromHostCommand;
+import com.cloud.agent.api.storage.FinishVolumeFileCopyAnswer;
+import com.cloud.agent.api.storage.FinishVolumeFileCopyCommand;
 import com.cloud.agent.api.storage.InspectVolumeFileAnswer;
 import com.cloud.agent.api.storage.InspectVolumeFileCommand;
 import com.cloud.agent.api.storage.PrepareVolumeFileCopyAnswer;
 import com.cloud.agent.api.storage.PrepareVolumeFileCopyCommand;
 import com.cloud.agent.api.storage.StartVolumeExportAnswer;
 import com.cloud.agent.api.storage.StartVolumeExportCommand;
+import com.cloud.agent.api.storage.StartVolumeFileHashCommand;
 import com.cloud.agent.api.storage.StopVolumeExportCommand;
 import com.cloud.agent.api.to.StorageFilerTO;
 import com.cloud.agent.api.to.VirtualMachineTO;
 import com.cloud.configuration.Config;
+import com.cloud.configuration.ManagementServiceConfiguration;
 import com.cloud.host.Host;
 import com.cloud.host.HostVO;
+import com.cloud.host.Status;
 import com.cloud.host.dao.HostDao;
 import com.cloud.hypervisor.Hypervisor.HypervisorType;
 import com.cloud.storage.DataStoreRole;
@@ -71,7 +83,10 @@ import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.VMTemplateDao;
 import com.cloud.storage.dao.VMTemplatePoolDao;
 import com.cloud.storage.dao.VolumeDao;
+import com.cloud.storage.dao.VolumeDetailsDao;
+import com.cloud.storage.VolumeDetailVO;
 import com.cloud.utils.NumbersUtil;
+import com.cloud.utils.db.GlobalLock;
 import com.cloud.utils.exception.CloudRuntimeException;
 
 /**
@@ -80,14 +95,35 @@ import com.cloud.utils.exception.CloudRuntimeException;
  * certificate, which pulls it, verifies length and SHA-256 and only then puts it in place. A qcow2
  * overlay keeps its backing file: the template base is put on the destination pool first (from
  * the source pool when needed) and the overlay is pointed at it there.
+ * <p>
+ * The hosts run every long step (the export, the pull with its read-back, the hashing) as units of their own; each
+ * request to an agent returns at once, and this strategy follows the units by polling. A volume copy takes one of the
+ * copy slots ({@link VolumeOrchestrationService#VolumeMoveConcurrencyPerHost}) of each of its two hosts for its whole
+ * duration, the copy of the base it needs included, and waits for them when the hosts are busy. A slot is a volume
+ * detail of the volume the copy goes to, owned by the copy's async job, so the bound holds across management servers
+ * and a slot whose job ended frees itself.
  */
 public class KvmLocalHostToHostDataMotionStrategy implements DataMotionStrategy {
     protected Logger logger = LogManager.getLogger(getClass());
 
     /** The export outlives the copy that reads it by this many seconds. */
     static final int EXPORT_GRACE_SECONDS = 300;
+    /** A unit is given up this many seconds after its own time limit. */
+    static final int UNIT_GRACE_SECONDS = 60;
+    static final long POLL_MILLIS = 5_000L;
+    /** The short commands of a transfer read no data, so they are given up quickly. */
+    static final int CHECK_WAIT_SECONDS = 60;
+    static final int INSPECT_WAIT_SECONDS = 300;
+    static final long SLOT_POLL_MILLIS = 10_000L;
+    private static final int SLOT_LOCK_SECONDS = 60;
+    private static final String SLOT_LOCK = "volume.transfer.slots";
     private static final long VERIFY_BASE_SECONDS = 600;
     private static final long VERIFY_BYTES_PER_SECOND = 100L << 20;
+    /**
+     * The volume copy running in this thread: its source host, destination host and destination volume. The copy of the
+     * base it needs shares its slots and is recorded on that volume.
+     */
+    private static final ThreadLocal<long[]> HELD_SLOTS = new ThreadLocal<>();
 
     @Inject
     private HostDao hostDao;
@@ -103,6 +139,10 @@ public class KvmLocalHostToHostDataMotionStrategy implements DataMotionStrategy 
     private VolumeService volumeService;
     @Inject
     private VMTemplateDao templateDao;
+    @Inject
+    private VolumeDetailsDao volumeDetailsDao;
+    @Inject
+    private AsyncJobManager jobManager;
 
     /** A template's base on the destination pool, and the format it is stored in. */
     private static final class Base {
@@ -161,7 +201,7 @@ public class KvmLocalHostToHostDataMotionStrategy implements DataMotionStrategy 
     public void copyAsync(DataObject srcData, DataObject destData, Host destHost, AsyncCompletionCallback<CopyCommandResult> callback) {
         CopyCommandResult result;
         try {
-            Answer answer = srcData instanceof VolumeInfo ? copyVolume((VolumeInfo)srcData, (VolumeInfo)destData)
+            Answer answer = srcData instanceof VolumeInfo ? copyVolumeInSlots((VolumeInfo)srcData, (VolumeInfo)destData)
                     : copyTemplate((TemplateInfo)srcData, (TemplateInfo)destData);
             result = new CopyCommandResult(null, answer);
         } catch (Exception e) {
@@ -180,14 +220,128 @@ public class KvmLocalHostToHostDataMotionStrategy implements DataMotionStrategy 
     }
 
     /**
-     * Seconds the destination needs after the pull: reading the file back (at no less than 100 MiB/s), rebasing and checking it.
+     * Seconds a host needs beyond the transfer to read a file of this length back (at no less than 100 MiB/s).
      */
     static int verifySeconds(long length) {
         return (int)Math.min(Integer.MAX_VALUE / 2, VERIFY_BASE_SECONDS + length / VERIFY_BYTES_PER_SECOND);
     }
 
+    /**
+     * Seconds a unit reading a file of this length, after a transfer of at most {@code wait} seconds, may run.
+     */
+    static int unitSeconds(int wait, long length) {
+        return (int)Math.min(Integer.MAX_VALUE / 2, (long)wait + verifySeconds(length));
+    }
+
+    protected long now() {
+        return System.currentTimeMillis();
+    }
+
+    /**
+     * Milliseconds an agent may stay silent before the management server takes it for gone, as it does for any agent.
+     */
+    long agentDeadMillis() {
+        Integer interval = ManagementServiceConfiguration.PingInterval.value();
+        Float timeout = ManagementServiceConfiguration.PingTimeout.value();
+        return (long)((interval == null ? 60 : interval) * (timeout == null ? 2.5f : timeout) * 1000);
+    }
+
+    protected void pause(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new CloudRuntimeException("Interrupted while a volume copy waited", e);
+        }
+    }
+
+    protected long currentJobId() {
+        AsyncJobExecutionContext context = AsyncJobExecutionContext.getCurrentExecutionContext();
+        if (context == null || context.getJob() == null) {
+            throw new CloudRuntimeException("Volumes are copied between hosts only within an async job.");
+        }
+        return context.getJob().getId();
+    }
+
+    private boolean isJobRunning(long jobId) {
+        AsyncJob job = jobManager.getAsyncJob(jobId);
+        return job != null && job.getStatus() == JobInfo.Status.IN_PROGRESS;
+    }
+
+    /**
+     * Takes a copy slot of each of the two hosts for the copy into the given volume, waiting while either host already
+     * takes part in as many copies as the bound allows. The slots are counted from the slot details of every volume,
+     * under a lock all management servers share; a slot whose job no longer runs is removed as it is counted.
+     */
+    protected void acquireSlots(long volumeId, long srcHostId, long destHostId, int waitSeconds) {
+        long jobId = currentJobId();
+        long deadline = now() + waitSeconds * 1000L;
+        boolean announced = false;
+        while (true) {
+            Integer bound = VolumeOrchestrationService.VolumeMoveConcurrencyPerHost.value();
+            GlobalLock lock = GlobalLock.getInternLock(SLOT_LOCK);
+            try {
+                if (lock.lock(SLOT_LOCK_SECONDS)) {
+                    try {
+                        Map<Long, Integer> busy = liveSlotsPerHost();
+                        if (bound == null || bound <= 0 || (busy.getOrDefault(srcHostId, 0) < bound && busy.getOrDefault(destHostId, 0) < bound)) {
+                            volumeDetailsDao.addDetail(volumeId, VolumeOrchestrationService.TRANSFER_SLOT, srcHostId + "," + destHostId + "," + jobId, false);
+                            return;
+                        }
+                    } finally {
+                        lock.unlock();
+                    }
+                }
+            } finally {
+                lock.releaseRef();
+            }
+            if (now() > deadline) {
+                throw new CloudRuntimeException(String.format("Hosts %d and %d take part in as many volume copies as %s allows; no slot came free within %d seconds.",
+                        srcHostId, destHostId, VolumeOrchestrationService.VolumeMoveConcurrencyPerHost.key(), waitSeconds));
+            }
+            if (!announced) {
+                logger.info("The copy into volume {} waits for a copy slot of hosts {} and {}", volumeId, srcHostId, destHostId);
+                announced = true;
+            }
+            pause(SLOT_POLL_MILLIS);
+        }
+    }
+
+    private Map<Long, Integer> liveSlotsPerHost() {
+        Map<Long, Integer> busy = new HashMap<>();
+        for (VolumeDetailVO slot : volumeDetailsDao.findDetails(VolumeOrchestrationService.TRANSFER_SLOT)) {
+            String[] fields = slot.getValue() == null ? new String[0] : slot.getValue().split(",");
+            Long jobId = fields.length == 3 ? NumbersUtil.parseLong(fields[2], -1L) : -1L;
+            if (jobId < 0 || !isJobRunning(jobId)) {
+                volumeDetailsDao.removeDetail(slot.getResourceId(), VolumeOrchestrationService.TRANSFER_SLOT);
+                continue;
+            }
+            for (int i = 0; i < 2; i++) {
+                busy.merge(NumbersUtil.parseLong(fields[i], -1L), 1, Integer::sum);
+            }
+        }
+        return busy;
+    }
+
+    private void releaseSlots(long volumeId) {
+        volumeDetailsDao.removeDetail(volumeId, VolumeOrchestrationService.TRANSFER_SLOT);
+    }
+
     int copyWaitSeconds() {
         return NumbersUtil.parseInt(configDao.getValue(Config.CopyVolumeWait.key()), Integer.parseInt(Config.CopyVolumeWait.getDefaultValue()));
+    }
+
+    private Answer copyVolumeInSlots(VolumeInfo src, VolumeInfo dest) {
+        long srcHostId = localHostId(src.getDataStore());
+        long destHostId = localHostId(dest.getDataStore());
+        acquireSlots(dest.getId(), srcHostId, destHostId, copyWaitSeconds());
+        HELD_SLOTS.set(new long[] {srcHostId, destHostId, dest.getId()});
+        try {
+            return copyVolume(src, dest);
+        } finally {
+            HELD_SLOTS.remove();
+            releaseSlots(dest.getId());
+        }
     }
 
     private Answer copyVolume(VolumeInfo src, VolumeInfo dest) {
@@ -202,12 +356,12 @@ public class KvmLocalHostToHostDataMotionStrategy implements DataMotionStrategy 
             destVolume.setPath(destPath);
             volumeDao.update(destVolume.getId(), destVolume);
         }
-        InspectVolumeFileAnswer inspected = inspect(localHostId(srcStore), srcStore, src.getPath(), formatOf(src.getFormat()), wait);
+        InspectVolumeFileAnswer inspected = inspect(localHostId(srcStore), srcStore, src.getPath(), formatOf(src.getFormat()));
         if (inspected.getChainDepth() > 1) {
             throw new CloudRuntimeException(String.format("Volume %s has a backing chain of %d images; only a single template base is supported.",
                     src, inspected.getChainDepth()));
         }
-        Base base = inspected.getChainDepth() == 1 ? templateBaseOnDestination(src, srcStore, destStore, inspected) : null;
+        Base base = inspected.getChainDepth() == 1 ? templateBaseOnDestination(src, srcStore, destStore, inspected, dest.getUuid()) : null;
         transfer(srcStore, src.getPath(), destStore, destPath, inspected, base == null ? null : base.installPath, base == null ? null : base.format,
                 dest.getUuid(), wait);
         VolumeObjectTO copied = new VolumeObjectTO();
@@ -231,7 +385,8 @@ public class KvmLocalHostToHostDataMotionStrategy implements DataMotionStrategy 
      * The overlay's base must be the template's base on the source pool, recorded in the format that base is stored
      * in; the same template's base is then made present on the destination pool.
      */
-    private Base templateBaseOnDestination(VolumeInfo src, PrimaryDataStore srcStore, PrimaryDataStore destStore, InspectVolumeFileAnswer overlay) {
+    private Base templateBaseOnDestination(VolumeInfo src, PrimaryDataStore srcStore, PrimaryDataStore destStore, InspectVolumeFileAnswer overlay,
+            String name) {
         String backingFile = overlay.getBackingFile();
         Long templateId = src.getTemplateId();
         if (templateId == null) {
@@ -256,9 +411,24 @@ public class KvmLocalHostToHostDataMotionStrategy implements DataMotionStrategy 
         if (template.isDirectDownload()) {
             // Each pool downloads a direct-download template from its URL itself, so its base may hold other bytes.
             int wait = copyWaitSeconds();
-            String sourceHash = inspect(localHostId(srcStore), srcStore, sourceBase.getInstallPath(), format, wait).getSha256();
-            String destinationHash = inspect(localHostId(destStore), destStore, destinationBase, format, wait).getSha256();
-            if (!sourceHash.equalsIgnoreCase(destinationHash)) {
+            long srcHostId = localHostId(srcStore);
+            long destHostId = localHostId(destStore);
+            InspectVolumeFileAnswer sourceBaseFile = inspect(srcHostId, srcStore, sourceBase.getInstallPath(), format);
+            InspectVolumeFileAnswer destinationBaseFile = inspect(destHostId, destStore, destinationBase, format);
+            CheckVolumeFileTransferAnswer sourceHash;
+            CheckVolumeFileTransferAnswer destinationHash;
+            int sourceLifetime = unitSeconds(wait, sourceBaseFile.getLength());
+            int destinationLifetime = unitSeconds(wait, destinationBaseFile.getLength());
+            try {
+                startHash(srcHostId, srcStore, sourceBase.getInstallPath(), name, sourceLifetime);
+                startHash(destHostId, destStore, destinationBase, name, destinationLifetime);
+                sourceHash = awaitUnit(srcHostId, destHostId, CheckVolumeFileTransferCommand.Kind.HASH, name, sourceLifetime);
+                destinationHash = awaitUnit(destHostId, srcHostId, CheckVolumeFileTransferCommand.Kind.HASH, name, destinationLifetime);
+            } finally {
+                sendQuietly(srcHostId, new StopVolumeExportCommand(name));
+                sendQuietly(destHostId, new StopVolumeExportCommand(name));
+            }
+            if (sourceHash.getLength() != destinationHash.getLength() || !sourceHash.getSha256().equalsIgnoreCase(destinationHash.getSha256())) {
                 throw new CloudRuntimeException(String.format("The base of direct-download template %s on pool %s holds different bytes than on pool %s;"
                         + " volume %s cannot be put onto it.", template.getUuid(), destStore.getName(), srcStore.getName(), src));
             }
@@ -266,19 +436,34 @@ public class KvmLocalHostToHostDataMotionStrategy implements DataMotionStrategy 
         return new Base(destinationBase, format);
     }
 
+    /**
+     * Copies the base of a template for the volume copy that needs it, within that copy's slots: a base is copied
+     * between hosts only so.
+     */
     private Answer copyTemplate(TemplateInfo src, TemplateInfo dest) {
         PrimaryDataStore srcStore = (PrimaryDataStore)src.getDataStore();
         PrimaryDataStore destStore = (PrimaryDataStore)dest.getDataStore();
+        long[] held = HELD_SLOTS.get();
+        if (held == null || held[0] != localHostId(srcStore) || held[1] != localHostId(destStore)) {
+            throw new CloudRuntimeException(String.format("The base of template %s is copied from pool %s to pool %s only for a volume copy between the same hosts.",
+                    src.getUuid(), srcStore.getName(), destStore.getName()));
+        }
         int wait = copyWaitSeconds();
-        InspectVolumeFileAnswer inspected = inspect(localHostId(srcStore), srcStore, src.getInstallPath(), baseFormat(src.isDirectDownload(), src.getFormat()),
-                wait);
+        InspectVolumeFileAnswer inspected = inspect(localHostId(srcStore), srcStore, src.getInstallPath(), baseFormat(src.isDirectDownload(), src.getFormat()));
         if (inspected.getChainDepth() != 0) {
             throw new CloudRuntimeException(String.format("The base of template %s on pool %s has a backing file.", src, srcStore.getName()));
         }
         // The base file of a template on a pool is named after the template's UUID.
         String destPath = dest.getUuid();
-        CopyVolumeFileFromHostAnswer pulled = transfer(srcStore, src.getInstallPath(), destStore, destPath, inspected, null, null,
-                String.format("template-%d-%d", dest.getId(), destStore.getId()), wait);
+        String name = VolumeOrchestrationService.templateBaseTransferName(dest.getId(), destStore.getId());
+        // recorded so that whoever recovers the volume copy also stops this transfer
+        volumeDetailsDao.addDetail(held[2], VolumeOrchestrationService.RELOCATION_BASE, name + "," + destPath, false);
+        FinishVolumeFileCopyAnswer pulled;
+        try {
+            pulled = transfer(srcStore, src.getInstallPath(), destStore, destPath, inspected, null, null, name, wait);
+        } finally {
+            volumeDetailsDao.removeDetail(held[2], VolumeOrchestrationService.RELOCATION_BASE);
+        }
         TemplateObjectTO copied = new TemplateObjectTO();
         copied.setUuid(dest.getUuid());
         copied.setPath(destPath);
@@ -295,8 +480,8 @@ public class KvmLocalHostToHostDataMotionStrategy implements DataMotionStrategy 
         return format.toString().toLowerCase();
     }
 
-    private InspectVolumeFileAnswer inspect(long hostId, PrimaryDataStore store, String path, String format, int wait) {
-        Answer answer = send(hostId, new InspectVolumeFileCommand(new StorageFilerTO(store), path, format, wait));
+    private InspectVolumeFileAnswer inspect(long hostId, PrimaryDataStore store, String path, String format) {
+        Answer answer = send(hostId, new InspectVolumeFileCommand(new StorageFilerTO(store), path, format, INSPECT_WAIT_SECONDS));
         if (!(answer instanceof InspectVolumeFileAnswer) || !answer.getResult()) {
             throw new CloudRuntimeException(String.format("Unable to inspect %s on pool %s: %s", path, store.getName(), details(answer)));
         }
@@ -304,11 +489,12 @@ public class KvmLocalHostToHostDataMotionStrategy implements DataMotionStrategy 
     }
 
     /**
-     * Exports the source file to exactly the destination host's TLS identity, has the destination pull and
-     * verify it, and always stops the export. A pull that did not end cleanly is aborted so that no partial
-     * file stays behind.
+     * Exports the source file to exactly the destination host's TLS identity and has the destination pull it, while
+     * the source hashes it; once both units have ended, the destination puts the file in place only if what it read
+     * back has the source's length and SHA-256. The export and the hashing are always stopped, and a pull that did not
+     * end in place is aborted so that no partial file stays behind.
      */
-    private CopyVolumeFileFromHostAnswer transfer(PrimaryDataStore srcStore, String srcPath, PrimaryDataStore destStore, String destPath,
+    private FinishVolumeFileCopyAnswer transfer(PrimaryDataStore srcStore, String srcPath, PrimaryDataStore destStore, String destPath,
             InspectVolumeFileAnswer inspected, String backingInstallPath, String backingFormat, String name, int wait) {
         long srcHostId = localHostId(srcStore);
         long destHostId = localHostId(destStore);
@@ -316,30 +502,108 @@ public class KvmLocalHostToHostDataMotionStrategy implements DataMotionStrategy 
         if (!(prepared instanceof PrepareVolumeFileCopyAnswer) || !prepared.getResult()) {
             throw new CloudRuntimeException(String.format("Host %d cannot receive the copy: %s", destHostId, details(prepared)));
         }
-        Answer exported = send(srcHostId, new StartVolumeExportCommand(new StorageFilerTO(srcStore), srcPath, name,
-                ((PrepareVolumeFileCopyAnswer)prepared).getClientIdentity(), wait + EXPORT_GRACE_SECONDS));
-        if (!(exported instanceof StartVolumeExportAnswer) || !exported.getResult()) {
-            throw new CloudRuntimeException(String.format("Host %d cannot export %s: %s", srcHostId, srcPath, details(exported)));
-        }
+        int lifetime = unitSeconds(wait, inspected.getLength());
         boolean copied = false;
         try {
+            startHash(srcHostId, srcStore, srcPath, name, lifetime);
+            Answer exported = send(srcHostId, new StartVolumeExportCommand(new StorageFilerTO(srcStore), srcPath, name,
+                    ((PrepareVolumeFileCopyAnswer)prepared).getClientIdentity(), lifetime + EXPORT_GRACE_SECONDS));
+            if (!(exported instanceof StartVolumeExportAnswer) || !exported.getResult()) {
+                throw new CloudRuntimeException(String.format("Host %d cannot export %s: %s", srcHostId, srcPath, details(exported)));
+            }
             StartVolumeExportAnswer export = (StartVolumeExportAnswer)exported;
-            Answer answer = send(destHostId, new CopyVolumeFileFromHostCommand(export.getAddress(), export.getPort(), name, new StorageFilerTO(destStore),
-                    destPath, inspected.getFormat(), inspected.getLength(), inspected.getSha256(), backingInstallPath, backingFormat, wait, wait + verifySeconds(inspected.getLength())));
-            if (!(answer instanceof CopyVolumeFileFromHostAnswer) || !answer.getResult()) {
+            Answer started = send(destHostId, new CopyVolumeFileFromHostCommand(export.getAddress(), export.getPort(), name, new StorageFilerTO(destStore),
+                    destPath, inspected.getLength(), lifetime));
+            if (started == null || !started.getResult()) {
+                throw new CloudRuntimeException(String.format("Host %d cannot copy %s from host %d: %s", destHostId, srcPath, srcHostId, details(started)));
+            }
+            CheckVolumeFileTransferAnswer pulled = awaitUnit(destHostId, srcHostId, CheckVolumeFileTransferCommand.Kind.PULL, name, lifetime);
+            CheckVolumeFileTransferAnswer hashed = awaitUnit(srcHostId, destHostId, CheckVolumeFileTransferCommand.Kind.HASH, name, lifetime);
+            if (hashed.getLength() != inspected.getLength()) {
+                throw new CloudRuntimeException(String.format("%s on host %d changed during the copy: %d bytes, then %d.", srcPath, srcHostId,
+                        inspected.getLength(), hashed.getLength()));
+            }
+            Answer answer = send(destHostId, new FinishVolumeFileCopyCommand(new StorageFilerTO(destStore), destPath, name, inspected.getFormat(),
+                    inspected.getLength(), hashed.getSha256(), backingInstallPath, backingFormat));
+            if (!(answer instanceof FinishVolumeFileCopyAnswer) || !answer.getResult()) {
                 throw new CloudRuntimeException(String.format("Copying %s from host %d to host %d failed: %s", srcPath, srcHostId, destHostId, details(answer)));
             }
-            if (!inspected.getSha256().equalsIgnoreCase(((CopyVolumeFileFromHostAnswer)answer).getSha256())) {
-                throw new CloudRuntimeException(String.format("Host %d reported SHA-256 %s for %s, expected %s.", destHostId,
-                        ((CopyVolumeFileFromHostAnswer)answer).getSha256(), destPath, inspected.getSha256()));
+            FinishVolumeFileCopyAnswer finished = (FinishVolumeFileCopyAnswer)answer;
+            if (!hashed.getSha256().equalsIgnoreCase(finished.getSha256()) || !hashed.getSha256().equalsIgnoreCase(pulled.getSha256())) {
+                throw new CloudRuntimeException(String.format("Host %d reported SHA-256 %s for %s, expected %s.", destHostId, finished.getSha256(), destPath,
+                        hashed.getSha256()));
             }
             copied = true;
-            return (CopyVolumeFileFromHostAnswer)answer;
+            return finished;
         } finally {
             if (!copied) {
                 sendQuietly(destHostId, new AbortVolumeFileCopyCommand(new StorageFilerTO(destStore), destPath, name));
             }
             sendQuietly(srcHostId, new StopVolumeExportCommand(name));
+        }
+    }
+
+    private void startHash(long hostId, PrimaryDataStore store, String path, String name, int lifetime) {
+        Answer started = send(hostId, new StartVolumeFileHashCommand(new StorageFilerTO(store), path, name, lifetime));
+        if (started == null || !started.getResult()) {
+            throw new CloudRuntimeException(String.format("Host %d cannot hash %s: %s", hostId, path, details(started)));
+        }
+    }
+
+    /**
+     * Follows the unit of the given kind and name on the host until it ends, at most {@code lifetime} seconds and a
+     * grace. A host that cannot be asked for a while does not end the wait, as the unit runs on regardless, unless the
+     * management server holds it for Down, or it has not been Up for longer than an agent may stay silent. The wait also
+     * ends once this host or the other host of the transfer, {@code peerHostId}, is in a maintenance state.
+     *
+     * @return the outcome of a unit that succeeded
+     */
+    protected CheckVolumeFileTransferAnswer awaitUnit(long hostId, long peerHostId, CheckVolumeFileTransferCommand.Kind kind, String name, int lifetime) {
+        String what = kind == CheckVolumeFileTransferCommand.Kind.PULL ? "copy" : "hashing";
+        long deadline = now() + (lifetime + (long)UNIT_GRACE_SECONDS) * 1000L;
+        Long notUpSince = null;
+        while (true) {
+            Answer answer;
+            try {
+                CheckVolumeFileTransferCommand check = new CheckVolumeFileTransferCommand(kind, name);
+                check.setWait(CHECK_WAIT_SECONDS);
+                answer = agentManager.send(hostId, check);
+            } catch (Exception e) {
+                answer = null;
+                logger.debug("Unable to ask host {} about {} {}: {}", hostId, kind, name, e.getMessage());
+            }
+            if (answer instanceof CheckVolumeFileTransferAnswer && answer.getResult()) {
+                CheckVolumeFileTransferAnswer checked = (CheckVolumeFileTransferAnswer)answer;
+                if (checked.getState() == CheckVolumeFileTransferAnswer.State.SUCCEEDED) {
+                    return checked;
+                }
+                if (checked.getState() == CheckVolumeFileTransferAnswer.State.FAILED) {
+                    throw new CloudRuntimeException(String.format("The %s of %s on host %d failed: %s", what, name, hostId, checked.getDetails()));
+                }
+                notUpSince = null;
+            } else {
+                HostVO host = hostDao.findById(hostId);
+                Status status = host == null ? Status.Removed : host.getStatus();
+                if (status == Status.Up) {
+                    notUpSince = null;
+                } else {
+                    notUpSince = notUpSince == null ? now() : notUpSince;
+                    if (status == Status.Down || status == Status.Removed || now() - notUpSince > agentDeadMillis()) {
+                        throw new CloudRuntimeException(String.format("Host %d is %s; the %s of %s on it is given up.", hostId, status, what, name));
+                    }
+                }
+            }
+            for (long id : new long[] {hostId, peerHostId}) {
+                HostVO host = hostDao.findById(id);
+                if (VolumeOrchestrationService.inMaintenance(host)) {
+                    throw new CloudRuntimeException(String.format("Host %d is in %s; the %s of %s is given up.", id, host.getResourceState(), what, name));
+                }
+            }
+            if (now() > deadline) {
+                throw new CloudRuntimeException(String.format("The %s of %s on host %d did not end within %d seconds.", what, name, hostId,
+                        lifetime + UNIT_GRACE_SECONDS));
+            }
+            pause(POLL_MILLIS);
         }
     }
 

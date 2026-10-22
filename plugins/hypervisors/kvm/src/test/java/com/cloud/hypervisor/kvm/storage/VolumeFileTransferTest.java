@@ -21,13 +21,17 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.Security;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
+import java.util.Random;
 
 import org.apache.cloudstack.utils.security.CertUtils;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
@@ -85,9 +89,78 @@ public class VolumeFileTransferTest {
         Files.write(file, new byte[] {1});
         Files.write(pool.resolve("f00dcafe" + VolumeFileTransfer.PART_SUFFIX), new byte[] {2});
         FakeProcessRunner runner = new FakeProcessRunner(command -> null);
-        new VolumeFileTransfer(runner, pool).abort("f00dcafe", file);
+        new VolumeFileTransfer(runner, pool, pool.resolve("state")).abort("f00dcafe", file);
         assertEquals(Arrays.asList("systemctl", "stop", "cloudstack-volume-copy-f00dcafe"), runner.commands.get(0));
         assertTrue(Files.exists(file));
         assertFalse(Files.exists(pool.resolve("f00dcafe" + VolumeFileTransfer.PART_SUFFIX)));
+    }
+
+    private static String runScript(String script, String... arguments) {
+        List<String> command = new ArrayList<>(Arrays.asList("sh", "-c", script, "sh"));
+        command.addAll(Arrays.asList(arguments));
+        VolumeFileTransfer.ProcessResult result = new VolumeFileTransfer.SystemProcessRunner().run(command, 60_000L);
+        return result.getExitCode() + ":" + result.getOutput();
+    }
+
+    private static byte[] bytes(int length, int seed) {
+        byte[] data = new byte[length];
+        new Random(seed).nextBytes(data);
+        return data;
+    }
+
+    @Test
+    public void pullScriptRecordsTheHashOfWhatItReadsBackUpToTheExpectedLength() throws Exception {
+        Path dir = folder.newFolder("pull").toPath();
+        byte[] source = bytes(196768, 1);
+        Path exported = dir.resolve("exported");
+        Files.write(exported, Arrays.copyOf(source, 197120));
+        Path part = dir.resolve("copy.part");
+        Path result = dir.resolve("copy.result");
+
+        String ran = runScript(VolumeFileTransfer.PULL_SCRIPT, part.toString(), String.valueOf(source.length), result.toString(),
+                "cp", exported.toString(), part.toString());
+
+        assertTrue(ran, ran.startsWith("0:"));
+        assertEquals("the hash covers the expected length, the length is the file's own", FakeProcessRunner.sha256(source) + " 197120\n",
+                new String(Files.readAllBytes(result), StandardCharsets.UTF_8));
+        assertFalse(Files.exists(dir.resolve("copy.result.tmp")));
+    }
+
+    @Test
+    public void pullScriptThatFailsRecordsNothing() throws Exception {
+        Path dir = folder.newFolder("failed").toPath();
+        Path result = dir.resolve("copy.result");
+
+        String ran = runScript(VolumeFileTransfer.PULL_SCRIPT, dir.resolve("copy.part").toString(), "10", result.toString(), "false");
+
+        assertFalse(ran, ran.startsWith("0:"));
+        assertFalse(Files.exists(result));
+    }
+
+    @Test
+    public void hashScriptRecordsTheHashAndLengthOfTheWholeFile() throws Exception {
+        Path dir = folder.newFolder("hash").toPath();
+        byte[] data = bytes(300001, 2);
+        Path file = dir.resolve("volume");
+        Files.write(file, data);
+        Path result = dir.resolve("hash.result");
+
+        String ran = runScript(VolumeFileTransfer.HASH_SCRIPT, file.toString(), result.toString());
+
+        assertTrue(ran, ran.startsWith("0:"));
+        assertEquals(FakeProcessRunner.sha256(data) + " 300001\n", new String(Files.readAllBytes(result), StandardCharsets.UTF_8));
+    }
+
+    @Test
+    public void agentPackageShipsTheTransferSliceAsATopLevelLowWeightSlice() throws Exception {
+        assertFalse("a name without a dash places the slice at the top level", VolumeFileTransfer.TRANSFER_SLICE.replace(".slice", "").contains("-"));
+        Path slice = Path.of("../../../packaging/systemd", VolumeFileTransfer.TRANSFER_SLICE);
+        List<String> lines = Files.readAllLines(slice);
+        assertTrue(lines.contains("[Slice]"));
+        assertTrue(lines.contains("CPUWeight=10"));
+        assertTrue(lines.contains("IOWeight=10"));
+        assertFalse("a copy always progresses", lines.stream().anyMatch(line -> line.contains("idle")));
+        assertTrue(Files.readAllLines(Path.of("../../../debian/rules")).stream().anyMatch(line -> line.contains("packaging/systemd/" + VolumeFileTransfer.TRANSFER_SLICE)
+                && line.contains("$(PACKAGE)-agent/lib/systemd/system/")));
     }
 }

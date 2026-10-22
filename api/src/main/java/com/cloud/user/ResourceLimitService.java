@@ -193,6 +193,11 @@ public interface ResourceLimitService {
     long getRemainingStorageQuota(Account account);
 
     /**
+     * @return whether {@link #ResourceLimitStorageCombined} applies to the account, evaluated at the account's scope
+     */
+    boolean isStorageQuotaCombined(Account account);
+
+    /**
      * The one check behind every refusal to start, or renew the lease of, an Instance whose owner is over quota. Limits only
      * bound new allocations, and an Instance that is counted while stopped is not checked again when it starts, so a start
      * is refused while the owner's count already exceeds a limit, for example after the grant behind it expired.

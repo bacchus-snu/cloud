@@ -16,6 +16,8 @@
 // under the License.
 package com.cloud.api;
 
+import org.apache.cloudstack.framework.config.ConfigDepot;
+import java.util.Set;
 import static org.mockito.ArgumentMatchers.nullable;
 
 import java.io.IOException;
@@ -602,5 +604,68 @@ public class ApiServletTest {
         params.put("name", new String[] { "key" });
         boolean result = servlet.isStateChangingCommandNotUsingPOST(command, method, params);
         Assert.assertTrue(result);
+    }
+
+    private Set<String> maskedFor(Map<String, String[]> params, String... encryptedSettings) throws Exception {
+        ConfigDepot depot = Mockito.mock(ConfigDepot.class);
+        for (String name : encryptedSettings) {
+            Mockito.when(depot.isEncryptedSetting(name)).thenReturn(true);
+        }
+        Field depotField = ApiServlet.class.getDeclaredField("configDepot");
+        depotField.setAccessible(true);
+        depotField.set(servlet, depot);
+        return servlet.encryptedSettingValueParams(params);
+    }
+
+    @Test
+    public void valueOfASecureSettingIsNeverLogged() throws Exception {
+        Map<String, String[]> params = new HashMap<>();
+        params.put("command", new String[] {"updateConfiguration"});
+        params.put("name", new String[] {"resource.request.smtp.password"});
+        params.put("value", new String[] {"s3cret"});
+        params.put("zoneid", new String[] {"zone-1"});
+
+        Set<String> masked = maskedFor(params, "resource.request.smtp.password");
+
+        Assert.assertEquals(Set.of("value"), masked);
+        String posted = servlet.getCleanParamsString(params, masked);
+        Assert.assertFalse(posted, posted.contains("s3cret"));
+        Assert.assertTrue(posted, posted.contains("value=*****"));
+        Assert.assertTrue("the name of the setting stays", posted.contains("name=resource.request.smtp.password"));
+        Assert.assertEquals("command=updateConfiguration&name=resource.request.smtp.password&value=*****&zoneid=zone-1",
+                ApiServlet.cleanQueryString("command=updateConfiguration&name=resource.request.smtp.password&value=s3cret&zoneid=zone-1", masked));
+    }
+
+    @Test
+    public void valueOfAnOrdinarySettingIsLogged() throws Exception {
+        Map<String, String[]> params = new HashMap<>();
+        params.put("command", new String[] {"updateConfiguration"});
+        params.put("name", new String[] {"vm.pool.vcpu.step"});
+        params.put("value", new String[] {"4"});
+
+        Set<String> masked = maskedFor(params);
+
+        Assert.assertTrue(masked.isEmpty());
+        Assert.assertTrue(servlet.getCleanParamsString(params, masked).contains("value=4"));
+    }
+
+    @Test
+    public void detailNamingASecureSettingIsNeverLogged() throws Exception {
+        Map<String, String[]> params = new HashMap<>();
+        params.put("command", new String[] {"updateZone"});
+        params.put("details[0].key", new String[] {"resource.request.smtp.password"});
+        params.put("details[0].value", new String[] {"s3cret"});
+        params.put("details[1].resource.request.smtp.password", new String[] {"other"});
+        params.put("details[2].key", new String[] {"guest.domain.suffix"});
+        params.put("details[2].value", new String[] {"example.org"});
+
+        Set<String> masked = maskedFor(params, "resource.request.smtp.password");
+
+        Assert.assertEquals(Set.of("details[0].value", "details[1].resource.request.smtp.password"), masked);
+        String posted = servlet.getCleanParamsString(params, masked);
+        Assert.assertFalse(posted, posted.contains("s3cret") || posted.contains("other"));
+        Assert.assertTrue(posted, posted.contains("example.org"));
+        Assert.assertEquals("command=updateZone&details%5B0%5D.key=resource.request.smtp.password&details%5B0%5D.value=*****",
+                ApiServlet.cleanQueryString("command=updateZone&details%5B0%5D.key=resource.request.smtp.password&details%5B0%5D.value=s3cret", masked));
     }
 }

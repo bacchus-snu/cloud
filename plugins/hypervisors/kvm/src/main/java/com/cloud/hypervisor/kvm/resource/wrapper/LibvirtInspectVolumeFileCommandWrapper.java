@@ -41,7 +41,7 @@ public final class LibvirtInspectVolumeFileCommandWrapper extends CommandWrapper
                 return new InspectVolumeFileAnswer(command, String.format("%s has a backing chain of %d images; only a single base image is supported.",
                         file, inspection.getChainDepth()));
             }
-            return new InspectVolumeFileAnswer(command, inspection.getFormat(), inspection.getVirtualSize(), inspection.getLength(), inspection.getSha256(),
+            return new InspectVolumeFileAnswer(command, inspection.getFormat(), inspection.getVirtualSize(), inspection.getLength(),
                     inspection.getBackingFile(), inspection.getBackingFormat(), inspection.getChainDepth());
         } catch (Exception e) {
             logger.warn("Unable to inspect volume file {}: {}", command.getPath(), e.getMessage());

@@ -65,6 +65,67 @@ public class ConfigDepotImplTest {
     }
 
     @Test
+    public void encryptedSettingIsDecidedByItsKeyElseByItsStoredRow() {
+        java.util.HashMap<String, Pair<String, ConfigKey<?>>> keys = new java.util.HashMap<>();
+        keys.put("a.secure.key", new Pair<>("component", new ConfigKey<>("Secure", String.class, "a.secure.key", "", "", true)));
+        keys.put("a.plain.key", new Pair<>("component", new ConfigKey<>("Advanced", String.class, "a.plain.key", "", "", true)));
+        ReflectionTestUtils.setField(configDepotImpl, "_allKeys", keys);
+        Mockito.when(_configDao.listEncryptedSettingNames()).thenReturn(List.of("legacy.hidden.key"));
+
+        Assert.assertTrue(configDepotImpl.isEncryptedSetting("a.secure.key"));
+        Assert.assertFalse(configDepotImpl.isEncryptedSetting("a.plain.key"));
+        Assert.assertTrue("a setting no component declares is judged by its stored row", configDepotImpl.isEncryptedSetting("legacy.hidden.key"));
+        Assert.assertFalse(configDepotImpl.isEncryptedSetting("no.such.setting"));
+        Assert.assertFalse(configDepotImpl.isEncryptedSetting(null));
+        Mockito.verify(_configDao, Mockito.never()).findByName(Mockito.anyString());
+    }
+
+    @Test
+    public void storedSettingNamesMatchInAnyCaseAsTheDatabaseComparesThem() {
+        Mockito.when(_configDao.listEncryptedSettingNames()).thenReturn(List.of("resource.request.smtp.password"));
+
+        Assert.assertTrue(configDepotImpl.isEncryptedSetting("RESOURCE.REQUEST.SMTP.PASSWORD"));
+        Assert.assertTrue(configDepotImpl.isEncryptedSetting("Resource.Request.Smtp.Password"));
+        Assert.assertFalse(configDepotImpl.isEncryptedSetting("resource.request.smtp.host"));
+    }
+
+    @Test
+    public void storedSettingNamesMatchAsTheDatabaseCollationComparesThem() {
+        Mockito.when(_configDao.listEncryptedSettingNames()).thenReturn(List.of("resource.request.smtp.password"));
+
+        Assert.assertTrue("trailing spaces are ignored", configDepotImpl.isEncryptedSetting("resource.request.smtp.password "));
+        Assert.assertTrue(configDepotImpl.isEncryptedSetting(" resource.request.smtp.password\t"));
+        Assert.assertTrue("accents are folded", configDepotImpl.isEncryptedSetting("resource.requ\u00e9st.smtp.password"));
+        Assert.assertTrue(configDepotImpl.isEncryptedSetting("RESOURCE.REQUEST.SMTP.PASSW\u00d6RD "));
+        Assert.assertFalse(configDepotImpl.isEncryptedSetting("resource.request.smtp.host"));
+    }
+
+    @Test
+    public void storedNamesInAnotherCaseAccentOrSpacingMatchThePlainName() {
+        Mockito.when(_configDao.listEncryptedSettingNames()).thenReturn(List.of(" Resource.Request.SMTP.Password\t", "legacy.p\u00e4ssword.key",
+                "legacy.stra\u00dfe.key"));
+
+        Assert.assertTrue(configDepotImpl.isEncryptedSetting("resource.request.smtp.password"));
+        Assert.assertTrue(configDepotImpl.isEncryptedSetting("legacy.password.key"));
+        Assert.assertTrue("the sharp s compares equal to s", configDepotImpl.isEncryptedSetting("legacy.strase.key"));
+        Assert.assertTrue(configDepotImpl.isEncryptedSetting("LEGACY.STRA\u00dfE.KEY"));
+        Assert.assertFalse(configDepotImpl.isEncryptedSetting("resource.request.smtp.host"));
+    }
+
+    @Test
+    public void unknownNamesCostAtMostOneLoadOfTheEncryptedSettingNames() {
+        Mockito.when(_configDao.listEncryptedSettingNames()).thenReturn(List.of("legacy.hidden.key"));
+
+        for (int i = 0; i < 500; i++) {
+            Assert.assertFalse(configDepotImpl.isEncryptedSetting("field" + i));
+        }
+        Assert.assertTrue(configDepotImpl.isEncryptedSetting("legacy.hidden.key"));
+
+        Mockito.verify(_configDao, Mockito.times(1)).listEncryptedSettingNames();
+        Mockito.verify(_configDao, Mockito.never()).findByName(Mockito.anyString());
+    }
+
+    @Test
     public void testIsNewConfig() {
         String validNewConfigKey = "CONFIG";
         ConfigKey<Boolean> validNewConfig = new ConfigKey<>(ConfigKey.CATEGORY_ADVANCED, Boolean.class, "CONFIG", "true", "", true);

@@ -25,7 +25,6 @@ public class InspectVolumeFileAnswer extends Answer {
     private String format;
     private long virtualSize;
     private long length;
-    private String sha256;
     private String backingFile;
     private String backingFormat;
     private int chainDepth;
@@ -37,13 +36,12 @@ public class InspectVolumeFileAnswer extends Answer {
         super(cmd, false, details);
     }
 
-    public InspectVolumeFileAnswer(InspectVolumeFileCommand cmd, String format, long virtualSize, long length, String sha256, String backingFile,
-            String backingFormat, int chainDepth) {
+    public InspectVolumeFileAnswer(InspectVolumeFileCommand cmd, String format, long virtualSize, long length, String backingFile, String backingFormat,
+            int chainDepth) {
         super(cmd, true, null);
         this.format = format;
         this.virtualSize = virtualSize;
         this.length = length;
-        this.sha256 = sha256;
         this.backingFile = backingFile;
         this.backingFormat = backingFormat;
         this.chainDepth = chainDepth;
@@ -59,10 +57,6 @@ public class InspectVolumeFileAnswer extends Answer {
 
     public long getLength() {
         return length;
-    }
-
-    public String getSha256() {
-        return sha256;
     }
 
     /**

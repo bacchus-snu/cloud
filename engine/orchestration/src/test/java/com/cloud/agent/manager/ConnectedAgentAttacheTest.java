@@ -17,11 +17,18 @@
 package com.cloud.agent.manager;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
 
 import org.junit.Test;
 
+import com.cloud.agent.api.Command;
+import com.cloud.agent.api.storage.AbortVolumeFileCopyCommand;
+import com.cloud.agent.api.storage.CheckVolumeFileTransferCommand;
+import com.cloud.agent.api.storage.StartVolumeExportCommand;
+import com.cloud.agent.api.storage.StopVolumeExportCommand;
+import com.cloud.exception.AgentUnavailableException;
 import com.cloud.hypervisor.Hypervisor;
 import com.cloud.utils.nio.Link;
 
@@ -79,5 +86,16 @@ public class ConnectedAgentAttacheTest {
         ConnectedAgentAttache agentAttache1 = new ConnectedAgentAttache(null, 1, "uuid", null, Hypervisor.HypervisorType.KVM, link1, false);
 
         assertFalse(agentAttache1.equals("abc"));
+    }
+
+    @Test
+    public void aVolumeTransfersChecksAndCleanupReachAHostInMaintenance() throws Exception {
+        ConnectedAgentAttache inMaintenance = new ConnectedAgentAttache(null, 1, "uuid", "host", Hypervisor.HypervisorType.KVM, mock(Link.class), true);
+
+        inMaintenance.checkAvailability(new Command[] {new CheckVolumeFileTransferCommand(CheckVolumeFileTransferCommand.Kind.PULL, "name"),
+                new AbortVolumeFileCopyCommand(null, "path", "name"), new StopVolumeExportCommand("name")});
+
+        assertThrows("a new transfer does not start there", AgentUnavailableException.class,
+                () -> inMaintenance.checkAvailability(new Command[] {new StartVolumeExportCommand(null, "path", "name", "CN=host", 60)}));
     }
 }

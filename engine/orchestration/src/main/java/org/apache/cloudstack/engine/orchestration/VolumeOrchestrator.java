@@ -65,6 +65,7 @@ import org.apache.cloudstack.engine.orchestration.service.VolumeOrchestrationSer
 import org.apache.cloudstack.engine.subsystem.api.storage.ChapInfo;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataObject;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
+import org.apache.cloudstack.engine.subsystem.api.storage.ObjectInDataStoreStateMachine;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreDriver;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreManager;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreProvider;
@@ -170,11 +171,13 @@ import com.cloud.storage.VMTemplateStorageResourceAssoc;
 import com.cloud.storage.Volume;
 import com.cloud.storage.Volume.Type;
 import com.cloud.storage.VolumeApiService;
+import com.cloud.storage.VMTemplateStoragePoolVO;
 import com.cloud.storage.VolumeDetailVO;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.DiskOfferingDao;
 import com.cloud.storage.dao.SnapshotDao;
 import com.cloud.storage.dao.StoragePoolHostDao;
+import com.cloud.storage.dao.VMTemplatePoolDao;
 import com.cloud.storage.dao.VMTemplateDetailsDao;
 import com.cloud.storage.dao.VolumeDao;
 import com.cloud.storage.dao.VolumeDetailsDao;
@@ -328,6 +331,10 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
     private InternalBackupService internalBackupService;
     @Inject
     private VmWorkJobDao workJobDao;
+    @Inject
+    private VMTemplatePoolDao templatePoolDao;
+    /** The lock table tries once within its shortest wait. */
+    private static final int BASE_LOCK_ATTEMPT_SECONDS = 1;
 
     private ScheduledExecutorService relocationSweeper;
 
@@ -1824,9 +1831,9 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
         if (host == null || host.getHypervisorType() != HypervisorType.KVM) {
             throw new InvalidParameterValueException("Volumes are moved directly only between KVM hosts.");
         }
-        if (host.getStatus() != com.cloud.host.Status.Up || (destination && host.getResourceState() != ResourceState.Enabled)) {
+        if (destination ? host.getStatus() != com.cloud.host.Status.Up || host.getResourceState() != ResourceState.Enabled : !VolumeOrchestrationService.servesLocalVolumes(host)) {
             throw new CloudRuntimeException(String.format("Host %s is %s/%s; volumes move only %s a host that is Up%s.", host.getName(), host.getStatus(),
-                    host.getResourceState(), destination ? "to" : "from", destination ? " and Enabled" : ""));
+                    host.getResourceState(), destination ? "to" : "from", destination ? " and Enabled" : " and in no maintenance state"));
         }
         return host;
     }
@@ -2117,7 +2124,7 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
         }
         VolumeVO volume = _volsDao.findById(Long.parseLong(volumeId));
         VolumeVO copy = _volsDao.findByIdIncludingRemoved(copyId);
-        boolean destinationClean = copy == null || stopTransfer(copy, volume);
+        boolean destinationClean = copy == null || stopTransfer(copy, volume, marker.get(RELOCATION_BASE));
         if (!PHASE_RESTORED.equals(marker.get(RELOCATION_PHASE))) {
             restoreRelocation(copyId, volume, Boolean.parseBoolean(marker.get(RELOCATION_QUOTA)));
         }
@@ -2171,20 +2178,63 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
     }
 
     /**
+     * Stops the transfer of the copy and, when the move was copying the template base it needs, that transfer too.
+     *
+     * @param baseTransfer the {@link #RELOCATION_BASE} detail of the copy, or null
      * @return whether the destination host confirmed that no pull runs and no partial file is left
      */
-    private boolean stopTransfer(VolumeVO copy, VolumeVO volume) {
+    private boolean stopTransfer(VolumeVO copy, VolumeVO volume, String baseTransfer) {
         StoragePool destPool = _storagePoolDao.findById(copy.getPoolId());
         Long destHostId = localPoolHostId(destPool);
+        Long srcHostId = volume == null ? null : localPoolHostId(_storagePoolDao.findById(volume.getPoolId()));
+        boolean stopped = stopTransfer(destPool, destHostId, srcHostId, copy.getUuid(), copy.getPath());
+        if (baseTransfer != null) {
+            String[] base = baseTransfer.split(",", 2);
+            stopped &= stopBaseTransfer(copy, destPool, destHostId, srcHostId, base[0], base.length > 1 ? base[1] : null);
+        }
+        return stopped;
+    }
+
+    /**
+     * The name of a base transfer is shared by every copy of the template to the pool. Whoever holds the lock of the
+     * base's reference copies under that name and has already stopped what an earlier copy left there, so the name is left
+     * to it and looked at again later; otherwise a base that is not in place is stopped.
+     *
+     * @return whether nothing of an earlier base transfer is left to stop
+     */
+    private boolean stopBaseTransfer(VolumeVO copy, StoragePool destPool, Long destHostId, Long srcHostId, String name, String path) {
+        VMTemplateStoragePoolVO base = copy.getTemplateId() == null ? null : templatePoolDao.findByPoolTemplate(copy.getPoolId(), copy.getTemplateId(), null);
+        if (base == null) {
+            return stopTransfer(destPool, destHostId, srcHostId, name, path);
+        }
+        if (templatePoolDao.isLockHeldElsewhere(base.getId())) {
+            logger.debug("Transfer {} of the base of template {} on pool {} is left to the holder of the base's lock; the sweep looks at it again",
+                    name, copy.getTemplateId(), copy.getPoolId());
+            return false;
+        }
+        VMTemplateStoragePoolVO locked = templatePoolDao.acquireInLockTable(base.getId(), BASE_LOCK_ATTEMPT_SECONDS);
+        if (locked == null) {
+            return false;
+        }
+        try {
+            return locked.getState() == ObjectInDataStoreStateMachine.State.Ready || stopTransfer(destPool, destHostId, srcHostId, name, path);
+        } finally {
+            templatePoolDao.releaseFromLockTable(base.getId());
+        }
+    }
+
+    /**
+     * @return whether the destination host confirmed that the pull of that name is stopped and its partial file removed
+     */
+    private boolean stopTransfer(StoragePool destPool, Long destHostId, Long srcHostId, String name, String path) {
         boolean stopped = true;
-        if (destHostId != null && copy.getPath() != null) {
-            Answer answer = sendQuietly(destHostId, new AbortVolumeFileCopyCommand(new StorageFilerTO(destPool), copy.getPath(), copy.getUuid()));
+        if (destHostId != null && path != null) {
+            Answer answer = sendQuietly(destHostId, new AbortVolumeFileCopyCommand(new StorageFilerTO(destPool), path, name));
             stopped = answer != null && answer.getResult();
         }
-        Long srcHostId = volume == null ? null : localPoolHostId(_storagePoolDao.findById(volume.getPoolId()));
         if (srcHostId != null) {
             // An export nobody stops still ends at its own time limit.
-            sendQuietly(srcHostId, new StopVolumeExportCommand(copy.getUuid()));
+            sendQuietly(srcHostId, new StopVolumeExportCommand(name));
         }
         return stopped;
     }
@@ -3004,7 +3054,8 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
     public ConfigKey<?>[] getConfigKeys() {
         return new ConfigKey<?>[] {
                 RecreatableSystemVmEnabled, MaxVolumeSize, StorageHAMigrationEnabled, StorageMigrationEnabled,
-                CustomDiskOfferingMaxSize, CustomDiskOfferingMinSize, VolumeUrlCheck, VolumeAllocationAlgorithm, VolumeMoveKeepSource};
+                CustomDiskOfferingMaxSize, CustomDiskOfferingMinSize, VolumeUrlCheck, VolumeAllocationAlgorithm, VolumeMoveKeepSource,
+                VolumeMoveConcurrencyPerHost};
     }
 
     @Override

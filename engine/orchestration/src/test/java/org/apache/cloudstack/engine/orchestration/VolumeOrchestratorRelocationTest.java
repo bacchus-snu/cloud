@@ -25,6 +25,7 @@ import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -47,6 +48,7 @@ import java.util.Set;
 import java.util.HashSet;
 
 import org.apache.cloudstack.engine.orchestration.service.VolumeOrchestrationService;
+import org.apache.cloudstack.engine.subsystem.api.storage.ObjectInDataStoreStateMachine;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeDataFactory;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeInfo;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeService;
@@ -90,12 +92,14 @@ import com.cloud.storage.ScopeType;
 import com.cloud.storage.Storage;
 import com.cloud.storage.StorageManager;
 import com.cloud.storage.StoragePoolHostVO;
+import com.cloud.storage.VMTemplateStoragePoolVO;
 import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeDetailVO;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.DiskOfferingDao;
 import com.cloud.storage.dao.SnapshotDao;
 import com.cloud.storage.dao.StoragePoolHostDao;
+import com.cloud.storage.dao.VMTemplatePoolDao;
 import com.cloud.storage.dao.VolumeDao;
 import com.cloud.storage.dao.VolumeDetailsDao;
 import com.cloud.user.Account;
@@ -147,6 +151,7 @@ public class VolumeOrchestratorRelocationTest {
     private final SnapshotDao snapshotDao = mock(SnapshotDao.class);
     private final SnapshotDataStoreDao snapshotDataStoreDao = mock(SnapshotDataStoreDao.class);
     private final ConfigDepotImpl configDepot = mock(ConfigDepotImpl.class);
+    private final VMTemplatePoolDao templatePoolDao = mock(VMTemplatePoolDao.class);
 
     private VolumeOrchestrator orchestrator;
 
@@ -189,6 +194,7 @@ public class VolumeOrchestratorRelocationTest {
         ReflectionTestUtils.setField(orchestrator, "workJobDao", workJobDao);
         ReflectionTestUtils.setField(orchestrator, "_snapshotDao", snapshotDao);
         ReflectionTestUtils.setField(orchestrator, "_snapshotDataStoreDao", snapshotDataStoreDao);
+        ReflectionTestUtils.setField(orchestrator, "templatePoolDao", templatePoolDao);
         ConfigKey.init(configDepot);
         when(configDepot.getConfigStringValue(VolumeOrchestrationService.VolumeMoveKeepSource.key(), ConfigKey.Scope.Domain, DISCARDING_DOMAIN))
                 .thenReturn("false");
@@ -504,6 +510,15 @@ public class VolumeOrchestratorRelocationTest {
     }
 
     @Test
+    public void copyConcurrencyPerHostIsARegisteredDynamicSetting() {
+        ConfigKey<Integer> key = VolumeOrchestrationService.VolumeMoveConcurrencyPerHost;
+        assertEquals("volume.move.concurrency.per.host", key.key());
+        assertEquals("2", key.defaultValue());
+        assertTrue(key.isDynamic());
+        assertTrue(List.of(orchestrator.getConfigKeys()).contains(key));
+    }
+
+    @Test
     public void keepSourceIsPerDomain() {
         ConfigKey<Boolean> key = VolumeOrchestrationService.VolumeMoveKeepSource;
         assertEquals("volume.move.keep.source", key.key());
@@ -587,6 +602,91 @@ public class VolumeOrchestratorRelocationTest {
     }
 
     @Test
+    public void sweepOfAMoveInterruptedInItsBaseCopyStopsBothTransfers() throws Exception {
+        VolumeVO copy = moveInterruptedInItsBaseCopy();
+        VMTemplateStoragePoolVO base = baseOnTheDestination(ObjectInDataStoreStateMachine.State.Creating);
+        when(templatePoolDao.acquireInLockTable(eq(base.getId()), anyInt())).thenReturn(base);
+
+        orchestrator.sweepInterruptedRelocations();
+
+        assertEquals(List.of(copy.getUuid() + ":" + copy.getPath(), "template-9-12:tmpl-uuid"), aborted());
+        assertEquals(List.of(copy.getUuid(), "template-9-12"), stoppedExports());
+        verify(templatePoolDao).releaseFromLockTable(base.getId());
+        assertEquals(Volume.State.Ready, db.get(200L).getState());
+        assertFalse("cleaned up once both transfers are stopped", details.containsKey(copy.getId()));
+    }
+
+    @Test
+    public void sweepLeavesTheBaseTransferToTheCopierThatHoldsItsLock() throws Exception {
+        VolumeVO copy = moveInterruptedInItsBaseCopy();
+        VMTemplateStoragePoolVO base = baseOnTheDestination(ObjectInDataStoreStateMachine.State.Creating);
+        when(templatePoolDao.isLockHeldElsewhere(base.getId())).thenReturn(true);
+
+        orchestrator.sweepInterruptedRelocations();
+
+        assertEquals("nothing is sent for the base name another job copies under", List.of(copy.getUuid() + ":" + copy.getPath()), aborted());
+        assertEquals(List.of(copy.getUuid()), stoppedExports());
+        verify(templatePoolDao, never()).acquireInLockTable(anyLong(), anyInt());
+        verify(templatePoolDao, never()).releaseFromLockTable(anyLong());
+        assertEquals(Volume.State.Ready, db.get(200L).getState());
+        assertTrue("the sweep looks at the base again later", details.containsKey(copy.getId()));
+
+        sent.clear();
+        VMTemplateStoragePoolVO copied = baseOnTheDestination(ObjectInDataStoreStateMachine.State.Ready);
+        when(templatePoolDao.isLockHeldElsewhere(copied.getId())).thenReturn(false);
+        when(templatePoolDao.acquireInLockTable(eq(copied.getId()), anyInt())).thenReturn(copied);
+        orchestrator.sweepInterruptedRelocations();
+
+        assertEquals("a base in place is left alone", List.of(copy.getUuid() + ":" + copy.getPath()), aborted());
+        assertEquals(List.of(copy.getUuid()), stoppedExports());
+        verify(templatePoolDao).releaseFromLockTable(copied.getId());
+        assertFalse(details.containsKey(copy.getId()));
+    }
+
+    private VolumeVO moveInterruptedInItsBaseCopy() {
+        VolumeVO data = volume(200L, "DATA-1", Volume.Type.DATADISK, null, KEEPING_DOMAIN);
+        data.setTemplateId(TEMPLATE);
+        orchestrator.reserveRelocations(List.of(data), destPool(), 55L);
+        VolumeVO copy = copyOf(200L);
+        detailsDao.addDetail(copy.getId(), VolumeOrchestrationService.RELOCATION_BASE, "template-9-12,tmpl-uuid", false);
+        AsyncJobVO failed = mock(AsyncJobVO.class);
+        when(failed.getStatus()).thenReturn(JobInfo.Status.FAILED);
+        when(jobMgr.getAsyncJob(55L)).thenReturn(failed);
+        GlobalLock lock = mock(GlobalLock.class);
+        when(lock.lock(5)).thenReturn(true);
+        doReturn(lock).when(orchestrator).sweepLock();
+        return copy;
+    }
+
+    private VMTemplateStoragePoolVO baseOnTheDestination(ObjectInDataStoreStateMachine.State state) {
+        VMTemplateStoragePoolVO base = mock(VMTemplateStoragePoolVO.class);
+        when(base.getId()).thenReturn(300L);
+        Mockito.lenient().when(base.getState()).thenReturn(state);
+        when(templatePoolDao.findByPoolTemplate(DEST_POOL, TEMPLATE, null)).thenReturn(base);
+        return base;
+    }
+
+    private List<String> aborted() {
+        List<String> aborted = new ArrayList<>();
+        for (Command command : sent) {
+            if (command instanceof AbortVolumeFileCopyCommand) {
+                aborted.add(((AbortVolumeFileCopyCommand)command).getExportName() + ":" + ((AbortVolumeFileCopyCommand)command).getPath());
+            }
+        }
+        return aborted;
+    }
+
+    private List<String> stoppedExports() {
+        List<String> stopped = new ArrayList<>();
+        for (Command command : sent) {
+            if (command instanceof StopVolumeExportCommand) {
+                stopped.add(((StopVolumeExportCommand)command).getName());
+            }
+        }
+        return stopped;
+    }
+
+    @Test
     public void relocateVolumesForDetachedVolumeNeedsNoVm() {
         VolumeVO data = volume(200L, "DATA-1", Volume.Type.DATADISK, null, KEEPING_DOMAIN);
 
@@ -652,6 +752,22 @@ public class VolumeOrchestratorRelocationTest {
         orchestrator.relocateVolumes(List.of(root), destPool(), inSwitch);
 
         assertEquals("inside the second transaction, the switch", List.of(2), seen);
+    }
+
+    @Test
+    public void volumesOfAHostInAnyMaintenanceStateNeverMove() {
+        VolumeVO data = volume(200L, "DATA-1", Volume.Type.DATADISK, null, KEEPING_DOMAIN);
+        HostVO source = hostDao.findById(SRC_HOST);
+        for (ResourceState state : List.of(ResourceState.PrepareForMaintenance, ResourceState.ErrorInPrepareForMaintenance, ResourceState.Maintenance,
+                ResourceState.ErrorInMaintenance)) {
+            when(source.getResourceState()).thenReturn(state);
+
+            CloudRuntimeException refused = assertThrows(CloudRuntimeException.class, () -> orchestrator.relocateVolumes(List.of(data), destPool(), null));
+
+            assertTrue(refused.getMessage(), refused.getMessage().contains("no maintenance state"));
+        }
+        assertTrue(transitions.isEmpty());
+        assertTrue(sent.isEmpty());
     }
 
     @Test

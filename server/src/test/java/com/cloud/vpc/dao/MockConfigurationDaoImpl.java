@@ -123,4 +123,9 @@ public class MockConfigurationDaoImpl extends GenericDaoBase<ConfigurationVO, St
     public List<ConfigurationVO> searchPartialConfigurations() {
         return List.of();
     }
+
+    @Override
+    public List<String> listEncryptedSettingNames() {
+        return List.of();
+    }
 }

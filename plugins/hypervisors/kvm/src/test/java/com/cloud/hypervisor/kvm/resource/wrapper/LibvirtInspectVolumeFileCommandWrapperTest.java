@@ -79,7 +79,7 @@ public class LibvirtInspectVolumeFileCommandWrapperTest {
     private void respond(Function<List<String>, VolumeFileTransfer.ProcessResult> responder) {
         runner = new FakeProcessRunner(responder);
         wrapper = Mockito.spy(new LibvirtInspectVolumeFileCommandWrapper());
-        Mockito.doReturn(new VolumeFileTransfer(runner, folder.getRoot().toPath())).when(wrapper).getTransfer();
+        Mockito.doReturn(new VolumeFileTransfer(runner, folder.getRoot().toPath(), folder.getRoot().toPath().resolve("state"))).when(wrapper).getTransfer();
     }
 
     private static String chain(int images) {
@@ -104,14 +104,13 @@ public class LibvirtInspectVolumeFileCommandWrapperTest {
     }
 
     @Test
-    public void inspectionReportsFormatSizesChainAndHash() throws IOException {
+    public void inspectionReportsFormatSizesAndChainWithoutReadingTheData() throws IOException {
         respond(command -> command.contains("--backing-chain") ? FakeProcessRunner.ok(chain(2)) : null);
         InspectVolumeFileAnswer answer = (InspectVolumeFileAnswer)wrapper.execute(command, resource);
         assertTrue(answer.getDetails(), answer.getResult());
         assertEquals("qcow2", answer.getFormat());
         assertEquals(4294967296L, answer.getVirtualSize());
         assertEquals(DATA.length, answer.getLength());
-        assertEquals(VolumeFileTransfer.sha256(poolDir.resolve(VOLUME)), answer.getSha256());
         assertEquals("/pool/image1", answer.getBackingFile());
         assertEquals("the format the overlay records for its base", "qcow2", answer.getBackingFormat());
         assertEquals(1, answer.getChainDepth());
@@ -119,6 +118,7 @@ public class LibvirtInspectVolumeFileCommandWrapperTest {
         String file = poolDir.resolve(VOLUME).toString();
         assertEquals("the recorded format is used, never probed", Arrays.asList("qemu-img", "info", "-f", "qcow2", file), runner.commands.get(0));
         assertEquals(Arrays.asList("qemu-img", "info", "--backing-chain", "-U", "-f", "qcow2", "--output=json", file), runner.commands.get(1));
+        assertEquals("the data is hashed by a unit of its own, not within the request", 2, runner.commands.size());
     }
 
     @Test

@@ -660,6 +660,7 @@ import org.apache.cloudstack.management.ManagementServerHost;
 import org.apache.cloudstack.query.QueryService;
 import org.apache.cloudstack.resourcedetail.dao.GuestOsDetailsDao;
 import org.apache.cloudstack.resourcelimit.ResourceLimitGrantService;
+import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.apache.cloudstack.storage.datastore.db.ImageStoreDao;
 import org.apache.cloudstack.storage.datastore.db.ImageStoreVO;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
@@ -813,6 +814,7 @@ import com.cloud.storage.StoragePool;
 import com.cloud.storage.StoragePoolStatus;
 import com.cloud.storage.VMTemplateVO;
 import com.cloud.storage.Volume;
+import com.cloud.storage.VolumeApiService;
 import com.cloud.storage.VolumeApiServiceImpl;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.DiskOfferingDao;
@@ -846,6 +848,7 @@ import com.cloud.utils.NumbersUtil;
 import com.cloud.utils.Pair;
 import com.cloud.utils.PasswordGenerator;
 import com.cloud.utils.Ternary;
+import com.cloud.utils.component.ComponentContext;
 import com.cloud.utils.component.ComponentLifecycle;
 import com.cloud.utils.concurrency.NamedThreadFactory;
 import com.cloud.utils.crypt.DBEncryptionUtil;
@@ -1070,6 +1073,8 @@ public class ManagementServerImpl extends MutualExclusiveIdsManagerBase implemen
     ResourceLimitService resourceLimitService;
     @Inject
     ExtensionsManager extensionsManager;
+    @Inject
+    VolumeApiService volumeApiService;
 
     private LockControllerListener _lockControllerListener;
     private final ScheduledExecutorService _eventExecutor = Executors.newScheduledThreadPool(1, new NamedThreadFactory("EventChecker"));
@@ -4848,6 +4853,17 @@ public class ManagementServerImpl extends MutualExclusiveIdsManagerBase implemen
         return cloudParams;
     }
 
+    /**
+     * @return the GPU types that resource limit requests are sized in; none without the service that decides them
+     */
+    protected List<String> quotaGpuTypes() {
+        try {
+            return ComponentContext.getDelegateComponentOfType(ResourceLimitGrantService.class).quotaGpuTypes();
+        } catch (NoSuchBeanDefinitionException e) {
+            return List.of();
+        }
+    }
+
     @Override
     public Map<String, Object> listCapabilities(final ListCapabilitiesCmd cmd) {
         final Map<String, Object> capabilities = new HashMap<>();
@@ -4958,6 +4974,8 @@ public class ManagementServerImpl extends MutualExclusiveIdsManagerBase implemen
         capabilities.put(ApiConstants.RESOURCE_REQUEST_EXPIRY_DEFAULT_DAYS, ResourceLimitGrantService.proposedExpiryDays());
         capabilities.put(ApiConstants.RESOURCE_REQUEST_EXPIRY_MAX_DAYS, ResourceLimitGrantService.maxExpiryDays());
         capabilities.put(ApiConstants.RESOURCE_REQUEST_EXPIRY_TIMEZONE, ResourceLimitGrantService.ExpiryTimezone.value());
+        capabilities.put(ApiConstants.AUTOMIGRATE_ALLOWED, volumeApiService.callerMayAutoMigrate());
+        capabilities.put(ApiConstants.QUOTA_GPU_TYPES, quotaGpuTypes());
 
         Map<String, Object> vpnParams = getVpnCustomerGatewayParameters(domainId);
         if (!vpnParams.isEmpty()) {

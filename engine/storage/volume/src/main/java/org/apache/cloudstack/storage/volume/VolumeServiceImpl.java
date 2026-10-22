@@ -96,12 +96,15 @@ import org.springframework.stereotype.Component;
 
 import com.cloud.agent.AgentManager;
 import com.cloud.agent.api.Answer;
+import com.cloud.agent.api.Command;
 import com.cloud.agent.api.ModifyTargetsCommand;
+import com.cloud.agent.api.storage.AbortVolumeFileCopyCommand;
 import com.cloud.agent.api.storage.CheckAndRepairVolumeAnswer;
 import com.cloud.agent.api.storage.CheckAndRepairVolumeCommand;
 import com.cloud.agent.api.storage.ListVolumeAnswer;
 import com.cloud.agent.api.storage.ListVolumeCommand;
 import com.cloud.agent.api.storage.ResizeVolumeCommand;
+import com.cloud.agent.api.storage.StopVolumeExportCommand;
 import com.cloud.agent.api.to.DataObjectType;
 import com.cloud.agent.api.to.StorageFilerTO;
 import com.cloud.agent.api.to.VirtualMachineTO;
@@ -2054,7 +2057,9 @@ public class VolumeServiceImpl implements VolumeService {
                 return base.getInstallPath();
             }
             if (base.getState() == ObjectInDataStoreStateMachine.State.Creating) {
-                // Whoever was creating it no longer holds the lock, so that copy ended without a result.
+                // Whoever was creating it no longer holds the lock, so that copy ended without a result; its transfer
+                // may still run on the hosts.
+                stopBaseTransfer(templateOnSource, destStore, srcStore);
                 templateOnDestination.processEvent(Event.OperationFailed);
             }
             templateOnDestination.processEvent(Event.CreateOnlyRequested);
@@ -2073,6 +2078,38 @@ public class VolumeServiceImpl implements VolumeService {
             throw new CloudRuntimeException(String.format("Unable to copy the base of template %d to pool %s: %s", templateId, destStore.getName(), e.getMessage()), e);
         } finally {
             _tmpltPoolDao.releaseFromLockTable(base.getId());
+        }
+    }
+
+    /**
+     * Stops the direct transfer of the template's base to the destination pool and removes what it left there; the
+     * base file itself, which a finished transfer put in place, is left alone.
+     */
+    private void stopBaseTransfer(TemplateInfo template, DataStore destStore, DataStore srcStore) {
+        String name = VolumeOrchestrationService.templateBaseTransferName(template.getId(), destStore.getId());
+        Long destHostId = localHostId(destStore);
+        if (destHostId != null && destStore instanceof StoragePool) {
+            sendQuietly(destHostId, new AbortVolumeFileCopyCommand(new StorageFilerTO((StoragePool)destStore), template.getUuid(), name));
+        }
+        Long srcHostId = localHostId(srcStore);
+        if (srcHostId != null) {
+            sendQuietly(srcHostId, new StopVolumeExportCommand(name));
+        }
+    }
+
+    private static Long localHostId(DataStore store) {
+        Scope scope = store.getScope();
+        return scope != null && scope.getScopeType() == ScopeType.HOST ? scope.getScopeId() : null;
+    }
+
+    private void sendQuietly(long hostId, Command command) {
+        try {
+            Answer answer = agentMgr.send(hostId, command);
+            if (answer == null || !answer.getResult()) {
+                logger.warn("{} on host {} failed: {}", command.getClass().getSimpleName(), hostId, answer == null ? "no answer" : answer.getDetails());
+            }
+        } catch (Exception e) {
+            logger.warn("Unable to send {} to host {}: {}", command.getClass().getSimpleName(), hostId, e.getMessage());
         }
     }
 

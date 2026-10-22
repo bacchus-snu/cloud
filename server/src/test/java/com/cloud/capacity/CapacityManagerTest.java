@@ -27,6 +27,8 @@ import com.cloud.vm.VirtualMachine;
 import org.junit.Assert;
 import org.junit.Test;
 
+import com.cloud.vm.dao.VMInstanceDetailsDao;
+
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static  org.mockito.ArgumentMatchers.isA;
@@ -51,6 +53,7 @@ public class CapacityManagerTest {
         capMgr._clusterDetailsDao = ClusterDetailsDao;
         capMgr._capacityDao = CDao;
         capMgr._offeringsDao = SOfferingDao;
+        capMgr._vmInstanceDetailsDao = mock(VMInstanceDetailsDao.class);
         return capMgr;
     }
 

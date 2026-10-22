@@ -575,7 +575,8 @@ StateListener<State, VirtualMachine.Event, VirtualMachine>, Configurable {
     /**
      * @return true when the VM's last host can take it again, from its reserved or its free capacity and with free
      *         pool cores, the cores the VM still holds there counting as free for it; a VM exempt from host capacity
-     *         needs neither
+     *         needs neither. Capacity the host holds reserved for the restart of another VM's running session is not
+     *         the VM's to take.
      */
     protected boolean lastHostHasCapacity(Host lastHost, ServiceOffering offering, long vmId, int cpuRequested, long ramRequested, float cpuOvercommitRatio,
             float memoryOvercommitRatio) {
@@ -585,8 +586,8 @@ StateListener<State, VirtualMachine.Event, VirtualMachine>, Configurable {
         if (!_capacityMgr.checkIfHostHasCpuCapability(lastHost, offering.getCpu(), offering.getSpeed())) {
             return false;
         }
-        boolean hostHasCapacity = _capacityMgr.checkIfHostHasCapacity(lastHost, cpuRequested, ramRequested, true, cpuOvercommitRatio, memoryOvercommitRatio, true)
-                || _capacityMgr.checkIfHostHasCapacity(lastHost, cpuRequested, ramRequested, false, cpuOvercommitRatio, memoryOvercommitRatio, true);
+        boolean hostHasCapacity = _capacityMgr.checkIfHostHasCapacity(lastHost, cpuRequested, ramRequested, true, cpuOvercommitRatio, memoryOvercommitRatio, true,
+                vmId) || _capacityMgr.checkIfHostHasCapacity(lastHost, cpuRequested, ramRequested, false, cpuOvercommitRatio, memoryOvercommitRatio, true);
         return hostHasCapacity && _capacityMgr.checkIfHostHasPoolCoresFor(lastHost, offering.getCpu(), vmId);
     }
 

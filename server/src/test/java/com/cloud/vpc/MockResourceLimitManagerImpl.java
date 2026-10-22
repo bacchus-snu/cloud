@@ -113,6 +113,11 @@ public class MockResourceLimitManagerImpl extends ManagerBase implements Resourc
     }
 
     @Override
+    public boolean isStorageQuotaCombined(Account account) {
+        return false;
+    }
+
+    @Override
     public void checkWithinQuota(Account owner, ServiceOffering offering, VirtualMachineTemplate template) {
     }
 

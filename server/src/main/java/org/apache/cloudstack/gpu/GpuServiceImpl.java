@@ -1215,13 +1215,16 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
     /**
      * The host's report of which domain uses a device is authoritative, except for a VM starting on the device's host,
      * which holds its devices before its domain exists, and a VM whose state changed after the report was gathered.
-     * A stopped VM keeps its devices only when GPUs are not detached on stop, or while a restart within its running
-     * session is in progress.
+     * A VM whose running session is being restarted keeps its devices in every state but Running, as the release on its
+     * state transitions does; otherwise a stopped VM keeps them only when GPUs are not detached on stop.
      */
     private boolean vmMayHoldDevice(VMInstanceVO vm, GpuDeviceVO device, Date reportTime) {
+        if (!VirtualMachine.State.Running.equals(vm.getState())
+                && vmInstanceDetailsDao.findDetail(vm.getId(), VmDetailConstants.RESTART_IN_PROGRESS) != null) {
+            return true;
+        }
         if (VirtualMachine.State.Stopped.equals(vm.getState())) {
-            return !GpuDetachOnStop.valueIn(vm.getDomainId())
-                    || vmInstanceDetailsDao.findDetail(vm.getId(), VmDetailConstants.RESTART_IN_PROGRESS) != null;
+            return !GpuDetachOnStop.valueIn(vm.getDomainId());
         }
         if (!Objects.equals(vm.getHostId(), device.getHostId())) {
             return false;

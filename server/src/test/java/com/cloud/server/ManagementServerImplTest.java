@@ -16,6 +16,7 @@
 // under the License.
 package com.cloud.server;
 
+import com.cloud.storage.VolumeApiService;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.any;
@@ -31,6 +32,7 @@ import org.junit.runner.RunWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
+import com.cloud.utils.component.ComponentContext;
 import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 import org.mockito.Spy;
@@ -73,6 +75,7 @@ import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
 import org.apache.cloudstack.framework.config.impl.ConfigDepotImpl;
 import org.apache.cloudstack.framework.config.impl.ConfigurationVO;
 import org.apache.cloudstack.resourcelimit.ResourceLimitGrantService;
+import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.apache.cloudstack.storage.datastore.db.ImageStoreDao;
 import org.apache.cloudstack.framework.extensions.manager.ExtensionsManager;
 import org.apache.cloudstack.userdata.UserDataManager;
@@ -249,6 +252,9 @@ public class ManagementServerImplTest {
 
     @Mock
     ExtensionsManager extensionManager;
+
+    @Mock
+    VolumeApiService volumeApiService;
 
     @Spy
     @InjectMocks
@@ -2702,5 +2708,40 @@ public class ManagementServerImplTest {
         Assert.assertEquals(Boolean.FALSE, capabilitiesOf(system).get(ApiConstants.RESOURCE_LIMIT_REQUEST_ALLOWED));
         Account removed = callerOfType(8L, Account.Type.NORMAL, new Date());
         Assert.assertEquals(Boolean.FALSE, capabilitiesOf(removed).get(ApiConstants.RESOURCE_LIMIT_REQUEST_ALLOWED));
+    }
+
+    @Test
+    public void automigrateAllowedIsACapabilityOfTheCallersRole() {
+        ConfigDepotImpl depot = mock(ConfigDepotImpl.class);
+        ConfigKey.init(depot);
+        try {
+            when(volumeApiService.callerMayAutoMigrate()).thenReturn(false);
+            Assert.assertEquals(Boolean.FALSE, capabilitiesOfACallerInDomain(7L).get(ApiConstants.AUTOMIGRATE_ALLOWED));
+
+            when(volumeApiService.callerMayAutoMigrate()).thenReturn(true);
+            Assert.assertEquals("the same predicate that admits automigrate=true", Boolean.TRUE,
+                    capabilitiesOfACallerInDomain(7L).get(ApiConstants.AUTOMIGRATE_ALLOWED));
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
+
+    @Test
+    public void quotaGpuTypesAreTheTypesTheRequestServiceSizesForEveryCaller() {
+        ConfigDepotImpl depot = mock(ConfigDepotImpl.class);
+        ConfigKey.init(depot);
+        ResourceLimitGrantService requests = mock(ResourceLimitGrantService.class);
+        when(requests.quotaGpuTypes()).thenReturn(List.of("a100-40g", "h100"));
+        try (MockedStatic<ComponentContext> context = Mockito.mockStatic(ComponentContext.class)) {
+            context.when(() -> ComponentContext.getDelegateComponentOfType(ResourceLimitGrantService.class)).thenReturn(requests);
+            Assert.assertEquals(List.of("a100-40g", "h100"), capabilitiesOf(callerOfType(3L, Account.Type.NORMAL, null)).get(ApiConstants.QUOTA_GPU_TYPES));
+            Assert.assertEquals(List.of("a100-40g", "h100"), capabilitiesOf(callerOfType(4L, Account.Type.DOMAIN_ADMIN, null)).get(ApiConstants.QUOTA_GPU_TYPES));
+
+            context.when(() -> ComponentContext.getDelegateComponentOfType(ResourceLimitGrantService.class))
+                    .thenThrow(new NoSuchBeanDefinitionException(ResourceLimitGrantService.class.getName()));
+            Assert.assertEquals("no request service, no GPU types", List.of(), capabilitiesOfACallerInDomain(7L).get(ApiConstants.QUOTA_GPU_TYPES));
+        } finally {
+            ConfigKey.init(null);
+        }
     }
 }

@@ -36,7 +36,8 @@ public final class CloudStackVersionTest {
         "1.2.3, 1.2.3",
         "1.2.3.4, 1.2.3.4",
         "1.2.3-12, 1.2.3",
-        "1.2.3.4-14, 1.2.3.4"
+        "1.2.3.4-14, 1.2.3.4",
+        "4.23.0.100, 4.23.0.100"
     })
     public void testValidParse(final String inputValue, final String expectedVersion) {
         final CloudStackVersion version = CloudStackVersion.parse(inputValue);
@@ -147,7 +148,10 @@ public final class CloudStackVersionTest {
         "1.2.3.4-10, 1.0.0.0-5",
         "1.2.3-10, 1.0.0-5",
         "1.2.3.4, 1.0.0.0-5",
-        "1.2.3.4-10, 1.0.0"
+        "1.2.3.4-10, 1.0.0",
+        "4.23.0.100, 4.23.0.0",
+        "4.23.0.100, 4.23.0.20",
+        "4.23.1.0, 4.23.0.100"
     })
     public void testGreaterThanAndLessThanCompareTo(final String value, final String thatValue) {
 

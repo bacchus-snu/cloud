@@ -136,6 +136,7 @@ perl -pi -e "s/$currentversion/$version/" tools/marvin/setup.py
 
 # Dockerfiles
 perl -pi -e "s/Version=\"$currentversion\"/Version=\"$version\"/" tools/docker/Dockerfile
+perl -pi -e "s/Version=\"$currentversion\"/Version=\"$version\"/" tools/docker/Dockerfile.s390x
 
 # Marvin Dockerfiles
 perl -pi -e "s/Version=\"$currentversion\"/Version=\"$version\"/" tools/docker/Dockerfile.marvin

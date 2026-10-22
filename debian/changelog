@@ -1,3 +1,9 @@
+cloudstack (4.23.0.100+snucse.1) unstable; urgency=low
+
+  * SNUCSE Cloud, based on Apache CloudStack 4.23.0.0
+
+ -- SNUCSE Cloud maintainers <contact@bacchus.snucse.org>  Mon, 19 Oct 2026 12:21:34 -0400
+
 cloudstack (4.23.0.0) unstable; urgency=low
 
   * Update the version to 4.23.0.0

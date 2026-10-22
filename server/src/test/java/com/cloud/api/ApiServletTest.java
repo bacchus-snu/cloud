@@ -116,6 +116,10 @@ public class ApiServletTest {
 
     private ConfigDepotImpl originalConfigDepot;
 
+    private ConfigKey<Boolean> originalEnableUserTwoFactorAuthentication;
+
+    private ConfigKey<Boolean> originalMandateUserTwoFactorAuthentication;
+
     @SuppressWarnings("unchecked")
     @Before
     public void setup() throws SecurityException, NoSuchFieldException,
@@ -158,6 +162,8 @@ public class ApiServletTest {
         smsField.set(null, managementServer);
         Mockito.lenient().when(managementServer.getVersion()).thenReturn(
                 "LATEST-AND-GREATEST");
+        originalEnableUserTwoFactorAuthentication = AccountManagerImpl.enableUserTwoFactorAuthentication;
+        originalMandateUserTwoFactorAuthentication = AccountManagerImpl.mandateUserTwoFactorAuthentication;
     }
 
     @After
@@ -165,6 +171,8 @@ public class ApiServletTest {
         Field smsField = ApiDBUtils.class.getDeclaredField("s_ms");
         smsField.setAccessible(true);
         smsField.set(null, null);
+        AccountManagerImpl.enableUserTwoFactorAuthentication = originalEnableUserTwoFactorAuthentication;
+        AccountManagerImpl.mandateUserTwoFactorAuthentication = originalMandateUserTwoFactorAuthentication;
         restoreConfigDepot();
     }
 
@@ -445,6 +453,10 @@ public class ApiServletTest {
         Mockito.when(accountMgr.getUserAccountById(1L)).thenReturn(userAccount);
         Mockito.when(userAccount.getDomainId()).thenReturn(1L);
         Mockito.when(userAccount.isUser2faEnabled()).thenReturn(false);
+
+        ConfigKey<Boolean> enableUserTwoFactorAuthentication = Mockito.mock(ConfigKey.class);
+        AccountManagerImpl.enableUserTwoFactorAuthentication = enableUserTwoFactorAuthentication;
+        Mockito.when(enableUserTwoFactorAuthentication.valueIn(1L)).thenReturn(true);
 
         ConfigKey<Boolean> mandateUserTwoFactorAuthentication = Mockito.mock(ConfigKey.class);
         AccountManagerImpl.mandateUserTwoFactorAuthentication = mandateUserTwoFactorAuthentication;

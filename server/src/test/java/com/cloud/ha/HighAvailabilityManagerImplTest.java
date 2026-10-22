@@ -40,6 +40,7 @@ import org.apache.cloudstack.managed.context.ManagedContext;
 import org.apache.cloudstack.vm.lease.VMLeaseManager;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -151,6 +152,7 @@ public class HighAvailabilityManagerImplTest {
     HighAvailabilityManagerImpl highAvailabilityManager;
     HighAvailabilityManagerImpl highAvailabilityManagerSpy;
     static Method processWorkMethod = null;
+    private ConfigKey<Boolean> originalVmHaEnabled;
 
     @BeforeClass
     public static void initOnce() {
@@ -164,6 +166,7 @@ public class HighAvailabilityManagerImplTest {
     @Before
     public void setup() throws IllegalArgumentException,
             IllegalAccessException, NoSuchFieldException, SecurityException {
+        originalVmHaEnabled = HighAvailabilityManagerImpl.VmHaEnabled;
         highAvailabilityManager = new HighAvailabilityManagerImpl();
         for (Field injectField : HighAvailabilityManagerImpl.class.getDeclaredFields()) {
             if (injectField.isAnnotationPresent(Inject.class)) {
@@ -183,6 +186,11 @@ public class HighAvailabilityManagerImplTest {
             }
         }
         highAvailabilityManagerSpy = Mockito.spy(highAvailabilityManager);
+    }
+
+    @After
+    public void restoreStaticFields() {
+        HighAvailabilityManagerImpl.VmHaEnabled = originalVmHaEnabled;
     }
 
     @Test

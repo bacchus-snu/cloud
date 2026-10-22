@@ -25,7 +25,9 @@ import org.apache.cloudstack.api.ServerApiException;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.resourcedetail.UserDetailVO;
 import org.apache.cloudstack.resourcedetail.dao.UserDetailsDao;
+import org.junit.After;
 import org.junit.Assert;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.InjectMocks;
@@ -54,6 +56,18 @@ public class UserPasswordResetManagerImplTest {
 
     @Mock
     UserDao userDao;
+
+    private ConfigKey<String> originalPasswordResetMailTemplate;
+
+    @Before
+    public void saveStaticFields() {
+        originalPasswordResetMailTemplate = UserPasswordResetManagerImpl.PasswordResetMailTemplate;
+    }
+
+    @After
+    public void restoreStaticFields() {
+        UserPasswordResetManagerImpl.PasswordResetMailTemplate = originalPasswordResetMailTemplate;
+    }
 
     @Test
     public void testGetMessageBody() {

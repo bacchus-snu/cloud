@@ -131,8 +131,17 @@ public class StatsCollectorTest {
 
     private AutoCloseable closeable;
 
+    private ConfigKey<Boolean> originalVmStatsIncrementMetrics;
+
+    private ConfigKey<Integer> originalVmStatsMaxRetentionTime;
+
+    private ConfigKey<Integer> originalVmDiskStatsMaxRetentionTime;
+
     @Before
     public void setUp() throws Exception {
+        originalVmStatsIncrementMetrics = StatsCollector.vmStatsIncrementMetrics;
+        originalVmStatsMaxRetentionTime = StatsCollector.vmStatsMaxRetentionTime;
+        originalVmDiskStatsMaxRetentionTime = StatsCollector.vmDiskStatsMaxRetentionTime;
         closeable = MockitoAnnotations.openMocks(this);
         statsCollector.vmStatsDao = vmStatsDaoMock;
         statsCollector.volumeStatsDao = volumeStatsDao;
@@ -143,6 +152,9 @@ public class StatsCollectorTest {
 
     @After
     public void tearDown() throws Exception {
+        StatsCollector.vmStatsIncrementMetrics = originalVmStatsIncrementMetrics;
+        StatsCollector.vmStatsMaxRetentionTime = originalVmStatsMaxRetentionTime;
+        StatsCollector.vmDiskStatsMaxRetentionTime = originalVmDiskStatsMaxRetentionTime;
         if (influxDBFactoryMocked != null) {
             influxDBFactoryMocked.close();
         }

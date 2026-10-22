@@ -67,6 +67,7 @@ import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.resourcedetail.UserDetailVO;
 import org.apache.cloudstack.webhook.WebhookHelper;
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -176,13 +177,28 @@ public class AccountManagerImplTest extends AccountManagentImplTestBase {
     @Mock
     RegisterUserKeysCmd registerCmdMock;
 
+    private ConfigKey<Boolean> originalEnableUserTwoFactorAuthentication;
+    private ConfigKey<Boolean> originalAllowOperationsOnUsersInSameAccount;
+    private Map<String, UserTwoFactorAuthenticator> originalUserTwoFactorAuthenticationProvidersMap;
+
     @Before
     public void setUp() throws Exception {
+        originalEnableUserTwoFactorAuthentication = AccountManagerImpl.enableUserTwoFactorAuthentication;
+        originalAllowOperationsOnUsersInSameAccount = AccountManagerImpl.allowOperationsOnUsersInSameAccount;
+        originalUserTwoFactorAuthenticationProvidersMap = AccountManagerImpl.userTwoFactorAuthenticationProvidersMap;
+
         enableUserTwoFactorAuthenticationMock = Mockito.mock(ConfigKey.class);
         accountManagerImpl.enableUserTwoFactorAuthentication = enableUserTwoFactorAuthenticationMock;
 
         allowOperationsOnUsersInSameAccountMock = Mockito.mock(ConfigKey.class);
         accountManagerImpl.allowOperationsOnUsersInSameAccount = allowOperationsOnUsersInSameAccountMock;
+    }
+
+    @After
+    public void restoreStaticFields() {
+        AccountManagerImpl.enableUserTwoFactorAuthentication = originalEnableUserTwoFactorAuthentication;
+        AccountManagerImpl.allowOperationsOnUsersInSameAccount = originalAllowOperationsOnUsersInSameAccount;
+        AccountManagerImpl.userTwoFactorAuthenticationProvidersMap = originalUserTwoFactorAuthenticationProvidersMap;
     }
 
     @Before

@@ -21,6 +21,9 @@ import java.lang.reflect.Field;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.util.Arrays;
+import java.util.List;
+import java.util.stream.Collectors;
 
 import javax.sql.DataSource;
 
@@ -47,6 +50,9 @@ import com.cloud.upgrade.dao.Upgrade41610to41700;
 import com.cloud.upgrade.dao.Upgrade42020to42030;
 import com.cloud.upgrade.dao.Upgrade42030to42040;
 import com.cloud.upgrade.dao.Upgrade42040to42100;
+import com.cloud.upgrade.dao.Upgrade42200to42210;
+import com.cloud.upgrade.dao.Upgrade42210to42300;
+import com.cloud.upgrade.dao.Upgrade42300to4230100;
 import com.cloud.upgrade.dao.Upgrade452to453;
 import com.cloud.upgrade.dao.Upgrade453to460;
 import com.cloud.upgrade.dao.Upgrade460to461;
@@ -421,5 +427,29 @@ public class DatabaseUpgradeCheckerTest {
         assertTrue(upgrades[1] instanceof Upgrade42030to42040);
         assertTrue(upgrades[2] instanceof Upgrade42040to42100);
         assertEquals(currentVersion.toString(), upgrades[2].getUpgradedVersion());
+    }
+
+    @Test
+    public void upgradeFrom4230To4230100RunsOurStep() {
+        final CloudStackVersion currentVersion = CloudStackVersion.parse("4.23.0.100");
+
+        final DatabaseUpgradeChecker checker = new DatabaseUpgradeChecker();
+        final DbUpgrade[] upgrades = checker.calculateUpgradePath(CloudStackVersion.parse("4.23.0.0"), currentVersion);
+
+        assertEquals(List.of(Upgrade42300to4230100.class), upgradeClasses(upgrades));
+        assertArrayEquals(new String[]{"4.23.0.0", "4.23.0.100"}, upgrades[0].getUpgradableVersionRange());
+        assertEquals(currentVersion.toString(), upgrades[0].getUpgradedVersion());
+    }
+
+    @Test
+    public void upgradeFrom42200To4230100EndsWithOurStep() {
+        final DatabaseUpgradeChecker checker = new DatabaseUpgradeChecker();
+        final DbUpgrade[] upgrades = checker.calculateUpgradePath(CloudStackVersion.parse("4.22.0.0"), CloudStackVersion.parse("4.23.0.100"));
+
+        assertEquals(List.of(Upgrade42200to42210.class, Upgrade42210to42300.class, Upgrade42300to4230100.class), upgradeClasses(upgrades));
+    }
+
+    private static List<Class<? extends DbUpgrade>> upgradeClasses(DbUpgrade[] upgrades) {
+        return Arrays.stream(upgrades).map(DbUpgrade::getClass).collect(Collectors.toList());
     }
 }

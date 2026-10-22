@@ -1,3 +1,10 @@
+cloudstack (4.23.0.100+snucse.2) unstable; urgency=low
+
+  * OpenID providers keep refusal pages, secrets and their other text
+    longer than 255 characters
+
+ -- SNUCSE Cloud maintainers <contact@bacchus.snucse.org>  Thu, 22 Oct 2026 19:48:01 -0400
+
 cloudstack (4.23.0.100+snucse.1) unstable; urgency=low
 
   * SNUCSE Cloud, based on Apache CloudStack 4.23.0.0

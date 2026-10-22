@@ -4953,6 +4953,7 @@ public class ManagementServerImpl extends MutualExclusiveIdsManagerBase implemen
         capabilities.put(ApiConstants.ROOT_DISK_SIZE_MIN, UserVmManager.rootDiskSizeMinGiB(domainId));
         capabilities.put(ApiConstants.ROOT_DISK_SIZE_DEFAULT, UserVmManager.rootDiskSizeDefaultGiB(domainId));
         capabilities.put(ApiConstants.KEEP_ROOT_VOLUME_DEFAULT, UserVmManager.keepRootVolumeByDefault(domainId));
+        capabilities.put(ApiConstants.RESOURCE_LIMIT_REQUEST_ALLOWED, ResourceLimitGrantService.limitsFollowGrants(caller, account -> isCallerRootAdmin));
         capabilities.put(ApiConstants.RESOURCE_REQUEST_EXPIRY_REQUIRED, ResourceLimitGrantService.ExpiryRequired.value());
         capabilities.put(ApiConstants.RESOURCE_REQUEST_EXPIRY_DEFAULT_DAYS, ResourceLimitGrantService.proposedExpiryDays());
         capabilities.put(ApiConstants.RESOURCE_REQUEST_EXPIRY_MAX_DAYS, ResourceLimitGrantService.maxExpiryDays());

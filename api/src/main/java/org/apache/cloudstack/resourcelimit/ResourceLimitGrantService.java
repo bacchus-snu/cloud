@@ -19,6 +19,7 @@ package org.apache.cloudstack.resourcelimit;
 
 import java.time.DateTimeException;
 import java.time.ZoneId;
+import java.util.function.Predicate;
 
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.ValidatedConfigKey;
@@ -100,6 +101,15 @@ public interface ResourceLimitGrantService {
      * {@code resource.request.smtp.*} settings. Without a relay host nothing is sent and one line is logged.
      */
     void notifyAccount(Account account, String subject, String body);
+
+    /**
+     * @return whether the account's limits follow its grants, so that it may request them: root admin accounts are
+     *         unlimited, and the system account, project accounts and removed accounts have no grants
+     */
+    static boolean limitsFollowGrants(Account account, Predicate<Account> isRootAdmin) {
+        return account != null && account.getRemoved() == null && account.getId() != Account.ACCOUNT_ID_SYSTEM && account.getType() != Account.Type.PROJECT
+                && !isRootAdmin.test(account);
+    }
 
     /** @return the latest expiry of a request or grant in days from today, or 0 for no bound */
     static int maxExpiryDays() {

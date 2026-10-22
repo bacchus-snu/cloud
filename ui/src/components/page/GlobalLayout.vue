@@ -18,6 +18,7 @@
 <template>
   <div>
     <announcement-banner />
+    <resource-limit-expiry-banner />
     <a-affix v-if="this.$store.getters.maintenanceInitiated" >
       <a-alert :message="$t('message.maintenance.initiated')" type="error" banner :showIcon="false" class="maintenanceHeader" />
     </a-affix>
@@ -133,6 +134,7 @@ import { getAPI } from '@/api'
 import Drawer from '@/components/widgets/Drawer'
 import Setting from '@/components/view/Setting.vue'
 import AnnouncementBanner from '@/components/header/AnnouncementBanner.vue'
+import ResourceLimitExpiryBanner from '@/components/header/ResourceLimitExpiryBanner.vue'
 
 export default {
   name: 'GlobalLayout',
@@ -142,7 +144,8 @@ export default {
     GlobalFooter,
     Drawer,
     Setting,
-    AnnouncementBanner
+    AnnouncementBanner,
+    ResourceLimitExpiryBanner
   },
   mixins: [mixin, mixinDevice],
   data () {

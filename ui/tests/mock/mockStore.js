@@ -43,7 +43,10 @@ const mockStore = {
         userInfo: () => mockStore.state.user.info,
         defaultListViewPageSize: () => mockStore.state.user.defaultListViewPageSize,
         headerNotices: () => mockStore.state.user.headerNotices,
-        customColumns: () => mockStore.state.user.customColumns
+        customColumns: () => mockStore.state.user.customColumns,
+        features: () => mockStore.state.user.features,
+        timezoneoffset: () => mockStore.state.user.timezoneoffset,
+        usebrowsertimezone: () => mockStore.state.user.usebrowsertimezone
       },
       mutations,
       actions

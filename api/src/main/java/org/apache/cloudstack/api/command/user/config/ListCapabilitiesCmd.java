@@ -93,6 +93,7 @@ public class ListCapabilitiesCmd extends BaseCmd {
         response.setRootDiskSizeMin((Long) capabilities.get(ApiConstants.ROOT_DISK_SIZE_MIN));
         response.setRootDiskSizeDefault((Long) capabilities.get(ApiConstants.ROOT_DISK_SIZE_DEFAULT));
         response.setKeepRootVolumeDefault((Boolean) capabilities.get(ApiConstants.KEEP_ROOT_VOLUME_DEFAULT));
+        response.setResourceLimitRequestAllowed((Boolean) capabilities.get(ApiConstants.RESOURCE_LIMIT_REQUEST_ALLOWED));
         response.setResourceRequestExpiryRequired((Boolean) capabilities.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_REQUIRED));
         response.setResourceRequestExpiryDefaultDays((Integer) capabilities.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_DEFAULT_DAYS));
         response.setResourceRequestExpiryMaxDays((Integer) capabilities.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_MAX_DAYS));

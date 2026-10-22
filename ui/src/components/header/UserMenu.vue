@@ -22,6 +22,7 @@
     </span>
     <external-link class="action"/>
     <translation-menu class="action"/>
+    <pending-request-badge class="action" />
     <header-notice class="action"/>
     <label class="user-menu-server-info action" v-if="$config.multipleServer">
       <database-outlined />
@@ -75,6 +76,7 @@ import { getAPI } from '@/api'
 import CreateMenu from './CreateMenu'
 import ExternalLink from './ExternalLink'
 import HeaderNotice from './HeaderNotice'
+import PendingRequestBadge from './PendingRequestBadge'
 import TranslationMenu from './TranslationMenu'
 import { mapActions, mapGetters } from 'vuex'
 import ResourceIcon from '@/components/view/ResourceIcon'
@@ -90,6 +92,7 @@ export default {
     ExternalLink,
     TranslationMenu,
     HeaderNotice,
+    PendingRequestBadge,
     ResourceIcon
   },
   props: {

@@ -603,8 +603,7 @@ public class ResourceLimitRequestServiceImpl extends ManagerBase implements Reso
 
     /** Accounts whose limits follow their grants: root admin accounts are unlimited, and project accounts follow the project defaults. */
     protected boolean followsGrants(Account account) {
-        return account != null && account.getRemoved() == null && account.getId() != Account.ACCOUNT_ID_SYSTEM && account.getType() != Account.Type.PROJECT
-                && !accountManager.isRootAdmin(account.getId());
+        return ResourceLimitGrantService.limitsFollowGrants(account, candidate -> accountManager.isRootAdmin(candidate.getId()));
     }
 
     @Override

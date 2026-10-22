@@ -180,6 +180,11 @@ public class CapabilitiesResponse extends BaseResponse {
     @Param(description = "Whether destroying an Instance keeps its ROOT volume when keeprootvolume is not passed", since = "4.23.0.100")
     private Boolean keepRootVolumeDefault;
 
+    @SerializedName(ApiConstants.RESOURCE_LIMIT_REQUEST_ALLOWED)
+    @Param(description = "Whether the limits of the calling Account follow its resource limit grants, so that it may request them; false for root admin, "
+            + "project and system Accounts", since = "4.23.0.100")
+    private Boolean resourceLimitRequestAllowed;
+
     @SerializedName(ApiConstants.RESOURCE_REQUEST_EXPIRY_REQUIRED)
     @Param(description = "Whether a resource limit request needs an expiry date", since = "4.23.0.100")
     private Boolean resourceRequestExpiryRequired;
@@ -346,6 +351,10 @@ public class CapabilitiesResponse extends BaseResponse {
 
     public void setKeepRootVolumeDefault(Boolean keepRootVolumeDefault) {
         this.keepRootVolumeDefault = keepRootVolumeDefault;
+    }
+
+    public void setResourceLimitRequestAllowed(Boolean resourceLimitRequestAllowed) {
+        this.resourceLimitRequestAllowed = resourceLimitRequestAllowed;
     }
 
     public void setResourceRequestExpiryRequired(Boolean resourceRequestExpiryRequired) {

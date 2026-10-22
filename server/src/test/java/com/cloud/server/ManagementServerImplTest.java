@@ -42,6 +42,7 @@ import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -2595,6 +2596,10 @@ public class ManagementServerImplTest {
         Account caller = mock(Account.class);
         lenient().when(caller.getId()).thenReturn(3L);
         lenient().when(caller.getDomainId()).thenReturn(domainId);
+        return capabilitiesOf(caller);
+    }
+
+    private Map<String, Object> capabilitiesOf(Account caller) {
         Mockito.doReturn(caller).when(spy).getCaller();
         ReflectionTestUtils.setField(spy, "networkDao", mock(NetworkDao.class));
         ReflectionTestUtils.setField(spy, "_imgStoreDao", mock(ImageStoreDao.class));
@@ -2669,5 +2674,33 @@ public class ManagementServerImplTest {
         Assert.assertEquals(0, shipped.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_MAX_DAYS));
         Assert.assertEquals(Boolean.TRUE, shipped.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_REQUIRED));
         Assert.assertEquals("Asia/Seoul", shipped.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_TIMEZONE));
+    }
+
+    private Account callerOfType(long id, Account.Type type, Date removed) {
+        Account caller = mock(Account.class);
+        lenient().when(caller.getId()).thenReturn(id);
+        lenient().when(caller.getDomainId()).thenReturn(7L);
+        lenient().when(caller.getType()).thenReturn(type);
+        lenient().when(caller.getRemoved()).thenReturn(removed);
+        return caller;
+    }
+
+    @Test
+    public void resourceLimitRequestsAreAllowedToAccountsWhoseLimitsComeFromGrants() {
+        Account user = callerOfType(3L, Account.Type.NORMAL, null);
+        Assert.assertEquals(Boolean.TRUE, capabilitiesOf(user).get(ApiConstants.RESOURCE_LIMIT_REQUEST_ALLOWED));
+        Account domainAdmin = callerOfType(4L, Account.Type.DOMAIN_ADMIN, null);
+        Assert.assertEquals("a domain admin's limits follow grants too", Boolean.TRUE, capabilitiesOf(domainAdmin).get(ApiConstants.RESOURCE_LIMIT_REQUEST_ALLOWED));
+
+        Account rootAdmin = callerOfType(5L, Account.Type.ADMIN, null);
+        lenient().when(accountManager.isRootAdmin(5L)).thenReturn(true);
+        Assert.assertEquals("a root admin's limits are unlimited", Boolean.FALSE, capabilitiesOf(rootAdmin).get(ApiConstants.RESOURCE_LIMIT_REQUEST_ALLOWED));
+
+        Account project = callerOfType(6L, Account.Type.PROJECT, null);
+        Assert.assertEquals(Boolean.FALSE, capabilitiesOf(project).get(ApiConstants.RESOURCE_LIMIT_REQUEST_ALLOWED));
+        Account system = callerOfType(Account.ACCOUNT_ID_SYSTEM, Account.Type.ADMIN, null);
+        Assert.assertEquals(Boolean.FALSE, capabilitiesOf(system).get(ApiConstants.RESOURCE_LIMIT_REQUEST_ALLOWED));
+        Account removed = callerOfType(8L, Account.Type.NORMAL, new Date());
+        Assert.assertEquals(Boolean.FALSE, capabilitiesOf(removed).get(ApiConstants.RESOURCE_LIMIT_REQUEST_ALLOWED));
     }
 }

@@ -31,6 +31,7 @@ import image from '@/config/section/image'
 import kms from '@/config/section/kms'
 import project from '@/config/section/project'
 import event from '@/config/section/event'
+import resourceRequest from '@/config/section/resourcerequest'
 import user from '@/config/section/user'
 import keyPair from '@/config/section/keypair'
 import account from '@/config/section/account'
@@ -222,6 +223,7 @@ export function asyncRouterMap () {
       generateRouterMap(image),
       generateRouterMap(kms),
       generateRouterMap(event),
+      generateRouterMap(resourceRequest),
       generateRouterMap(project),
       generateRouterMap(user),
       generateRouterMap(keyPair),

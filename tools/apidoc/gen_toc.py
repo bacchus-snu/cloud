@@ -49,6 +49,7 @@ known_categories = {
     'Cisco' : 'External Device',
     'SystemVm': 'System VM',
     'VirtualMachine': 'Virtual Machine',
+    'checkPlacement': 'Virtual Machine',
     'VM': 'Virtual Machine',
     'Vnf': 'Virtual Network Functions',
     'VnfTemplate': 'Virtual Network Functions',

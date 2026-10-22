@@ -41,7 +41,7 @@ import com.cloud.agent.api.ConsoleAccessAuthenticationCommand;
 import com.cloud.agent.api.ConsoleProxyLoadReportCommand;
 import com.cloud.agent.api.GetVncPortAnswer;
 import com.cloud.agent.api.GetVncPortCommand;
-import com.cloud.agent.api.ServerCertificateAnswer;
+import com.cloud.agent.api.ServerCertificateFingerprint;
 import com.cloud.agent.api.StartupCommand;
 import com.cloud.agent.api.StartupProxyCommand;
 import com.cloud.agent.api.proxy.StartConsoleProxyAgentHttpHandlerCommand;
@@ -312,7 +312,7 @@ public abstract class AgentHookBase implements AgentHook {
         if (answer == null) {
             return null;
         }
-        String fingerprint = answer instanceof ServerCertificateAnswer ? ((ServerCertificateAnswer) answer).getFingerprint() : null;
+        String fingerprint = ServerCertificateFingerprint.of(answer);
         hostDetailsDao.setDetail(consoleProxyHost.getId(), Host.HOST_SERVER_CERTIFICATE_FINGERPRINT, fingerprint);
         return fingerprint;
     }

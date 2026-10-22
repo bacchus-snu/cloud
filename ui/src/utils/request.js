@@ -30,6 +30,20 @@ const service = axios.create({
   timeout: 600000
 })
 
+// a GET carries the command in its query parameters, a POST in its form body
+const requestCommand = (config) => {
+  if (!config) {
+    return undefined
+  }
+  if (config.params && config.params.command) {
+    return config.params.command
+  }
+  if (typeof config.data === 'string' || config.data instanceof URLSearchParams) {
+    return new URLSearchParams(config.data).get('command') || undefined
+  }
+  return undefined
+}
+
 const err = (error) => {
   const response = error.response
   let countNotify = store.getters.countNotify
@@ -51,7 +65,7 @@ const err = (error) => {
       })
     }
     if (response.status === 401) {
-      if (response.config && response.config.params && ['forgotPassword', 'listIdps', 'cloudianIsEnabled'].includes(response.config.params.command)) {
+      if (['forgotPassword', 'listIdps', 'cloudianIsEnabled'].includes(requestCommand(response.config))) {
         return
       }
       const originalPath = router.currentRoute.value.path

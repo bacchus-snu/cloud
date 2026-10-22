@@ -40,7 +40,7 @@ import java.util.stream.Stream;
 
 import com.cloud.agent.api.Answer;
 import com.cloud.agent.api.SecStorageCertificateCommand;
-import com.cloud.agent.api.ServerCertificateAnswer;
+import com.cloud.agent.api.ServerCertificateFingerprint;
 import com.cloud.agent.api.UnmountImageStoreCommand;
 import com.cloud.agent.api.to.NfsTO;
 import org.apache.cloudstack.framework.security.keystore.KeystoreManager;
@@ -461,11 +461,11 @@ public class NfsSecondaryStorageResourceTest {
 
             Answer answer = resource.executeRequest(command);
             assertTrue(answer.getDetails(), answer.getResult());
-            Assert.assertEquals(CertificateHelper.generateFingerPrint(certificate), ((ServerCertificateAnswer)answer).getFingerprint());
+            Assert.assertEquals(CertificateHelper.generateFingerPrint(certificate), ServerCertificateFingerprint.of(answer));
 
             answer = resource.executeRequest(command);
             assertFalse(answer.getResult());
-            assertNull(((ServerCertificateAnswer)answer).getFingerprint());
+            assertNull(ServerCertificateFingerprint.of(answer));
             verify(resource, times(2)).configureSSL(any(), any(), Mockito.isNull(), Mockito.isNull());
         } finally {
             Files.deleteIfExists(certificateFile);

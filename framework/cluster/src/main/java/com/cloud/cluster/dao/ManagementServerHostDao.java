@@ -31,6 +31,12 @@ public interface ManagementServerHostDao extends GenericDao<ManagementServerHost
 
     ManagementServerHostVO findByMsid(long msid);
 
+    /**
+     * @return the state of the record of the given run of a management server, read within the given statement
+     *         timeout; null when the server has no record of that run
+     */
+    State findStateOfRun(long msid, long runid, int timeoutSeconds);
+
     int increaseAlertCount(long id);
 
     void update(long id, long runid, String name, String version, String serviceIP, int servicePort, Date lastUpdate, ManagementServerHost.State state);

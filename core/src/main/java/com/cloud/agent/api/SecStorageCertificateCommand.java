@@ -23,7 +23,8 @@ import org.apache.cloudstack.framework.security.keystore.KeystoreManager;
 
 /**
  * Gives a running secondary storage VM's web server new certificates; it presents them to new connections while the
- * ones in progress finish. The wait is short: an agent that predates this command cannot read it and never answers.
+ * ones in progress finish. The wait is short: the caller waits for each secondary storage VM in turn. An agent that
+ * predates this command answers it as unsupported.
  */
 public class SecStorageCertificateCommand extends Command {
     public static final int WAIT_SECONDS = 30;

@@ -129,7 +129,7 @@ import com.cloud.agent.api.SecStorageSetupAnswer;
 import com.cloud.agent.api.SecStorageSetupCommand;
 import com.cloud.agent.api.UnmountImageStoreCommand;
 import com.cloud.agent.api.SecStorageVMSetupCommand;
-import com.cloud.agent.api.ServerCertificateAnswer;
+import com.cloud.agent.api.ServerCertificateFingerprint;
 import com.cloud.agent.api.StartupCommand;
 import com.cloud.agent.api.StartupSecondaryStorageCommand;
 import com.cloud.agent.api.storage.CreateDatadiskTemplateAnswer;
@@ -1991,13 +1991,13 @@ public class NfsSecondaryStorageResource extends ServerResourceBase implements S
 
     protected Answer execute(SecStorageCertificateCommand cmd) {
         if (!_inSystemVM) {
-            return new ServerCertificateAnswer(cmd, true, null, null);
+            return ServerCertificateFingerprint.answer(cmd, true, null, null);
         }
         String result = configCerts(cmd.getCerts());
         if (result != null) {
-            return new ServerCertificateAnswer(cmd, false, "Unable to configure the web server with the certificate: " + result, null);
+            return ServerCertificateFingerprint.answer(cmd, false, "Unable to configure the web server with the certificate: " + result, null);
         }
-        return new ServerCertificateAnswer(cmd, true, null, getWebServerCertificateFingerprint());
+        return ServerCertificateFingerprint.answer(cmd, true, null, getWebServerCertificateFingerprint());
     }
 
     protected String getWebServerCertificateFingerprint() {

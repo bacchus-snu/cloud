@@ -16,6 +16,7 @@
 // under the License.
 package com.cloud.cluster.dao;
 
+import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -23,6 +24,7 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.TimeZone;
+import java.util.concurrent.TimeUnit;
 
 
 import org.apache.commons.collections.CollectionUtils;
@@ -75,6 +77,38 @@ public class ManagementServerHostDaoImpl extends GenericDaoBase<ManagementServer
         }
 
         return null;
+    }
+
+    @Override
+    public State findStateOfRun(long msid, long runid, int timeoutSeconds) {
+        TransactionLegacy txn = TransactionLegacy.currentTxn();
+        try (PreparedStatement pstmt = txn.prepareStatement("SELECT state FROM mshost WHERE msid=? AND runid=?")) {
+            pstmt.setQueryTimeout(timeoutSeconds);
+            pstmt.setLong(1, msid);
+            pstmt.setLong(2, runid);
+            // the statement timeout asks the server to stop the query, which an unreachable server never does; the
+            // network timeout bounds the wait for its answer
+            Connection conn = pstmt.getConnection();
+            int previousNetworkTimeout = conn.getNetworkTimeout();
+            conn.setNetworkTimeout(Runnable::run, (int)TimeUnit.SECONDS.toMillis(timeoutSeconds + 1));
+            try (ResultSet rs = pstmt.executeQuery()) {
+                return rs.next() ? State.valueOf(rs.getString(1)) : null;
+            } finally {
+                restoreNetworkTimeout(conn, previousNetworkTimeout);
+            }
+        } catch (SQLException e) {
+            throw new CloudRuntimeException("Unable to read the state of management server " + msid, e);
+        }
+    }
+
+    private void restoreNetworkTimeout(Connection conn, int networkTimeout) {
+        try {
+            if (!conn.isClosed()) {
+                conn.setNetworkTimeout(Runnable::run, networkTimeout);
+            }
+        } catch (SQLException e) {
+            logger.debug("Unable to restore the network timeout of a connection: {}", e.getMessage());
+        }
     }
 
     @Override

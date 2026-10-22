@@ -48,7 +48,7 @@ import com.cloud.agent.api.Command;
 import com.cloud.agent.api.SecStorageCertificateCommand;
 import com.cloud.agent.api.SecStorageSetupAnswer;
 import com.cloud.agent.api.SecStorageSetupCommand;
-import com.cloud.agent.api.ServerCertificateAnswer;
+import com.cloud.agent.api.ServerCertificateFingerprint;
 import com.cloud.agent.api.to.NfsTO;
 import com.cloud.consoleproxy.ConsoleProxyManager;
 import com.cloud.host.Host;
@@ -101,10 +101,10 @@ public class SecondaryStorageManagerImplCertificateTest {
         HostVO third = ssvmHost(23L);
         doReturn(List.of(first, second, third)).when(secondaryStorageManager).listUpAndConnectingSecondaryStorageVmHost(null);
         when(agentManager.easySend(eq(21L), any(SecStorageCertificateCommand.class)))
-                .thenAnswer(invocation -> new ServerCertificateAnswer(invocation.getArgument(1), true, null, "AA:BB"));
+                .thenAnswer(invocation -> ServerCertificateFingerprint.answer(invocation.getArgument(1), true, null, "AA:BB"));
         when(agentManager.easySend(eq(22L), any(SecStorageCertificateCommand.class))).thenReturn(null);
         when(agentManager.easySend(eq(23L), any(SecStorageCertificateCommand.class)))
-                .thenAnswer(invocation -> new ServerCertificateAnswer(invocation.getArgument(1), false, "reload failed", null));
+                .thenAnswer(invocation -> ServerCertificateFingerprint.answer(invocation.getArgument(1), false, "reload failed", null));
 
         Assert.assertEquals(List.of("s-22-VM", "s-23-VM"), secondaryStorageManager.propagateServerCertificate());
 

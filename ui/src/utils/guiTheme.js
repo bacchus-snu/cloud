@@ -20,7 +20,7 @@ import { getAPI } from '@/api'
 import { loadLanguageAsync } from '../locales'
 
 export async function applyCustomGuiTheme (accountid, domainid) {
-  await fetch('config.json').then(response => response.json()).then(config => {
+  await fetch('config.json?ts=' + Date.now()).then(response => response.json()).then(config => {
     vueProps.$config = config
   })
 

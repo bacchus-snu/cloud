@@ -1901,7 +1901,7 @@ public class StorageManagerImplTest {
         ArgumentCaptor<UnmountImageStoreCommand> sent = ArgumentCaptor.forClass(UnmountImageStoreCommand.class);
         Mockito.verify(agentManager).easySend(Mockito.eq(21L), sent.capture());
         assertEquals(url, sent.getValue().getStoreUrl());
-        assertTrue("an agent that cannot read the command never answers; the wait must stay short",
+        assertTrue("the store is already gone, so the wait must stay short",
                 sent.getValue().getWait() > 0 && sent.getValue().getWait() <= 60);
         Mockito.verify(agentManager, Mockito.times(1)).easySend(Mockito.anyLong(), Mockito.any(Command.class));
     }

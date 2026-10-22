@@ -26,8 +26,9 @@ import org.junit.Before;
 import org.junit.Test;
 
 import com.cloud.agent.api.Answer;
-import com.cloud.agent.api.ServerCertificateAnswer;
+import com.cloud.agent.api.ServerCertificateFingerprint;
 import com.cloud.agent.api.proxy.StartConsoleProxyAgentHttpHandlerCommand;
+import com.cloud.serializer.GsonHelper;
 
 public class ConsoleProxyResourceTest {
     private ConsoleProxyResource resource;
@@ -62,14 +63,30 @@ public class ConsoleProxyResourceTest {
     @Test
     public void aRunningConsoleProxyLoadsEachKeyStoreItIsSentAndReportsTheCertificateItServes() throws Exception {
         Answer first = resource.executeRequest(handlerCommand("first"));
-        Assert.assertTrue(first instanceof ServerCertificateAnswer);
         Assert.assertTrue(first.getResult());
-        Assert.assertEquals("first", ((ServerCertificateAnswer)first).getFingerprint());
+        Assert.assertEquals("first", ServerCertificateFingerprint.of(first));
 
         Answer second = resource.executeRequest(handlerCommand("second"));
         Assert.assertTrue(second.getResult());
-        Assert.assertEquals("second", ((ServerCertificateAnswer)second).getFingerprint());
+        Assert.assertEquals("second", ServerCertificateFingerprint.of(second));
         Assert.assertEquals(List.of("first", "second"), loadedKeyStores());
+    }
+
+    /**
+     * Agent and management server exchange answers as JSON that names each answer's class, which the receiving side
+     * loads by name; a management server of an earlier release has only the classes it shipped with.
+     */
+    @Test
+    public void theAnswerIsOfTheClassAnEarlierManagementServerReadsAndStillCarriesTheFingerprint() throws Exception {
+        Answer answer = resource.executeRequest(handlerCommand("first"));
+
+        String json = GsonHelper.getGson().toJson(new Answer[] {answer}, Answer[].class);
+        Assert.assertTrue(json, json.startsWith("[{\"" + Answer.class.getName() + "\":"));
+
+        Answer[] received = GsonHelper.getGson().fromJson(json, Answer[].class);
+        Assert.assertEquals(Answer.class, received[0].getClass());
+        Assert.assertTrue(received[0].getResult());
+        Assert.assertEquals("first", ServerCertificateFingerprint.of(received[0]));
     }
 
     @Test
@@ -82,6 +99,6 @@ public class ConsoleProxyResourceTest {
         Answer answer = resource.executeRequest(handlerCommand("broken"));
         Assert.assertFalse(answer.getResult());
         Assert.assertTrue(answer.getDetails(), answer.getDetails().contains("no private key"));
-        Assert.assertEquals("first", ((ServerCertificateAnswer)answer).getFingerprint());
+        Assert.assertEquals("first", ServerCertificateFingerprint.of(answer));
     }
 }

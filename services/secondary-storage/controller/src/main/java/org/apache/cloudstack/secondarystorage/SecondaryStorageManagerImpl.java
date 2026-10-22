@@ -69,7 +69,7 @@ import com.cloud.agent.api.SecStorageSetupCommand;
 import com.cloud.agent.api.SecStorageVMSetupCommand;
 import com.cloud.agent.api.StartupCommand;
 import com.cloud.agent.api.StartupSecondaryStorageCommand;
-import com.cloud.agent.api.ServerCertificateAnswer;
+import com.cloud.agent.api.ServerCertificateFingerprint;
 import com.cloud.agent.api.check.CheckSshAnswer;
 import com.cloud.agent.api.check.CheckSshCommand;
 import com.cloud.agent.api.to.NfsTO;
@@ -1513,7 +1513,7 @@ public class SecondaryStorageManagerImpl extends ManagerBase implements Secondar
         String stored = _keystoreMgr.getCertificateFingerprint(ConsoleProxyManager.CERTIFICATE_NAME);
         for (HostVO ssvmHost : listUpAndConnectingSecondaryStorageVmHost(null)) {
             Answer answer = _agentMgr.easySend(ssvmHost.getId(), new SecStorageCertificateCommand(certs));
-            String fingerprint = answer instanceof ServerCertificateAnswer ? ((ServerCertificateAnswer) answer).getFingerprint() : null;
+            String fingerprint = ServerCertificateFingerprint.of(answer);
             if (answer != null) {
                 hostDetailsDao.setDetail(ssvmHost.getId(), Host.HOST_SERVER_CERTIFICATE_FINGERPRINT, fingerprint);
             }

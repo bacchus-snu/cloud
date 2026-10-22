@@ -23,7 +23,7 @@ import com.cloud.agent.api.LogLevel.Log4jLevel;
 
 /**
  * Asks a secondary storage VM to unmount an image store that was removed. The wait is short: the store is already gone
- * from the database, and an agent that predates this command cannot read it and never answers.
+ * from the database. An agent that predates this command answers it as unsupported.
  */
 public class UnmountImageStoreCommand extends Command {
     public static final int WAIT_SECONDS = 30;

@@ -47,7 +47,7 @@ import com.cloud.agent.api.ConsoleProxyLoadReportCommand;
 import com.cloud.agent.api.PingCommand;
 import com.cloud.agent.api.ReadyAnswer;
 import com.cloud.agent.api.ReadyCommand;
-import com.cloud.agent.api.ServerCertificateAnswer;
+import com.cloud.agent.api.ServerCertificateFingerprint;
 import com.cloud.agent.api.StartupCommand;
 import com.cloud.agent.api.StartupProxyCommand;
 import com.cloud.agent.api.proxy.CheckConsoleProxyLoadCommand;
@@ -130,7 +130,7 @@ public class ConsoleProxyResource extends ServerResourceBase implements ServerRe
     private Answer execute(StartConsoleProxyAgentHttpHandlerCommand cmd) {
         logger.info("Invoke launchConsoleProxy() in responding to StartConsoleProxyAgentHttpHandlerCommand");
         String error = launchConsoleProxy(cmd.getKeystoreBits(), cmd.getKeystorePassword(), cmd.getEncryptorPassword(), cmd.isSourceIpCheckEnabled());
-        return new ServerCertificateAnswer(cmd, error == null, error, getServerCertificateFingerprint());
+        return ServerCertificateFingerprint.answer(cmd, error == null, error, getServerCertificateFingerprint());
     }
 
     private String getServerCertificateFingerprint() {

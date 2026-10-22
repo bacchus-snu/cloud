@@ -36,7 +36,7 @@ public class SecStorageSetupAnswer extends Answer {
     }
 
     /**
-     * @see ServerCertificateAnswer#getFingerprint()
+     * @return the fingerprint of the certificate the web server presents, as {@link ServerCertificateFingerprint} describes it
      */
     public String getCertificateFingerprint() {
         return certificateFingerprint;

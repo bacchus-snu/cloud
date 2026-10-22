@@ -48,7 +48,7 @@ import org.mockito.junit.MockitoJUnitRunner;
 
 import com.cloud.agent.AgentManager;
 import com.cloud.agent.api.Answer;
-import com.cloud.agent.api.ServerCertificateAnswer;
+import com.cloud.agent.api.ServerCertificateFingerprint;
 import com.cloud.agent.api.StartupProxyCommand;
 import com.cloud.agent.api.proxy.StartConsoleProxyAgentHttpHandlerCommand;
 import com.cloud.exception.AgentUnavailableException;
@@ -128,7 +128,7 @@ public class AgentHookBaseTest {
     @Test
     public void theCertificateAConnectingProxyReportsServingIsRecorded() throws Exception {
         when(agentManager.send(eq(11L), any(StartConsoleProxyAgentHttpHandlerCommand.class)))
-                .thenAnswer(invocation -> new ServerCertificateAnswer(invocation.getArgument(1), true, null, "AA:BB"));
+                .thenAnswer(invocation -> ServerCertificateFingerprint.answer(invocation.getArgument(1), true, null, "AA:BB"));
 
         hook.startAgentHttpHandlerInVM(mock(StartupProxyCommand.class));
 
@@ -156,9 +156,9 @@ public class AgentHookBaseTest {
         when(hostDao.listByType(Host.Type.ConsoleProxy)).thenReturn(List.of(proxyHost, connecting, disconnected, plain));
         when(keystoreManager.getCertificateFingerprint(ConsoleProxyManager.CERTIFICATE_NAME)).thenReturn("CC:DD");
         when(agentManager.send(eq(11L), any(StartConsoleProxyAgentHttpHandlerCommand.class)))
-                .thenAnswer(invocation -> new ServerCertificateAnswer(invocation.getArgument(1), true, null, "CC:DD"));
+                .thenAnswer(invocation -> ServerCertificateFingerprint.answer(invocation.getArgument(1), true, null, "CC:DD"));
         when(agentManager.send(eq(12L), any(StartConsoleProxyAgentHttpHandlerCommand.class)))
-                .thenAnswer(invocation -> new ServerCertificateAnswer(invocation.getArgument(1), false, "no private key", "AA:BB"));
+                .thenAnswer(invocation -> ServerCertificateFingerprint.answer(invocation.getArgument(1), false, "no private key", "AA:BB"));
 
         Assert.assertEquals(List.of("v-12-VM"), hook.startAgentHttpHandlers());
 
@@ -180,7 +180,7 @@ public class AgentHookBaseTest {
     @Test
     public void theHandlerCommandWaitsLongerThanTheAgentWaitsForAFirstStart() throws Exception {
         when(agentManager.send(eq(11L), any(StartConsoleProxyAgentHttpHandlerCommand.class)))
-                .thenAnswer(invocation -> new ServerCertificateAnswer(invocation.getArgument(1), true, null, "AA:BB"));
+                .thenAnswer(invocation -> ServerCertificateFingerprint.answer(invocation.getArgument(1), true, null, "AA:BB"));
 
         hook.startAgentHttpHandler(proxyHost);
 
@@ -193,8 +193,8 @@ public class AgentHookBaseTest {
     public void aConnectThatMissedTheStoredCertificateIsSentItOnceMore() throws Exception {
         when(keystoreManager.getCertificateFingerprint(ConsoleProxyManager.CERTIFICATE_NAME)).thenReturn("NEW");
         when(agentManager.send(eq(11L), any(StartConsoleProxyAgentHttpHandlerCommand.class)))
-                .thenAnswer(invocation -> new ServerCertificateAnswer(invocation.getArgument(1), true, null, "OLD"))
-                .thenAnswer(invocation -> new ServerCertificateAnswer(invocation.getArgument(1), true, null, "NEW"));
+                .thenAnswer(invocation -> ServerCertificateFingerprint.answer(invocation.getArgument(1), true, null, "OLD"))
+                .thenAnswer(invocation -> ServerCertificateFingerprint.answer(invocation.getArgument(1), true, null, "NEW"));
 
         hook.startAgentHttpHandlerInVM(mock(StartupProxyCommand.class));
 
@@ -206,7 +206,7 @@ public class AgentHookBaseTest {
     public void aConnectThatServesTheStoredCertificateIsSentItOnce() throws Exception {
         when(keystoreManager.getCertificateFingerprint(ConsoleProxyManager.CERTIFICATE_NAME)).thenReturn("NEW");
         when(agentManager.send(eq(11L), any(StartConsoleProxyAgentHttpHandlerCommand.class)))
-                .thenAnswer(invocation -> new ServerCertificateAnswer(invocation.getArgument(1), true, null, "NEW"));
+                .thenAnswer(invocation -> ServerCertificateFingerprint.answer(invocation.getArgument(1), true, null, "NEW"));
 
         hook.startAgentHttpHandlerInVM(mock(StartupProxyCommand.class));
 

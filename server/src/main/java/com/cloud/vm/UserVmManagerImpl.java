@@ -1268,14 +1268,14 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         }
     }
 
-    private UserVm forceRebootVirtualMachine(UserVmVO vm, long hostId, boolean enterSetup) {
+    protected UserVm forceRebootVirtualMachine(UserVmVO vm, long hostId, boolean enterSetup) {
         try {
             if (stopVirtualMachine(vm.getId(), false) != null) {
                 Map<VirtualMachineProfile.Param,Object> params = new HashMap<>();
                 if (enterSetup) {
                     params.put(VirtualMachineProfile.Param.BootIntoSetup, Boolean.TRUE);
                 }
-                return startVirtualMachine(vm.getId(), null, null, hostId, params, null, false, false).first();
+                return startVirtualMachine(vm.getId(), null, null, hostId, null, params, null, false, false, false).first();
             }
         } catch (CloudException e) {
             throw new CloudRuntimeException(String.format("Unable to reboot the VM: %s", vm), e);
@@ -3742,7 +3742,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
     /**
      * Refuses a start for the reasons the start itself refuses it, before any of its volumes move: the caller's access,
-     * the owner, the start parameters and, when only running Instances count, the owner's limits. Nothing is reserved.
+     * the owner, the start parameters, the owner's quota and, when only running Instances count, the owner's limits. Nothing is reserved.
      */
     protected void validateStartBeforeMove(UserVmVO vm, Map<VirtualMachineProfile.Param, Object> additionalParams) throws ResourceAllocationException {
         _accountMgr.checkAccess(CallContext.current().getCallingAccount(), null, true, vm);
@@ -3762,8 +3762,9 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                 && !validPassword(password.toString())) {
             throw new InvalidParameterValueException("A valid password for this virtual machine was not provided.");
         }
+        ServiceOfferingVO offering = serviceOfferingDao.findById(vm.getId(), vm.getServiceOfferingId());
+        resourceLimitService.checkWithinQuota(owner, offering, template);
         if (VirtualMachineManager.ResourceCountRunningVMsonly.value()) {
-            ServiceOfferingVO offering = serviceOfferingDao.findById(vm.getId(), vm.getServiceOfferingId());
             List<String> tags = new ArrayList<>();
             tags.add(null);
             tags.addAll(resourceLimitService.getResourceLimitHostTags(offering, template).stream().filter(Objects::nonNull).collect(Collectors.toList()));
@@ -6568,6 +6569,17 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             DataCenterDeployment pinnedPlan, @NotNull Map<VirtualMachineProfile.Param, Object> additionalParams, String deploymentPlannerToUse,
             boolean isExplicitHost, boolean quickRestore)
             throws ConcurrentOperationException, ResourceUnavailableException, InsufficientCapacityException, ResourceAllocationException {
+        return startVirtualMachine(vmId, podId, clusterId, hostId, pinnedPlan, additionalParams, deploymentPlannerToUse, isExplicitHost, quickRestore, true);
+    }
+
+    /**
+     * @param ownersQuotaApplies false only for the start that completes a forced reboot: the Instance was running, and a
+     *        reboot releases nothing, so the owner's quota does not refuse it
+     */
+    protected Pair<UserVmVO, Map<VirtualMachineProfile.Param, Object>> startVirtualMachine(long vmId, Long podId, Long clusterId, Long hostId,
+            DataCenterDeployment pinnedPlan, @NotNull Map<VirtualMachineProfile.Param, Object> additionalParams, String deploymentPlannerToUse,
+            boolean isExplicitHost, boolean quickRestore, boolean ownersQuotaApplies)
+            throws ConcurrentOperationException, ResourceUnavailableException, InsufficientCapacityException, ResourceAllocationException {
         // Input validation
         final Account callerAccount = CallContext.current().getCallingAccount();
 
@@ -6600,8 +6612,11 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         boolean isRootAdmin = _accountService.isRootAdmin(callerAccount.getId());
 
         VMTemplateVO template = _templateDao.findByIdIncludingRemoved(vm.getTemplateId());
+        ServiceOfferingVO offering = serviceOfferingDao.findById(vm.getId(), vm.getServiceOfferingId());
+        if (ownersQuotaApplies) {
+            resourceLimitService.checkWithinQuota(owner, offering, template);
+        }
         if (VirtualMachineManager.ResourceCountRunningVMsonly.value()) {
-            ServiceOfferingVO offering = serviceOfferingDao.findById(vm.getId(), vm.getServiceOfferingId());
             List<String> resourceLimitHostTags = resourceLimitService.getResourceLimitHostTags(offering, template);
             try (CheckedReservation vmReservation = new CheckedReservation(owner, ResourceType.user_vm, resourceLimitHostTags, 1l, reservationDao, resourceLimitService);
                  CheckedReservation cpuReservation = new CheckedReservation(owner, ResourceType.cpu, resourceLimitHostTags, Long.valueOf(offering.getCpu()), reservationDao, resourceLimitService);

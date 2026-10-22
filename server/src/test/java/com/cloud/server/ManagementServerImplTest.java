@@ -71,6 +71,7 @@ import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
 import org.apache.cloudstack.framework.config.impl.ConfigDepotImpl;
 import org.apache.cloudstack.framework.config.impl.ConfigurationVO;
+import org.apache.cloudstack.resourcelimit.ResourceLimitGrantService;
 import org.apache.cloudstack.storage.datastore.db.ImageStoreDao;
 import org.apache.cloudstack.framework.extensions.manager.ExtensionsManager;
 import org.apache.cloudstack.userdata.UserDataManager;
@@ -2642,5 +2643,31 @@ public class ManagementServerImplTest {
         } finally {
             ConfigKey.init(null);
         }
+    }
+
+    @Test
+    public void resourceRequestExpiryPolicyIsACapability() {
+        ConfigDepotImpl depot = mock(ConfigDepotImpl.class);
+        lenient().when(depot.getConfigStringValue(ResourceLimitGrantService.ExpiryDefaultDays.key(), ConfigKey.Scope.Global, null)).thenReturn("30");
+        lenient().when(depot.getConfigStringValue(ResourceLimitGrantService.ExpiryMaxDays.key(), ConfigKey.Scope.Global, null)).thenReturn("90");
+        lenient().when(depot.getConfigStringValue(ResourceLimitGrantService.ExpiryRequired.key(), ConfigKey.Scope.Global, null)).thenReturn("false");
+        lenient().when(depot.getConfigStringValue(ResourceLimitGrantService.ExpiryTimezone.key(), ConfigKey.Scope.Global, null)).thenReturn("UTC");
+        ConfigKey.init(depot);
+        try {
+            Map<String, Object> capabilities = capabilitiesOfACallerInDomain(7L);
+            Assert.assertEquals("the request form proposes this many days", 30, capabilities.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_DEFAULT_DAYS));
+            Assert.assertEquals(90, capabilities.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_MAX_DAYS));
+            Assert.assertEquals(Boolean.FALSE, capabilities.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_REQUIRED));
+            Assert.assertEquals("UTC", capabilities.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_TIMEZONE));
+            lenient().when(depot.getConfigStringValue(ResourceLimitGrantService.ExpiryDefaultDays.key(), ConfigKey.Scope.Global, null)).thenReturn("120");
+            Assert.assertEquals("the proposed expiry is within the bound", 90, capabilitiesOfACallerInDomain(7L).get(ApiConstants.RESOURCE_REQUEST_EXPIRY_DEFAULT_DAYS));
+        } finally {
+            ConfigKey.init(null);
+        }
+        Map<String, Object> shipped = capabilitiesOfACallerInDomain(7L);
+        Assert.assertEquals(0, shipped.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_DEFAULT_DAYS));
+        Assert.assertEquals(0, shipped.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_MAX_DAYS));
+        Assert.assertEquals(Boolean.TRUE, shipped.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_REQUIRED));
+        Assert.assertEquals("Asia/Seoul", shipped.get(ApiConstants.RESOURCE_REQUEST_EXPIRY_TIMEZONE));
     }
 }

@@ -857,6 +857,13 @@ public class EventTypes {
 
     // Resource Limit
     public static final String EVENT_RESOURCE_LIMIT_UPDATE = "RESOURCE.LIMIT.UPDATE";
+    public static final String EVENT_RESOURCE_LIMIT_REQUEST_CREATE = "RESOURCE.LIMIT.REQUEST.CREATE";
+    public static final String EVENT_RESOURCE_LIMIT_REQUEST_CANCEL = "RESOURCE.LIMIT.REQUEST.CANCEL";
+    public static final String EVENT_RESOURCE_LIMIT_REQUEST_APPROVE = "RESOURCE.LIMIT.REQUEST.APPROVE";
+    public static final String EVENT_RESOURCE_LIMIT_REQUEST_REJECT = "RESOURCE.LIMIT.REQUEST.REJECT";
+    public static final String EVENT_RESOURCE_LIMIT_REQUEST_REVOKE = "RESOURCE.LIMIT.REQUEST.REVOKE";
+    public static final String EVENT_RESOURCE_LIMIT_REQUEST_EXPIRE = "RESOURCE.LIMIT.REQUEST.EXPIRE";
+    public static final String EVENT_RESOURCE_LIMIT_REQUEST_EXPIRING = "RESOURCE.LIMIT.REQUEST.EXPIRING";
 
     // Management Server
     public static final String EVENT_MANAGEMENT_SERVER_REMOVE = "MANAGEMENT.SERVER.REMOVE";
@@ -1180,6 +1187,15 @@ public class EventTypes {
         entityEventDetails.put(EVENT_HOST_RECONNECT, Host.class);
         entityEventDetails.put(EVENT_HOST_GPU_GROUPS_UPDATE, Host.class);
         entityEventDetails.put(EVENT_HOST_MOVE_RATE_UPDATE, Host.class);
+
+        // Resource limit requests
+        entityEventDetails.put(EVENT_RESOURCE_LIMIT_REQUEST_CREATE, Account.class);
+        entityEventDetails.put(EVENT_RESOURCE_LIMIT_REQUEST_CANCEL, Account.class);
+        entityEventDetails.put(EVENT_RESOURCE_LIMIT_REQUEST_APPROVE, Account.class);
+        entityEventDetails.put(EVENT_RESOURCE_LIMIT_REQUEST_REJECT, Account.class);
+        entityEventDetails.put(EVENT_RESOURCE_LIMIT_REQUEST_REVOKE, Account.class);
+        entityEventDetails.put(EVENT_RESOURCE_LIMIT_REQUEST_EXPIRE, Account.class);
+        entityEventDetails.put(EVENT_RESOURCE_LIMIT_REQUEST_EXPIRING, Account.class);
 
         // Host Out-of-band management
         entityEventDetails.put(EVENT_HOST_OUTOFBAND_MANAGEMENT_ENABLE, Host.class);

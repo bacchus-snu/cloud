@@ -659,6 +659,7 @@ import org.apache.cloudstack.managed.context.ManagedContextRunnable;
 import org.apache.cloudstack.management.ManagementServerHost;
 import org.apache.cloudstack.query.QueryService;
 import org.apache.cloudstack.resourcedetail.dao.GuestOsDetailsDao;
+import org.apache.cloudstack.resourcelimit.ResourceLimitGrantService;
 import org.apache.cloudstack.storage.datastore.db.ImageStoreDao;
 import org.apache.cloudstack.storage.datastore.db.ImageStoreVO;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
@@ -4952,6 +4953,10 @@ public class ManagementServerImpl extends MutualExclusiveIdsManagerBase implemen
         capabilities.put(ApiConstants.ROOT_DISK_SIZE_MIN, UserVmManager.rootDiskSizeMinGiB(domainId));
         capabilities.put(ApiConstants.ROOT_DISK_SIZE_DEFAULT, UserVmManager.rootDiskSizeDefaultGiB(domainId));
         capabilities.put(ApiConstants.KEEP_ROOT_VOLUME_DEFAULT, UserVmManager.keepRootVolumeByDefault(domainId));
+        capabilities.put(ApiConstants.RESOURCE_REQUEST_EXPIRY_REQUIRED, ResourceLimitGrantService.ExpiryRequired.value());
+        capabilities.put(ApiConstants.RESOURCE_REQUEST_EXPIRY_DEFAULT_DAYS, ResourceLimitGrantService.proposedExpiryDays());
+        capabilities.put(ApiConstants.RESOURCE_REQUEST_EXPIRY_MAX_DAYS, ResourceLimitGrantService.maxExpiryDays());
+        capabilities.put(ApiConstants.RESOURCE_REQUEST_EXPIRY_TIMEZONE, ResourceLimitGrantService.ExpiryTimezone.value());
 
         Map<String, Object> vpnParams = getVpnCustomerGatewayParameters(domainId);
         if (!vpnParams.isEmpty()) {

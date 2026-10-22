@@ -712,6 +712,30 @@ public class ResourceLimitManagerImpl extends ManagerBase implements ResourceLim
     }
 
     @Override
+    public void checkWithinQuota(Account owner, ServiceOffering offering, VirtualMachineTemplate template) throws ResourceAllocationException {
+        if (owner == null || !Boolean.TRUE.equals(ResourceRequestEnforceQuota.value())) {
+            return;
+        }
+        List<String> tags = offering == null ? new ArrayList<>() : getResourceLimitHostTags(offering, template);
+        if (tags.isEmpty()) {
+            tags.add(null);
+        }
+        for (String tag : tags) {
+            for (ResourceType type : List.of(ResourceType.cpu, ResourceType.memory, ResourceType.gpu)) {
+                long limit = findCorrectResourceLimitForAccount(owner, type, tag);
+                if (limit == Resource.RESOURCE_UNLIMITED) {
+                    continue;
+                }
+                long count = getResourceCount(owner, type, tag);
+                if (count > limit) {
+                    throw new ResourceAllocationException(String.format("quota expired or insufficient: the %s count%s of account %s is %d, above its limit of %d",
+                            type.getName(), tag == null ? "" : " for tag " + tag, owner.getAccountName(), count, limit), type);
+                }
+            }
+        }
+    }
+
+    @Override
     public void checkResourceLimit(final Account account, final ResourceType type, long... count) throws ResourceAllocationException {
         checkResourceLimitWithTag(account, type, null, count);
     }
@@ -1778,7 +1802,8 @@ public class ResourceLimitManagerImpl extends ManagerBase implements ResourceLim
 
     @Override
     public List<String> getResourceLimitHostTags(ServiceOffering serviceOffering, VirtualMachineTemplate template) {
-        if (StringUtils.isEmpty(serviceOffering.getHostTag()) && StringUtils.isEmpty(template.getTemplateTag())) {
+        String templateTag = template == null ? null : template.getTemplateTag();
+        if (StringUtils.isEmpty(serviceOffering.getHostTag()) && StringUtils.isEmpty(templateTag)) {
             return new ArrayList<>();
         }
         List<String> resourceLimitTagsFromConfig = getResourceLimitHostTags();
@@ -1794,10 +1819,8 @@ public class ResourceLimitManagerImpl extends ManagerBase implements ResourceLim
                 }
             }
         }
-        if (StringUtils.isNotEmpty(template.getTemplateTag())
-                && resourceLimitTagsFromConfig.contains(template.getTemplateTag())
-                && !tags.contains(template.getTemplateTag())) {
-            tags.add(template.getTemplateTag());
+        if (StringUtils.isNotEmpty(templateTag) && resourceLimitTagsFromConfig.contains(templateTag) && !tags.contains(templateTag)) {
+            tags.add(templateTag);
         }
         return tags;
     }
@@ -2340,7 +2363,8 @@ public class ResourceLimitManagerImpl extends ManagerBase implements ResourceLim
                 DefaultMaxDomainProjects,
                 DefaultMaxAccountGpus,
                 DefaultMaxDomainGpus,
-                DefaultMaxProjectGpus
+                DefaultMaxProjectGpus,
+                ResourceRequestEnforceQuota
         };
     }
 

@@ -133,6 +133,7 @@ public class PlacementServiceImpl extends ManagerBase implements PlacementServic
     static final String REASON_AFFINITY = "affinity groups";
     static final String REASON_SUITABLE_HOST = "suitable host";
     static final String REASON_VOLUMES_UNAVAILABLE = "volumes unavailable";
+    static final String REASON_QUOTA = "quota";
 
     private static final long MIB = 1024L * 1024L;
     private static final long GIB = 1024L * 1024L * 1024L;
@@ -575,6 +576,13 @@ public class PlacementServiceImpl extends ManagerBase implements PlacementServic
 
     Evaluation evaluate(PlacementRequest request) {
         Context context = contextOf(request);
+        if (request.getKind() != PlacementRequest.Kind.ATTACH) {
+            try {
+                resourceLimitService.checkWithinQuota(context.owner, context.offering, context.template);
+            } catch (ResourceAllocationException e) {
+                return new Evaluation(context, new ArrayList<>(), false, REASON_QUOTA);
+            }
+        }
         if (context.newSize && context.vm.getType() == VirtualMachine.Type.User) {
             try {
                 userVmManager.validatePoolVcpuStep(VirtualMachine.Type.User, context.offering, context.offering.getCpu(), context.owner.getDomainId());

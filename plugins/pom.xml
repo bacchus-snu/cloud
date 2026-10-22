@@ -121,6 +121,8 @@
 
         <module>maintenance</module>
 
+        <module>resource-limit-request</module>
+
         <module>storage/sharedfs/storagevm</module>
         <module>storage/image/default</module>
         <module>storage/image/s3</module>

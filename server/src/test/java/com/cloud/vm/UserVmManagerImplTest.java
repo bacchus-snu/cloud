@@ -41,6 +41,7 @@ import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
@@ -5115,6 +5116,123 @@ public class UserVmManagerImplTest {
 
         verify(placementService, never()).approvedMove(any(), Mockito.anyBoolean(), any());
         verify(virtualMachineManager, never()).relocateStoppedVm(anyString(), anyList(), anyLong());
+    }
+
+    @Test
+    public void startRefusedWhenOverGpuQuotaAfterExpiry() throws Exception {
+        assertEquals("an admin starts another account's Instance", Account.Type.ADMIN, CallContext.current().getCallingAccount().getType());
+        UserVmVO vm = stoppedKvmVm(VirtualMachine.State.Stopped);
+        when(userVmDao.findById(MOVING_VM_ID)).thenReturn(vm);
+        PlacementVerdict approved = approvedMoveToHostB();
+        lenient().when(placementService.approvedMove(any(PlacementRequest.class), eq(true), eq("approval"))).thenReturn(approved);
+        ServiceOfferingVO offering = mock(ServiceOfferingVO.class);
+        when(_serviceOfferingDao.findById(MOVING_VM_ID, 20L)).thenReturn(offering);
+        AccountVO owner = accountDao.findById(5L);
+        doThrow(new ResourceAllocationException("quota expired or insufficient: the gpu count for tag a100-40g of account student is 1, above its limit of 0",
+                Resource.ResourceType.gpu)).when(resourceLimitMgr).checkWithinQuota(eq(owner), eq(offering), nullable(VirtualMachineTemplate.class));
+
+        ResourceAllocationException e = assertThrows(ResourceAllocationException.class, () -> userVmManagerImpl.startVirtualMachine(startCmd(true, "approval")));
+
+        assertTrue(e.getMessage(), e.getMessage().startsWith("quota expired or insufficient"));
+        verify(placementService, never()).approvedMove(any(), Mockito.anyBoolean(), any());
+        verify(virtualMachineManager, never()).relocateStoppedVm(anyString(), anyList(), anyLong());
+    }
+
+    @Test
+    public void ownerStartOfAStoppedInstanceIsRefusedWhileOverQuota() throws Exception {
+        Account ownerCaller = mock(Account.class);
+        lenient().when(ownerCaller.getId()).thenReturn(5L);
+        lenient().when(ownerCaller.getType()).thenReturn(Account.Type.NORMAL);
+        CallContext.register(callerUser, ownerCaller);
+        try {
+            UserVmVO vm = stoppedKvmVm(VirtualMachine.State.Stopped);
+            when(userVmDao.findById(MOVING_VM_ID)).thenReturn(vm);
+            doThrow(new ResourceAllocationException("quota expired or insufficient", Resource.ResourceType.cpu)).when(resourceLimitMgr)
+                    .checkWithinQuota(any(), any(), any());
+
+            assertThrows(ResourceAllocationException.class, () -> userVmManagerImpl.startVirtualMachine(startCmd(false, null)));
+
+            verify(placementService, never()).approvedMove(any(), Mockito.anyBoolean(), any());
+        } finally {
+            CallContext.unregister();
+        }
+    }
+
+    @Test
+    public void forcedRebootOfARunningInstanceOverQuotaRestartsIt() throws Exception {
+        UserVmVO vm = stoppedKvmVm(VirtualMachine.State.Running);
+        doReturn(vm).when(userVmManagerImpl).stopVirtualMachine(MOVING_VM_ID, false);
+        lenient().doThrow(new ResourceAllocationException("quota expired or insufficient", Resource.ResourceType.gpu)).when(resourceLimitMgr)
+                .checkWithinQuota(any(), any(), any());
+        doReturn(new Pair<>(vm, new HashMap<>())).when(userVmManagerImpl).startVirtualMachine(eq(MOVING_VM_ID), isNull(), isNull(), eq(7L), isNull(), anyMap(),
+                isNull(), eq(false), eq(false), eq(false));
+
+        assertEquals("a reboot releases nothing: the Instance runs again", vm, userVmManagerImpl.forceRebootVirtualMachine(vm, 7L, false));
+
+        verify(userVmManagerImpl).startVirtualMachine(eq(MOVING_VM_ID), isNull(), isNull(), eq(7L), isNull(), anyMap(), isNull(), eq(false), eq(false), eq(false));
+    }
+
+    @Test
+    public void onlyTheRestartOfAForcedRebootSkipsTheQuotaCheck() throws Exception {
+        UserVmVO vm = stoppedKvmVm(VirtualMachine.State.Stopped);
+        when(userVmDao.findById(MOVING_VM_ID)).thenReturn(vm);
+        doThrow(new ResourceAllocationException("quota expired or insufficient", Resource.ResourceType.cpu)).when(resourceLimitMgr)
+                .checkWithinQuota(any(), any(), any());
+
+        try {
+            userVmManagerImpl.startVirtualMachine(MOVING_VM_ID, null, null, 7L, null, new HashMap<>(), null, false, false, false);
+        } catch (ResourceAllocationException e) {
+            fail("the restart of a forced reboot is not refused by the owner's quota: " + e.getMessage());
+        } catch (Exception e) {
+            // the start goes on past the quota into steps this test does not set up
+        }
+        verify(resourceLimitMgr, never()).checkWithinQuota(any(), any(), any());
+
+        assertThrows(ResourceAllocationException.class, () -> userVmManagerImpl.startVirtualMachine(MOVING_VM_ID, null, null, 7L, null, new HashMap<>(), null,
+                false, false, true));
+    }
+
+    @Test
+    public void haAndReinstallRestartsNeverConsultTheQuota() throws Exception {
+        lenient().doThrow(new ResourceAllocationException("quota expired or insufficient", Resource.ResourceType.cpu)).when(resourceLimitMgr)
+                .checkWithinQuota(any(), any(), any());
+        UserVmVO vm = stoppedKvmVm(VirtualMachine.State.Stopped);
+
+        userVmManagerImpl.startVirtualMachineForHA(vm, new HashMap<>(), null);
+        verify(virtualMachineManager).advanceStart(eq("moving-vm"), anyMap(), nullable(DeploymentPlanner.class));
+
+        RestoreVMCmd cmd = mock(RestoreVMCmd.class);
+        when(cmd.getVmId()).thenReturn(vmId);
+        when(cmd.getTemplateId()).thenReturn(null);
+        when(cmd.getRootDiskOfferingId()).thenReturn(null);
+        when(cmd.getDetails()).thenReturn(rootDiskSizeGiB("10"));
+        when(userVmVoMock.getTemplateId()).thenReturn(templateId);
+        lenient().when(userVmVoMock.getDomainId()).thenReturn(1L);
+        doReturn(false).when(userVmManagerImpl).isVMPartOfAnyCKSCluster(userVmVoMock);
+        VMTemplateVO template = templateOfSize(2L * GiB_TO_BYTES);
+        when(templateDao.findById(templateId)).thenReturn(template);
+        userVmManagerImpl.restoreVM(cmd);
+        verify(virtualMachineManager).restoreVirtualMachine(anyLong(), isNull(), isNull(), eq(false), any());
+
+        verify(resourceLimitMgr, never()).checkWithinQuota(any(), any(), any());
+    }
+
+    @Test
+    public void everyStartIsRefusedWhileTheOwnerIsOverQuota() throws Exception {
+        UserVmVO vm = stoppedKvmVm(VirtualMachine.State.Stopped);
+        when(userVmDao.findById(MOVING_VM_ID)).thenReturn(vm);
+        ServiceOfferingVO offering = mock(ServiceOfferingVO.class);
+        when(_serviceOfferingDao.findById(MOVING_VM_ID, 20L)).thenReturn(offering);
+        VMTemplateVO template = mock(VMTemplateVO.class);
+        when(templateDao.findByIdIncludingRemoved(30L)).thenReturn(template);
+        AccountVO owner = accountDao.findById(5L);
+        doThrow(new ResourceAllocationException("quota expired or insufficient", Resource.ResourceType.cpu)).when(resourceLimitMgr)
+                .checkWithinQuota(owner, offering, template);
+
+        assertThrows(ResourceAllocationException.class, () -> userVmManagerImpl.startVirtualMachine(MOVING_VM_ID, null, null, null, null, new HashMap<>(), null,
+                false, false));
+
+        verifyNoInteractions(virtualMachineManager);
     }
 
     @Test

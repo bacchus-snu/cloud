@@ -1405,6 +1405,10 @@ public class ApiConstants {
     public static final String KEEP_ROOT_VOLUME_DEFAULT = "keeprootvolumedefault";
     public static final String ROOT_DISK_SIZE_MIN = "rootdisksizemin";
     public static final String ROOT_DISK_SIZE_DEFAULT = "rootdisksizedefault";
+    public static final String RESOURCE_REQUEST_EXPIRY_REQUIRED = "resourcerequestexpiryrequired";
+    public static final String RESOURCE_REQUEST_EXPIRY_DEFAULT_DAYS = "resourcerequestexpirydefaultdays";
+    public static final String RESOURCE_REQUEST_EXPIRY_MAX_DAYS = "resourcerequestexpirymaxdays";
+    public static final String RESOURCE_REQUEST_EXPIRY_TIMEZONE = "resourcerequestexpirytimezone";
 
     // Object Storage related
     public static final String BUCKET_AVAILABLE = "bucketavailable";

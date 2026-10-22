@@ -180,6 +180,22 @@ public class CapabilitiesResponse extends BaseResponse {
     @Param(description = "Whether destroying an Instance keeps its ROOT volume when keeprootvolume is not passed", since = "4.23.0.100")
     private Boolean keepRootVolumeDefault;
 
+    @SerializedName(ApiConstants.RESOURCE_REQUEST_EXPIRY_REQUIRED)
+    @Param(description = "Whether a resource limit request needs an expiry date", since = "4.23.0.100")
+    private Boolean resourceRequestExpiryRequired;
+
+    @SerializedName(ApiConstants.RESOURCE_REQUEST_EXPIRY_DEFAULT_DAYS)
+    @Param(description = "Days from today that a resource limit request proposes as its expiry date; 0 proposes none", since = "4.23.0.100")
+    private Integer resourceRequestExpiryDefaultDays;
+
+    @SerializedName(ApiConstants.RESOURCE_REQUEST_EXPIRY_MAX_DAYS)
+    @Param(description = "The latest expiry date of a resource limit request, in days from today; 0 sets no bound", since = "4.23.0.100")
+    private Integer resourceRequestExpiryMaxDays;
+
+    @SerializedName(ApiConstants.RESOURCE_REQUEST_EXPIRY_TIMEZONE)
+    @Param(description = "The time zone in which the expiry date of a resource limit grant ends, at 23:59:59", since = "4.23.0.100")
+    private String resourceRequestExpiryTimezone;
+
     public void setSecurityGroupsEnabled(boolean securityGroupsEnabled) {
         this.securityGroupsEnabled = securityGroupsEnabled;
     }
@@ -330,5 +346,21 @@ public class CapabilitiesResponse extends BaseResponse {
 
     public void setKeepRootVolumeDefault(Boolean keepRootVolumeDefault) {
         this.keepRootVolumeDefault = keepRootVolumeDefault;
+    }
+
+    public void setResourceRequestExpiryRequired(Boolean resourceRequestExpiryRequired) {
+        this.resourceRequestExpiryRequired = resourceRequestExpiryRequired;
+    }
+
+    public void setResourceRequestExpiryDefaultDays(Integer resourceRequestExpiryDefaultDays) {
+        this.resourceRequestExpiryDefaultDays = resourceRequestExpiryDefaultDays;
+    }
+
+    public void setResourceRequestExpiryMaxDays(Integer resourceRequestExpiryMaxDays) {
+        this.resourceRequestExpiryMaxDays = resourceRequestExpiryMaxDays;
+    }
+
+    public void setResourceRequestExpiryTimezone(String resourceRequestExpiryTimezone) {
+        this.resourceRequestExpiryTimezone = resourceRequestExpiryTimezone;
     }
 }

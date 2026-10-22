@@ -33,6 +33,7 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -517,6 +518,28 @@ public class PlacementServiceImplTest {
         assertEquals("gpu group A100-SXM4-80GB x2", verdict.getReason());
         freeGroups.put(HOST_A, 1);
         assertEquals(PlacementVerdict.Verdict.here, start().getVerdict());
+    }
+
+    @Test
+    public void placementVerdictNamesQuota() throws Exception {
+        volume(201, Volume.Type.ROOT, HOST_A, 10);
+        when(userVmManager.configureCustomRootDiskSize(any(), any(), any(), any(), eq(true), anyLong())).thenReturn(20 * GIB);
+        doThrow(new ResourceAllocationException("quota expired or insufficient", ResourceType.gpu)).when(resourceLimitService)
+                .checkWithinQuota(eq(owner), eq(offering), any());
+
+        PlacementVerdict start = start();
+        PlacementVerdict deploy = service.check(PlacementRequest.deploy(TEMPLATE, OFFERING, ZONE, ACCOUNT));
+
+        assertEquals(PlacementVerdict.Verdict.none, start.getVerdict());
+        assertEquals("quota", start.getReason());
+        assertEquals(PlacementVerdict.Verdict.none, deploy.getVerdict());
+        assertEquals("quota", deploy.getReason());
+        InsufficientServerCapacityException refused = assertThrows(InsufficientServerCapacityException.class,
+                () -> service.approvedMove(PlacementRequest.start(VM, null, ACCOUNT), false, null));
+        assertTrue(refused.getMessage(), refused.getMessage().endsWith(": quota"));
+
+        doNothing().when(resourceLimitService).checkWithinQuota(any(), any(), any());
+        assertEquals("within the quota the verdict is the host's again", PlacementVerdict.Verdict.here, start().getVerdict());
     }
 
     @Test

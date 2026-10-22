@@ -112,6 +112,10 @@ public class MockResourceLimitManagerImpl extends ManagerBase implements Resourc
         return 0;
     }
 
+    @Override
+    public void checkWithinQuota(Account owner, ServiceOffering offering, VirtualMachineTemplate template) {
+    }
+
     /* (non-Javadoc)
      * @see com.cloud.user.ResourceLimitService#incrementResourceCount(long, com.cloud.configuration.Resource.ResourceType, java.lang.Long[])
      */

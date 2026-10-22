@@ -1547,4 +1547,131 @@ public class ResourceLimitManagerImplTest {
             overrideDefaultConfigValue(ResourceLimitService.ResourceLimitStorageCombined, "_defaultValue", "true");
         }
     }
+
+    private static final long QUOTA_ACCOUNT_ID = 11L;
+
+    private Account quotaAccount() {
+        Account account = Mockito.mock(Account.class);
+        Mockito.lenient().when(account.getId()).thenReturn(QUOTA_ACCOUNT_ID);
+        Mockito.lenient().when(account.getAccountName()).thenReturn("student");
+        Mockito.lenient().when(account.getType()).thenReturn(Account.Type.NORMAL);
+        Mockito.lenient().when(accountManager.isRootAdmin(QUOTA_ACCOUNT_ID)).thenReturn(false);
+        return account;
+    }
+
+    private void quotaLimit(Resource.ResourceType type, String tag, long max) {
+        Mockito.lenient().when(resourceLimitDao.findByOwnerIdAndTypeAndTag(QUOTA_ACCOUNT_ID, Resource.ResourceOwnerType.Account, type, tag))
+                .thenReturn(new ResourceLimitVO(type, max, QUOTA_ACCOUNT_ID, Resource.ResourceOwnerType.Account, tag));
+    }
+
+    private void quotaCount(Resource.ResourceType type, String tag, long count) {
+        Mockito.lenient().when(resourceCountDao.getResourceCount(QUOTA_ACCOUNT_ID, Resource.ResourceOwnerType.Account, type, tag)).thenReturn(count);
+    }
+
+    private ServiceOffering offeringTagged(String hostTags) {
+        ServiceOffering offering = Mockito.mock(ServiceOffering.class);
+        Mockito.lenient().when(offering.getHostTag()).thenReturn(hostTags);
+        return offering;
+    }
+
+    private VirtualMachineTemplate untaggedTemplate() {
+        VirtualMachineTemplate template = Mockito.mock(VirtualMachineTemplate.class);
+        Mockito.lenient().when(template.getTemplateTag()).thenReturn(null);
+        return template;
+    }
+
+    private String quotaRefusal(Account owner, ServiceOffering offering) {
+        try {
+            resourceLimitManager.checkWithinQuota(owner, offering, untaggedTemplate());
+            return null;
+        } catch (ResourceAllocationException e) {
+            return e.getMessage();
+        }
+    }
+
+    /** After the grant behind a GPU type expired, the stopped Instance of that type is still counted, and the count exceeds the limit. */
+    @Test
+    public void checkWithinQuotaRefusesWhileTheGpuTypeCountExceedsItsLimit() {
+        Account owner = quotaAccount();
+        for (Resource.ResourceType type : List.of(Resource.ResourceType.cpu, Resource.ResourceType.memory)) {
+            quotaLimit(type, "htag1", 0L);
+            quotaCount(type, "htag1", 0L);
+        }
+        quotaLimit(Resource.ResourceType.gpu, "htag1", 0L);
+        quotaCount(Resource.ResourceType.gpu, "htag1", 1L);
+
+        String refusal = quotaRefusal(owner, offeringTagged("htag1,htag1-nvswitch"));
+
+        Assert.assertNotNull("a start over the GPU type's quota is refused", refusal);
+        Assert.assertTrue(refusal, refusal.startsWith("quota expired or insufficient"));
+        Assert.assertTrue(refusal, refusal.contains("gpu") && refusal.contains("htag1"));
+        quotaLimit(Resource.ResourceType.gpu, "htag1", 1L);
+        Assert.assertNull("a count at the limit is within the quota: the Instance itself is counted", quotaRefusal(owner, offeringTagged("htag1")));
+    }
+
+    @Test
+    public void checkWithinQuotaChecksCpuAndMemoryOfTheInstancesTagsOnly() {
+        Account owner = quotaAccount();
+        quotaLimit(Resource.ResourceType.cpu, "htag2", 8L);
+        quotaCount(Resource.ResourceType.cpu, "htag2", 10L);
+        quotaLimit(Resource.ResourceType.cpu, null, 4L);
+        quotaCount(Resource.ResourceType.cpu, null, 40L);
+        for (Resource.ResourceType type : List.of(Resource.ResourceType.memory, Resource.ResourceType.gpu)) {
+            quotaLimit(type, "htag1", 0L);
+            quotaCount(type, "htag1", 0L);
+            quotaLimit(type, "htag2", Resource.RESOURCE_UNLIMITED);
+        }
+        quotaLimit(Resource.ResourceType.cpu, "htag1", 16L);
+        quotaCount(Resource.ResourceType.cpu, "htag1", 16L);
+
+        Assert.assertNull("another tag's or the untagged overage does not refuse an Instance of a tag within its quota",
+                quotaRefusal(owner, offeringTagged("htag1")));
+        String refusal = quotaRefusal(owner, offeringTagged("htag2"));
+        Assert.assertNotNull(refusal);
+        Assert.assertTrue(refusal, refusal.contains("cpu") && refusal.contains("htag2"));
+        Assert.assertTrue("an Instance without a resource limit tag has the untagged limits", quotaRefusal(owner, offeringTagged("other")).contains("cpu"));
+
+        quotaLimit(Resource.ResourceType.cpu, "htag2", 12L);
+        quotaLimit(Resource.ResourceType.memory, "htag2", 2048L);
+        quotaCount(Resource.ResourceType.memory, "htag2", 4096L);
+        Assert.assertTrue(quotaRefusal(owner, offeringTagged("htag2")).contains("memory"));
+
+        Mockito.when(accountManager.isRootAdmin(QUOTA_ACCOUNT_ID)).thenReturn(true);
+        Assert.assertNull("the limits of a root admin are unlimited", quotaRefusal(owner, offeringTagged("htag2")));
+    }
+
+    @Test
+    public void enforceQuotaSwitchOffAllowsStartAndRenewal() throws Exception {
+        Account owner = quotaAccount();
+        quotaLimit(Resource.ResourceType.gpu, "htag1", 0L);
+        quotaCount(Resource.ResourceType.gpu, "htag1", 2L);
+        Assert.assertNotNull(quotaRefusal(owner, offeringTagged("htag1")));
+
+        overrideDefaultConfigValue(ResourceLimitService.ResourceRequestEnforceQuota, "_defaultValue", "false");
+        try {
+            Assert.assertNull("with the switch off, neither a start nor a lease renewal is refused", quotaRefusal(owner, offeringTagged("htag1")));
+        } finally {
+            overrideDefaultConfigValue(ResourceLimitService.ResourceRequestEnforceQuota, "_defaultValue", "true");
+        }
+        Assert.assertEquals("resource.request.enforce.quota", ResourceLimitService.ResourceRequestEnforceQuota.key());
+        Assert.assertTrue(ResourceLimitService.ResourceRequestEnforceQuota.isDynamic());
+        Assert.assertEquals(ConfigKey.Scope.Global, ResourceLimitService.ResourceRequestEnforceQuota.getScopes().get(0));
+        Assert.assertTrue(Arrays.asList(resourceLimitManager.getConfigKeys()).contains(ResourceLimitService.ResourceRequestEnforceQuota));
+    }
+
+    @Test
+    public void newVolumeRefusedWhenOverStorageAfterExpiry() {
+        AccountVO account = mockStorageAccount();
+        mockStorageLimit(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, Resource.ResourceType.primary_storage, 10 * GIB);
+        mockStorageCounts(STORAGE_ACCOUNT_ID, Resource.ResourceOwnerType.Account, 9 * GIB, 3 * GIB);
+
+        Assert.assertFalse("no new volume while the storage in use exceeds the quota", storageCheckPasses(account, Resource.ResourceType.primary_storage, GIB));
+        Assert.assertFalse("no new snapshot either", storageCheckPasses(account, Resource.ResourceType.secondary_storage, GIB));
+        Assert.assertEquals(0L, resourceLimitManager.getRemainingStorageQuota(account));
+        try {
+            resourceLimitManager.checkWithinQuota(account, offeringTagged(null), untaggedTemplate());
+        } catch (ResourceAllocationException e) {
+            Assert.fail("storage kept over the quota does not refuse a start: " + e.getMessage());
+        }
+    }
 }

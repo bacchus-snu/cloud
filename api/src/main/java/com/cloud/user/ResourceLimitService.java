@@ -63,6 +63,9 @@ public interface ResourceLimitService {
             "The default maximum number of GPU devices that can be used for a domain", false);
     static final ConfigKey<Long> DefaultMaxProjectGpus = new ConfigKey<>("Project Defaults",Long.class,"max.project.gpus","20",
             "The default maximum number of GPU devices that can be used for a project", false);
+    static final ConfigKey<Boolean> ResourceRequestEnforceQuota = new ConfigKey<>("Advanced", Boolean.class, "resource.request.enforce.quota", "true",
+            "Whether an Instance start and an Instance lease renewal are refused while the owner's cpu, memory or gpu count exceeds the owner's limit " +
+                    "for the Instance's resource limit host tags (the untagged limits when it has none). Running Instances, and the restart within a forced reboot or a reinstall of a running Instance, are not affected.", true);
 
     static final List<ResourceType> HostTagsSupportingTypes = List.of(ResourceType.user_vm, ResourceType.cpu, ResourceType.memory, ResourceType.gpu);
     static final List<ResourceType> StorageTagsSupportingTypes = List.of(ResourceType.volume, ResourceType.primary_storage);
@@ -188,6 +191,20 @@ public interface ResourceLimitService {
      *         when neither the account nor any of those domains limits storage
      */
     long getRemainingStorageQuota(Account account);
+
+    /**
+     * The one check behind every refusal to start, or renew the lease of, an Instance whose owner is over quota. Limits only
+     * bound new allocations, and an Instance that is counted while stopped is not checked again when it starts, so a start
+     * is refused while the owner's count already exceeds a limit, for example after the grant behind it expired.
+     * It does nothing while {@link #ResourceRequestEnforceQuota} is false.
+     *
+     * @param owner the Instance's owner; its account limits are checked, not those of its domains
+     * @param offering the Instance's service offering, whose resource limit host tags select the limits checked
+     * @param template the Instance's Template, whose tag may also select a limit; may be null
+     * @throws ResourceAllocationException "quota expired or insufficient" when the cpu, memory or gpu count of the owner exceeds
+     *         its limit for one of those tags, or its untagged limit when the offering and Template have no such tag
+     */
+    void checkWithinQuota(Account owner, ServiceOffering offering, VirtualMachineTemplate template) throws ResourceAllocationException;
 
     /**
      * Increments the resource count

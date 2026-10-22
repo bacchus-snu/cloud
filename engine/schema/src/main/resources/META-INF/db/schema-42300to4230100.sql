@@ -69,6 +69,39 @@ CREATE TABLE IF NOT EXISTS `cloud`.`host_gpu_group_member` (
   CONSTRAINT `fk_host_gpu_group_member__host_gpu_group_rule` FOREIGN KEY (`host_id`) REFERENCES `host_gpu_group_rule`(`host_id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Resource limit requests of accounts, and the grants made of them: an approved grant raises the account's limits until its expiry
+CREATE TABLE IF NOT EXISTS `cloud`.`resource_limit_request` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `uuid` varchar(40) NOT NULL,
+  `account_id` bigint unsigned NOT NULL COMMENT 'account the request is for',
+  `domain_id` bigint unsigned NOT NULL COMMENT 'domain of the account',
+  `cpu` bigint unsigned NOT NULL DEFAULT 0 COMMENT 'requested vCPUs of Instances without a GPU',
+  `memory_mib` bigint unsigned NOT NULL DEFAULT 0 COMMENT 'requested memory of Instances without a GPU, in MiB',
+  `storage_gib` bigint unsigned NOT NULL DEFAULT 0 COMMENT 'requested storage of volumes and snapshots together, in GiB',
+  `gpus` text COMMENT 'requested GPUs, a JSON object from GPU type tag to count',
+  `reason` varchar(1024) COMMENT 'why the account asks',
+  `requested_expiry` datetime COMMENT 'requested end of the grant; null for none',
+  `state` varchar(16) NOT NULL COMMENT 'Pending, Approved, Rejected, Cancelled, Expired or Revoked',
+  `approved_cpu` bigint unsigned COMMENT 'granted vCPUs of Instances without a GPU',
+  `approved_memory_mib` bigint unsigned COMMENT 'granted memory of Instances without a GPU, in MiB',
+  `approved_storage_gib` bigint unsigned COMMENT 'granted storage of volumes and snapshots together, in GiB',
+  `approved_gpus` text COMMENT 'granted GPUs, a JSON object from GPU type tag to count',
+  `approved_expiry` datetime COMMENT 'end of the grant; null for none',
+  `approver_id` bigint unsigned COMMENT 'user who decided the request last',
+  `decided_at` datetime COMMENT 'when the request was decided last',
+  `comment` varchar(1024) COMMENT 'comment of the last decision',
+  `expiry_warning_days` int unsigned COMMENT 'fewest days before approved_expiry for which the account has been warned',
+  `created` datetime NOT NULL COMMENT 'date the request was made',
+  `removed` datetime COMMENT 'date the request was removed',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_resource_limit_request__uuid` (`uuid`),
+  INDEX `i_resource_limit_request__account_id__state` (`account_id`, `state`),
+  INDEX `i_resource_limit_request__state__approved_expiry` (`state`, `approved_expiry`),
+  CONSTRAINT `fk_resource_limit_request__account_id` FOREIGN KEY (`account_id`) REFERENCES `account`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_resource_limit_request__domain_id` FOREIGN KEY (`domain_id`) REFERENCES `domain`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_resource_limit_request__approver_id` FOREIGN KEY (`approver_id`) REFERENCES `user`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Tag values up to 8192 characters (ResourceTag.VALUE_MAX_LENGTH)
 CALL `cloud`.`IDEMPOTENT_CHANGE_COLUMN`('cloud.resource_tags', 'value', 'value', 'varchar(8192)');
 

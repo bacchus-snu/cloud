@@ -185,10 +185,10 @@
               'margin-right': '5px',
               'float': 'right'}">
               <a-tooltip>
-                <template #title>{{ $t('label.remainingdays')  + ": " + getRemainingLeaseText(record.leaseduration) }}</template>
+                <template #title>{{ leaseMark(record).title }}</template>
                 <field-time-outlined
                   :style="{
-                    color: getLeaseColor(record.leaseduration),
+                    color: leaseMark(record).color,
                     fontSize: '20px'
                   }"/>
               </a-tooltip>
@@ -1079,6 +1079,7 @@ import { validateLinks } from '@/utils/links'
 import cronstrue from 'cronstrue/i18n'
 import moment from 'moment-timezone'
 import { timeZoneName } from '@/utils/timezone'
+import { leaseDaysColor, leaseIndicator, remainingLeaseDaysText } from '@/utils/lease'
 import { FileTextOutlined } from '@ant-design/icons-vue'
 
 export default {
@@ -1547,22 +1548,14 @@ export default {
         })
       }
     },
-    getRemainingLeaseText (leaseDuration) {
-      if (leaseDuration > 0) {
-        return leaseDuration + (leaseDuration === 1 ? ' day' : ' days')
-      } else if (leaseDuration === 0) {
-        return 'expiring today'
-      } else {
-        return 'over'
+    leaseMark (record) {
+      const hours = leaseIndicator(record, this.$t)
+      if (hours) {
+        return { title: hours.title, color: hours.ending ? '#f5222d' : '#888' }
       }
-    },
-    getLeaseColor (leaseDuration) {
-      if (leaseDuration >= 7) {
-        return '#888'
-      } else if (leaseDuration >= 0) {
-        return '#ffbf00'
-      } else {
-        return '#fd7e14'
+      return {
+        title: this.$t('label.remainingdays') + ': ' + remainingLeaseDaysText(record.leaseduration),
+        color: leaseDaysColor(record.leaseduration)
       }
     }
   }

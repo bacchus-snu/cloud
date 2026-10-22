@@ -670,7 +670,6 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         configValuesForValidation.add(UnmanagedVMsManager.ConvertVmwareInstanceToKvmTimeout.key());
         configValuesForValidation.add(VMLeaseManager.InstanceLeaseSchedulerInterval.key());
         configValuesForValidation.add(VMLeaseManager.InstanceLeaseExpiryEventSchedulerInterval.key());
-        configValuesForValidation.add(VMLeaseManager.InstanceLeaseExpiryEventDaysBefore.key());
         configValuesForValidation.add(AutoScaleManager.AutoScaleErroredInstanceThreshold.key());
     }
 
@@ -3413,6 +3412,8 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
     @Override
     @ActionEvent(eventType = EventTypes.EVENT_SERVICE_OFFERING_CREATE, eventDescription = "creating service offering")
     public ServiceOffering createServiceOffering(final CreateServiceOfferingCmd cmd) {
+        refuseLeaseAsDetails(cmd.getDetails());
+        validateServiceOfferingLeaseHours(cmd.getLeaseHours(), cmd.getLeaseDuration());
         final Long userId = CallContext.current().getCallingUserId();
         final Map<String, String> details = cmd.getDetails();
         final String offeringName = cmd.getServiceOfferingName();
@@ -3593,12 +3594,14 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
 
         // validate lease properties and set leaseExpiryAction
         Integer leaseDuration = cmd.getLeaseDuration();
-        VMLeaseManager.ExpiryAction leaseExpiryAction = validateAndGetLeaseExpiryAction(leaseDuration, cmd.getLeaseExpiryAction());
+        // with leasehours the expiry action belongs to the lease of each session
+        VMLeaseManager.ExpiryAction leaseExpiryAction = validateAndGetLeaseExpiryAction(leaseDuration,
+                cmd.getLeaseHours() != null ? null : cmd.getLeaseExpiryAction());
 
         final Long vgpuProfileId = cmd.getVgpuProfileId();
         Integer gpuCount = validateVgpuProfileAndGetGpuCount(vgpuProfileId, cmd.getGpuCount());
 
-        return createServiceOffering(userId, cmd.isSystem(), vmType, cmd.getServiceOfferingName(), cpuNumber, memory, cpuSpeed, cmd.getDisplayText(),
+        ServiceOfferingVO offering = createServiceOffering(userId, cmd.isSystem(), vmType, cmd.getServiceOfferingName(), cpuNumber, memory, cpuSpeed, cmd.getDisplayText(),
                 cmd.getProvisioningType(), localStorageRequired, offerHA, limitCpuUse, volatileVm, cmd.getTags(), cmd.getDomainIds(), cmd.getZoneIds(), cmd.getHostTag(),
                 cmd.getNetworkRate(), cmd.getDeploymentPlanner(), details, cmd.getRootDiskSize(), isCustomizedIops, cmd.getMinIops(), cmd.getMaxIops(),
                 cmd.getBytesReadRate(), cmd.getBytesReadRateMax(), cmd.getBytesReadRateMaxLength(),
@@ -3607,6 +3610,10 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
                 cmd.getIopsWriteRate(), cmd.getIopsWriteRateMax(), cmd.getIopsWriteRateMaxLength(),
                 cmd.getHypervisorSnapshotReserve(), cmd.getCacheMode(), storagePolicyId, cmd.getDynamicScalingEnabled(), diskOfferingId,
                 cmd.getDiskOfferingStrictness(), cmd.isCustomized(), cmd.getEncryptRoot(), vgpuProfileId, gpuCount, cmd.getGpuDisplay(), cmd.isPurgeResources(), leaseDuration, leaseExpiryAction);
+        if (offering != null && cmd.getLeaseHours() != null && cmd.getLeaseHours() > 0) {
+            applyServiceOfferingLease(offering.getId(), cmd.getLeaseHours(), cmd.getLeaseExpiryAction());
+        }
+        return offering;
     }
 
     private Integer validateVgpuProfileAndGetGpuCount(final Long vgpuProfileId, Integer gpuCount) {
@@ -3773,6 +3780,75 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         } else {
             return null;
         }
+    }
+
+    /**
+     * @param leaseHours 0 for no lease
+     * @param leaseDuration the stock lease in days the offering has or is given
+     */
+    /**
+     * The lease of an offering is set through its own validated parameters only, never as free-form details.
+     */
+    static void refuseLeaseAsDetails(Map<String, String> details) {
+        if (details == null) {
+            return;
+        }
+        for (String key : details.keySet()) {
+            if (VMLeaseManager.OFFERING_LEASE_DETAILS.contains(key)) {
+                throw new InvalidParameterValueException(String.format("Set %s with its own parameter, not as a detail", key));
+            }
+        }
+    }
+
+    protected void validateServiceOfferingLeaseHours(Integer leaseHours, Integer leaseDuration) {
+        if (leaseHours == null) {
+            return;
+        }
+        if (leaseHours < 0 || leaseHours > VMLeaseManager.MAX_LEASE_HOURS) {
+            throw new InvalidParameterValueException(String.format("%s is a number of hours from 1 to %d, or 0 for no lease",
+                    ApiConstants.INSTANCE_LEASE_HOURS, VMLeaseManager.MAX_LEASE_HOURS));
+        }
+        if (leaseHours > 0 && leaseDuration != null && leaseDuration > 0) {
+            throw new InvalidParameterValueException(String.format("The lease of a service offering is either %s for each session or %s in days, not both",
+                    ApiConstants.INSTANCE_LEASE_HOURS, ApiConstants.INSTANCE_LEASE_DURATION));
+        }
+    }
+
+    /**
+     * Sets the lease of each session of the offering's Instances in place; running Instances keep their lease until their
+     * next start or renewal.
+     *
+     * @param leaseHours null to keep the hours, 0 to remove the lease
+     * @param leaseExpiryAction null to keep the offering's action, STOP for an offering that has none
+     */
+    protected void applyServiceOfferingLease(long offeringId, Integer leaseHours, VMLeaseManager.ExpiryAction leaseExpiryAction) {
+        String currentHours = _serviceOfferingDetailsDao.getDetail(offeringId, VMLeaseManager.LEASE_HOURS);
+        if (leaseHours == null) {
+            if (leaseExpiryAction == null) {
+                return;
+            }
+            if (currentHours == null) {
+                throw new InvalidParameterValueException(String.format("%s applies to the lease of an offering with %s",
+                        ApiConstants.INSTANCE_LEASE_EXPIRY_ACTION, ApiConstants.INSTANCE_LEASE_HOURS));
+            }
+            _serviceOfferingDetailsDao.addDetail(offeringId, ApiConstants.INSTANCE_LEASE_EXPIRY_ACTION, leaseExpiryAction.name(), false);
+            return;
+        }
+        if (leaseHours == 0) {
+            if (currentHours != null) {
+                _serviceOfferingDetailsDao.removeDetail(offeringId, VMLeaseManager.LEASE_HOURS);
+                _serviceOfferingDetailsDao.removeDetail(offeringId, ApiConstants.INSTANCE_LEASE_EXPIRY_ACTION);
+            }
+            return;
+        }
+        VMLeaseManager.ExpiryAction action = leaseExpiryAction;
+        if (action == null) {
+            action = EnumUtils.getEnumIgnoreCase(VMLeaseManager.ExpiryAction.class,
+                    _serviceOfferingDetailsDao.getDetail(offeringId, ApiConstants.INSTANCE_LEASE_EXPIRY_ACTION));
+        }
+        _serviceOfferingDetailsDao.addDetail(offeringId, VMLeaseManager.LEASE_HOURS, String.valueOf(leaseHours), false);
+        _serviceOfferingDetailsDao.addDetail(offeringId, ApiConstants.INSTANCE_LEASE_EXPIRY_ACTION,
+                (action != null ? action : VMLeaseManager.ExpiryAction.STOP).name(), false);
     }
 
     /**
@@ -4012,6 +4088,8 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         final Integer finalGpuCount = validateVgpuProfileAndGetGpuCount(vgpuProfileId, gpuCount);
 
         final Map<String, String> mergedDetails = mergeOfferingDetails(cmd, sourceOffering, customParams);
+        // the lease is carried by its own parameters
+        mergedDetails.keySet().removeAll(List.of(VMLeaseManager.LEASE_HOURS, ApiConstants.INSTANCE_LEASE_DURATION, ApiConstants.INSTANCE_LEASE_EXPIRY_ACTION));
 
         final boolean localStorageRequired = ServiceOffering.StorageType.local.toString().equalsIgnoreCase(storageType);
 
@@ -4020,7 +4098,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
 
         final Long diskOfferingId = getOrDefault(cmd.getDiskOfferingId(), sourceOffering.getDiskOfferingId());
 
-        return createServiceOffering(userId, systemUse, vmType,
+        ServiceOfferingVO offering = createServiceOffering(userId, systemUse, vmType,
                 name, cpuNumber, memory, cpuSpeed, displayText, provisioningType, localStorageRequired,
                 offerHa, limitCpuUse, isVolatile, tags, domainIds, zoneIds, hostTag, networkRate,
                 deploymentPlanner, mergedDetails, diskParams.rootDiskSize, diskParams.isCustomizedIops,
@@ -4032,6 +4110,10 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
                 diskParams.hypervisorSnapshotReserve, diskParams.cacheMode, customParams.storagePolicy, dynamicScalingEnabled,
                 diskOfferingId, diskOfferingStrictness, isCustomized, encryptRoot,
                 vgpuProfileId, finalGpuCount, gpuDisplay, purgeResources, leaseParams.leaseDuration, leaseParams.leaseExpiryAction);
+        if (offering != null && leaseParams.leaseHours != null && leaseParams.leaseHours > 0) {
+            applyServiceOfferingLease(offering.getId(), leaseParams.leaseHours, leaseParams.sessionLeaseExpiryAction);
+        }
+        return offering;
     }
 
     private ServiceOfferingVO getAndValidateSourceOffering(Long sourceOfferingId) {
@@ -4161,6 +4243,15 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
     private LeaseParams resolveLeaseParams(CloneServiceOfferingCmd cmd, ServiceOfferingVO sourceOffering) {
         final LeaseParams params = new LeaseParams();
 
+        params.leaseHours = resolveDetailParameter(cmd.getLeaseHours(), sourceOffering.getId(), VMLeaseManager.LEASE_HOURS);
+        if (params.leaseHours != null) {
+            validateServiceOfferingLeaseHours(params.leaseHours, cmd.getLeaseDuration());
+            params.sessionLeaseExpiryAction = cmd.getLeaseExpiryAction() != null ? cmd.getLeaseExpiryAction()
+                    : EnumUtils.getEnumIgnoreCase(VMLeaseManager.ExpiryAction.class,
+                    _serviceOfferingDetailsDao.getDetail(sourceOffering.getId(), ApiConstants.INSTANCE_LEASE_EXPIRY_ACTION));
+            return params;
+        }
+
         params.leaseDuration = resolveDetailParameter(cmd.getLeaseDuration(), sourceOffering.getId(), ApiConstants.INSTANCE_LEASE_DURATION);
 
         if (cmd.getLeaseExpiryAction() != null) {
@@ -4244,6 +4335,8 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
     private static class LeaseParams {
         Integer leaseDuration;
         VMLeaseManager.ExpiryAction leaseExpiryAction;
+        Integer leaseHours;
+        VMLeaseManager.ExpiryAction sessionLeaseExpiryAction;
     }
 
     @Override
@@ -4528,6 +4621,12 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
             filteredDomainIds.addAll(nonChildDomains); // Final list must include domains which were not child domain for domain-admin but specified for this offering prior to update
         } else if (account.getType() != Account.Type.ADMIN) {
             throw new InvalidParameterValueException(String.format("Unable to update service offering: %s by id user: %s because it is not root-admin or domain-admin", offeringHandle, user));
+        }
+
+        if (cmd.getLeaseHours() != null || cmd.getLeaseExpiryAction() != null) {
+            String leaseDuration = offeringDetails.get(ApiConstants.INSTANCE_LEASE_DURATION);
+            validateServiceOfferingLeaseHours(cmd.getLeaseHours(), StringUtils.isNumeric(leaseDuration) ? Integer.valueOf(leaseDuration) : null);
+            applyServiceOfferingLease(id, cmd.getLeaseHours(), cmd.getLeaseExpiryAction());
         }
 
         final boolean updateNeeded = name != null || displayText != null || sortKey != null || storageTags != null || hostTags != null || state != null;

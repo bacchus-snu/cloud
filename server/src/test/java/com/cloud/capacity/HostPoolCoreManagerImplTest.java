@@ -103,11 +103,13 @@ public class HostPoolCoreManagerImplTest {
     /**
      * The host_pool_core and host_core_assignment tables: each operation is atomic, like a committed statement or
      * transaction, with the keys of the schema (UNIQUE(host, core) on both, assignments referencing registered cores
-     * ON DELETE RESTRICT) and the VM-state conditions of the release and sweep statements.
+     * ON DELETE RESTRICT) and the VM-state conditions of the release and sweep statements, which keep the cores of a VM
+     * whose restart within its running session is in progress.
      */
     private final class Tables {
         private final Map<Long, List<HostPoolCoreVO>> registered = new LinkedHashMap<>();
         private final Map<String, HostCoreAssignmentVO> rows = new LinkedHashMap<>();
+        private final Set<Long> restarting = ConcurrentHashMap.newKeySet();
         private long nextId = 1;
         private volatile CyclicBarrier afterRead;
 
@@ -197,8 +199,12 @@ public class HostPoolCoreManagerImplTest {
             rows.put(key(hostId, core), row);
         }
 
+        private boolean gone(VMInstanceVO vm) {
+            return vm == null || vm.getRemoved() != null;
+        }
+
         private boolean notRunning(VMInstanceVO vm) {
-            return vm == null || vm.getRemoved() != null || HostCoreAssignmentDao.STATES_WITHOUT_CORES.contains(vm.getState());
+            return gone(vm) || (HostCoreAssignmentDao.STATES_WITHOUT_CORES.contains(vm.getState()) && !restarting.contains(vm.getId()));
         }
 
         synchronized int releaseIfNotRunning(long vmId) {
@@ -211,7 +217,11 @@ public class HostPoolCoreManagerImplTest {
                     return false;
                 }
                 VMInstanceVO vm = vmInstanceDao.findByIdIncludingRemoved(r.getVmId());
-                return notRunning(vm) || vm.getHostId() == null || vm.getHostId() != hostId;
+                if (gone(vm)) {
+                    return true;
+                }
+                return !restarting.contains(vm.getId()) && (HostCoreAssignmentDao.STATES_WITHOUT_CORES.contains(vm.getState())
+                        || vm.getHostId() == null || vm.getHostId() != hostId);
             });
         }
     }
@@ -707,5 +717,91 @@ public class HostPoolCoreManagerImplTest {
         assertFalse(HostPoolCoreManager.usesPoolCores(null));
         assertTrue(HostPoolCoreManager.usesPoolCores(host));
         assertFalse(HostPoolCoreManager.usesPoolCores(mockHost(OTHER_HOST_ID, HypervisorType.VMware)));
+    }
+
+    // Restart within a running session
+
+    @Test
+    public void forcedRebootKeepsItsCoresWhileAnotherStartRacesForThem() throws Exception {
+        register(HOST_ID, cores(0, 8, 9, 16), cores(1, 10, 11, 16));
+        HostPoolCoreManagerImpl manager = newManager(true);
+        VMInstanceVO rebooting = mockVm(1L, VirtualMachine.State.Running, HOST_ID);
+        assertEquals(List.of(8, 9), coreIds(manager.allocatePoolCores(rebooting, host, 4)));
+        VMInstanceVO neighbour = mockVm(3L, VirtualMachine.State.Running, HOST_ID);
+        assertEquals(List.of(10), coreIds(manager.allocatePoolCores(neighbour, host, 2)));
+        for (int round = 0; round < 100; round++) {
+            // the forced reboot's intermediate stop: the release and the sweep keep the cores of the restarting VM
+            db.restarting.add(1L);
+            when(rebooting.getState()).thenReturn(VirtualMachine.State.Stopped);
+            when(rebooting.getHostId()).thenReturn(null);
+            manager.releasePoolCores(1L);
+            manager.removeStaleAssignments(HOST_ID);
+            assertEquals(List.of(8, 9), db.byVm(1L).stream().map(HostCoreAssignmentVO::getCore).sorted().collect(Collectors.toList()));
+            assertEquals(1, manager.countFreePoolCores(HOST_ID));
+            assertEquals(3, manager.countFreePoolCores(HOST_ID, 1L));
+
+            VMInstanceVO racer = mockVm(100L + round, VirtualMachine.State.Starting, HOST_ID);
+            when(rebooting.getState()).thenReturn(VirtualMachine.State.Starting);
+            when(rebooting.getHostId()).thenReturn(HOST_ID);
+            CyclicBarrier go = new CyclicBarrier(2);
+            Future<List<PoolCore>> restart = executor.submit(() -> {
+                go.await(10, TimeUnit.SECONDS);
+                return manager.allocatePoolCores(rebooting, host, 4);
+            });
+            Future<List<PoolCore>> race = executor.submit(() -> {
+                go.await(10, TimeUnit.SECONDS);
+                return manager.allocatePoolCores(racer, host, 4);
+            });
+            assertEquals("the restart reuses exactly the cores it held", List.of(8, 9), coreIds(restart.get(30, TimeUnit.SECONDS)));
+            try {
+                race.get(30, TimeUnit.SECONDS);
+                org.junit.Assert.fail("a racing start took two cores of a host with one free core");
+            } catch (java.util.concurrent.ExecutionException e) {
+                assertTrue(String.valueOf(e.getCause()), e.getCause() instanceof InsufficientServerCapacityException);
+            }
+            db.restarting.remove(1L);
+            when(rebooting.getState()).thenReturn(VirtualMachine.State.Running);
+            Set<Integer> held = new HashSet<>();
+            for (HostCoreAssignmentVO row : db.all()) {
+                assertTrue("core " + row.getCore() + " held twice", held.add(row.getCore()));
+            }
+            assertEquals(Set.of(8, 9, 10), held);
+        }
+    }
+
+    @Test
+    public void restartKeepsTheCoresItHoldsRatherThanABetterFit() throws Exception {
+        register(HOST_ID, cores(0, 8, 9, 16), cores(1, 10, 13, 16));
+        HostPoolCoreManagerImpl manager = newManager(true);
+        VMInstanceVO vm = mockVm(1L, VirtualMachine.State.Starting, HOST_ID);
+        db.put(HOST_ID, 12, 1L);
+        db.put(HOST_ID, 13, 1L);
+        org.mockito.Mockito.clearInvocations(hostCoreAssignmentDao);
+
+        assertEquals("a fresh choice would take node 0", List.of(8, 9), coreIds(HostPoolCoreManagerImpl.choosePoolCores(
+                manager.listPoolCores(HOST_ID).stream().filter(c -> c.getCore() < 12).collect(Collectors.toList()), 2)));
+        assertEquals(List.of(12, 13), coreIds(manager.allocatePoolCores(vm, host, 4)));
+        verify(hostCoreAssignmentDao, never()).assign(anyLong(), anyLong(), anyList());
+
+        assertEquals("a VM holding fewer cores than it now needs gets a new set", 3, manager.allocatePoolCores(vm, host, 6).size());
+        verify(hostCoreAssignmentDao).assign(anyLong(), eq(1L), anyList());
+    }
+
+    @Test
+    public void restartThatEndsWithTheVmStoppedReleasesItsCores() throws Exception {
+        register(HOST_ID, cores(0, 8, 9, 16));
+        HostPoolCoreManagerImpl manager = newManager(true);
+        VMInstanceVO vm = mockVm(1L, VirtualMachine.State.Running, HOST_ID);
+        manager.allocatePoolCores(vm, host, 4);
+        db.restarting.add(1L);
+        when(vm.getState()).thenReturn(VirtualMachine.State.Stopped);
+        manager.releasePoolCores(1L);
+        assertEquals(2, db.byVm(1L).size());
+
+        db.restarting.remove(1L);
+        manager.releasePoolCores(1L);
+
+        assertTrue(db.byVm(1L).isEmpty());
+        assertEquals(2, manager.countFreePoolCores(HOST_ID));
     }
 }

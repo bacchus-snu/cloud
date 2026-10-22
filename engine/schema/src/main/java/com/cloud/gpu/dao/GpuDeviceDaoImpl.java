@@ -27,6 +27,7 @@ import com.cloud.utils.db.SearchBuilder;
 import com.cloud.utils.db.SearchCriteria;
 import com.cloud.utils.db.TransactionLegacy;
 import com.cloud.utils.exception.CloudRuntimeException;
+import com.cloud.vm.VmDetailConstants;
 import org.apache.cloudstack.gpu.GpuDevice;
 import org.apache.commons.collections.CollectionUtils;
 import org.springframework.stereotype.Component;
@@ -60,9 +61,13 @@ public class GpuDeviceDaoImpl extends GenericDaoBase<GpuDeviceVO, Long> implemen
     private static final String KEYWORD_CARD_DEVICE_NAME = "keywordCardDeviceName";
     private static final String KEYWORD_PROFILE_NAME = "keywordProfileName";
     private static final String KEYWORD_PROFILE_DESCRIPTION = "keywordProfileDescription";
+    // a VM between the stop and the start of a restart within its running session keeps its devices; a device in error stays so
     static final String RELEASE_IF_VM_HOLDS_NONE_SQL = "UPDATE `cloud`.`gpu_device` d JOIN `cloud`.`vm_instance` v ON v.id = d.vm_id "
-            + "SET d.state = '" + GpuDevice.State.Free.name() + "', d.vm_id = NULL WHERE d.id = ? AND d.vm_id = ? AND (v.removed IS NOT NULL OR v.state IN ("
-            + STATES_WITHOUT_GPUS.stream().map(state -> "'" + state.name() + "'").sorted().collect(Collectors.joining(", ")) + "))";
+            + "SET d.state = IF(d.state = '" + GpuDevice.State.Error.name() + "', '" + GpuDevice.State.Error.name() + "', '" + GpuDevice.State.Free.name()
+            + "'), d.vm_id = NULL WHERE d.id = ? AND d.vm_id = ? AND (v.removed IS NOT NULL OR (v.state IN ("
+            + STATES_WITHOUT_GPUS.stream().map(state -> "'" + state.name() + "'").sorted().collect(Collectors.joining(", "))
+            + ") AND NOT EXISTS (SELECT 1 FROM `cloud`.`vm_instance_details` r WHERE r.vm_id = v.id AND r.name = '"
+            + VmDetailConstants.RESTART_IN_PROGRESS + "')))";
     private final SearchBuilder<GpuDeviceVO> allFieldSearch;
     private SearchBuilder<GpuDeviceVO> devicesForAllocationSearch;
     @Inject

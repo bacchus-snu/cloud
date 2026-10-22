@@ -501,6 +501,9 @@ public class UserVmJoinVO extends BaseViewWithTagInformationVO implements Contro
     @Column(name = "lease_action_execution")
     private String leaseActionExecution;
 
+    @Column(name = "lease_hours")
+    private String leaseHours;
+
     public UserVmJoinVO() {
         // Empty constructor
     }
@@ -1109,6 +1112,10 @@ public class UserVmJoinVO extends BaseViewWithTagInformationVO implements Contro
 
     public String getLeaseActionExecution() {
         return leaseActionExecution;
+    }
+
+    public String getLeaseHours() {
+        return leaseHours;
     }
 
     public boolean isNicEnabled() {

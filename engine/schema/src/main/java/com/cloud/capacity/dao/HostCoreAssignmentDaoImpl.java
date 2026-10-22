@@ -32,6 +32,7 @@ import com.cloud.utils.db.TransactionCallbackNoReturn;
 import com.cloud.utils.db.TransactionLegacy;
 import com.cloud.utils.db.TransactionStatus;
 import com.cloud.utils.exception.CloudRuntimeException;
+import com.cloud.vm.VmDetailConstants;
 
 @Component
 public class HostCoreAssignmentDaoImpl extends GenericDaoBase<HostCoreAssignmentVO, Long> implements HostCoreAssignmentDao {
@@ -39,12 +40,18 @@ public class HostCoreAssignmentDaoImpl extends GenericDaoBase<HostCoreAssignment
     private static final String STATES_WITHOUT_CORES_SQL = STATES_WITHOUT_CORES.stream().map(state -> "'" + state.name() + "'")
             .sorted().collect(Collectors.joining(", "));
 
+    /**
+     * A VM between the stop and the start of a restart within its running session keeps its cores.
+     */
+    private static final String NO_RESTART_IN_PROGRESS_SQL = "NOT EXISTS (SELECT 1 FROM `cloud`.`vm_instance_details` r WHERE r.vm_id = v.id AND r.name = '"
+            + VmDetailConstants.RESTART_IN_PROGRESS + "')";
+
     static final String RELEASE_SQL = "DELETE a FROM `cloud`.`host_core_assignment` a JOIN `cloud`.`vm_instance` v ON v.id = a.vm_id "
-            + "WHERE a.vm_id = ? AND (v.removed IS NOT NULL OR v.state IN (" + STATES_WITHOUT_CORES_SQL + "))";
+            + "WHERE a.vm_id = ? AND (v.removed IS NOT NULL OR (v.state IN (" + STATES_WITHOUT_CORES_SQL + ") AND " + NO_RESTART_IN_PROGRESS_SQL + "))";
 
     static final String REMOVE_STALE_SQL = "DELETE a FROM `cloud`.`host_core_assignment` a JOIN `cloud`.`vm_instance` v ON v.id = a.vm_id "
-            + "WHERE a.host_id = ? AND (v.removed IS NOT NULL OR v.host_id IS NULL OR v.host_id <> a.host_id OR v.state IN ("
-            + STATES_WITHOUT_CORES_SQL + "))";
+            + "WHERE a.host_id = ? AND (v.removed IS NOT NULL OR ((v.host_id IS NULL OR v.host_id <> a.host_id OR v.state IN ("
+            + STATES_WITHOUT_CORES_SQL + ")) AND " + NO_RESTART_IN_PROGRESS_SQL + "))";
 
     private final SearchBuilder<HostCoreAssignmentVO> hostSearch;
     private final SearchBuilder<HostCoreAssignmentVO> vmSearch;

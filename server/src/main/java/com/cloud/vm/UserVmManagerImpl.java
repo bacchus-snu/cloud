@@ -651,6 +651,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
     @Inject
     ResourceLimitService resourceLimitService;
     @Inject
+    VMLeaseManager vmLeaseManager;
+    @Inject
     SnapshotPolicyDao snapshotPolicyDao;
     @Inject
     BackupScheduleDao backupScheduleDao;
@@ -1268,7 +1270,12 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         }
     }
 
+    /**
+     * A reboot releases nothing: the stop and start it makes are a restart within the running session, which keeps the
+     * Instance's lease and the host resources it holds.
+     */
     protected UserVm forceRebootVirtualMachine(UserVmVO vm, long hostId, boolean enterSetup) {
+        String restart = vmLeaseManager.beginRestart(vm.getId());
         try {
             if (stopVirtualMachine(vm.getId(), false) != null) {
                 Map<VirtualMachineProfile.Param,Object> params = new HashMap<>();
@@ -1279,6 +1286,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             }
         } catch (CloudException e) {
             throw new CloudRuntimeException(String.format("Unable to reboot the VM: %s", vm), e);
+        } finally {
+            vmLeaseManager.endRestart(vm.getId(), restart);
         }
         return null;
     }
@@ -3176,6 +3185,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
     @ActionEvent(eventType = EVENT_VM_UPDATE, eventDescription = "updating Vm")
     public UserVm updateVirtualMachine(UpdateVMCmd cmd) throws ResourceUnavailableException, InsufficientCapacityException {
         validateInputsAndPermissionForUpdateVirtualMachineCommand(cmd);
+        refuseLeaseFieldsUnlessAllowed(cmd.getLeaseDuration(), cmd.getLeaseExpiryAction());
 
         String displayName = cmd.getDisplayName();
         String group = cmd.getGroup();
@@ -3233,7 +3243,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             }
             if (caller != null && caller.getType() == Account.Type.ADMIN) {
                 for (final VMInstanceDetailVO detail : existingDetails) {
-                    if (detail != null && detail.isDisplay() && !isExtraConfig(detail.getName())) {
+                    if (detail != null && detail.isDisplay() && !isExtraConfig(detail.getName())
+                            && !VmDetailConstants.LIFECYCLE_STATE_DETAILS.contains(detail.getName())) {
                         vmInstanceDetailsDao.removeDetail(id, detail.getName());
                     }
                 }
@@ -3241,19 +3252,14 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                 for (final VMInstanceDetailVO detail : existingDetails) {
                     if (detail != null && !userDenyListedSettings.contains(detail.getName())
                             && !userReadOnlySettings.contains(detail.getName()) && detail.isDisplay()
-                            && !isExtraConfig(detail.getName())) {
+                            && !isExtraConfig(detail.getName()) && !VmDetailConstants.LIFECYCLE_STATE_DETAILS.contains(detail.getName())) {
                         vmInstanceDetailsDao.removeDetail(id, detail.getName());
                     }
                 }
             }
         } else {
             if (MapUtils.isNotEmpty(details)) {
-                // error out if lease related keys are passed in details
-                if (details.containsKey(VmDetailConstants.INSTANCE_LEASE_EXECUTION)
-                        || details.containsKey(VmDetailConstants.INSTANCE_LEASE_EXPIRY_DATE)
-                        || details.containsKey(VmDetailConstants.INSTANCE_LEASE_EXPIRY_ACTION)) {
-                    throw new InvalidParameterValueException("lease parameters should not be included in details as key");
-                }
+                refuseLeaseDetails(details);
 
                 if (details.containsKey("extraconfig")) {
                     throw new InvalidParameterValueException("'extraconfig' should not be included in details as key");
@@ -6462,7 +6468,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         if (pinnedPlan != null) {
             HostVO pinnedHost = _hostDao.findById(pinnedPlan.getHostId());
             final ServiceOfferingVO offering = serviceOfferingDao.findById(vm.getId(), vm.getServiceOfferingId());
-            Pair<Boolean, Boolean> fits = pinnedHost == null ? null : _capacityMgr.checkIfHostHasCpuCapabilityAndCapacity(pinnedHost, offering, false);
+            Pair<Boolean, Boolean> fits = pinnedHost == null ? null : _capacityMgr.checkIfHostHasCpuCapabilityAndCapacity(pinnedHost, offering, false, vm.getId());
             if (pinnedHost == null || pinnedHost.getStatus() != Status.Up || pinnedHost.getResourceState() != ResourceState.Enabled || !fits.first() || !fits.second()) {
                 throw new InsufficientServerCapacityException(String.format("The host that holds the volumes of Instance %s has no room for it now", vm.getUuid()),
                         Host.class, pinnedPlan.getHostId());
@@ -6475,7 +6481,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             validateStrictHostTagCheck(vm, destinationHost);
 
             final ServiceOfferingVO offering = serviceOfferingDao.findById(vm.getId(), vm.getServiceOfferingId());
-            Pair<Boolean, Boolean> cpuCapabilityAndCapacity = _capacityMgr.checkIfHostHasCpuCapabilityAndCapacity(destinationHost, offering, false);
+            Pair<Boolean, Boolean> cpuCapabilityAndCapacity = _capacityMgr.checkIfHostHasCpuCapabilityAndCapacity(destinationHost, offering, false, vm.getId());
             if (!cpuCapabilityAndCapacity.first() || !cpuCapabilityAndCapacity.second()) {
                 String errorMsg;
                 if (!cpuCapabilityAndCapacity.first()) {
@@ -7240,6 +7246,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                                         List<Long> networkIds, Map<Long, IpAddresses> ipToNetworkMap, Volume volume, Snapshot snapshot, Map<String, String> details)
             throws InsufficientCapacityException, ResourceUnavailableException, ConcurrentOperationException, ResourceAllocationException {
 
+        refuseLeaseFieldsUnlessAllowed(cmd.getLeaseDuration(), cmd.getLeaseExpiryAction());
+        refuseLeaseDetails(details);
         ServiceOfferingJoinVO svcOffering = serviceOfferingJoinDao.findById(serviceOffering.getId());
         boolean isLeaseFeatureEnabled = VMLeaseManager.InstanceLeaseEnabled.value();
         if (isLeaseFeatureEnabled) {
@@ -7362,6 +7370,31 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         return vm;
     }
 
+    /**
+     * The lease details and the mark of a restart within the running session are kept by the lease manager alone.
+     */
+    protected static void refuseLeaseDetails(Map<String, String> details) {
+        if (details != null && details.keySet().stream().anyMatch(VmDetailConstants.LIFECYCLE_STATE_DETAILS::contains)) {
+            throw new InvalidParameterValueException("lease parameters should not be included in details as key");
+        }
+    }
+
+    /**
+     * An Instance's lease comes from its service offering; setting it otherwise is the administrators' override, so the
+     * lease fields of deploy and update need access to the API that sets a lease.
+     */
+    protected void refuseLeaseFieldsUnlessAllowed(Integer leaseDuration, VMLeaseManager.ExpiryAction leaseExpiryAction) {
+        if (ObjectUtils.allNull(leaseDuration, leaseExpiryAction)) {
+            return;
+        }
+        try {
+            _accountMgr.checkApiAccess(CallContext.current().getCallingAccount(), VMLeaseManager.SET_LEASE_API);
+        } catch (PermissionDeniedException e) {
+            throw new PermissionDeniedException(String.format("The lease of an Instance comes from its service offering; %s and %s are for callers "
+                    + "that may call %s", ApiConstants.INSTANCE_LEASE_DURATION, ApiConstants.INSTANCE_LEASE_EXPIRY_ACTION, VMLeaseManager.SET_LEASE_API));
+        }
+    }
+
     protected void validateLeaseProperties(Integer leaseDuration, VMLeaseManager.ExpiryAction leaseExpiryAction) {
         if (ObjectUtils.allNull(leaseDuration, leaseExpiryAction) // both are null
                 || (leaseDuration != null && leaseDuration == -1)) { // special condition to disable lease for instance
@@ -7461,6 +7494,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
         sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
         String formattedLeaseExpiryDate = sdf.format(leaseExpiryDate);
+        // a new lease is warned again
+        vmInstanceDetailsDao.removeDetail(vm.getId(), VmDetailConstants.INSTANCE_LEASE_EXPIRY_WARNING);
         vmInstanceDetailsDao.addDetail(vm.getId(), VmDetailConstants.INSTANCE_LEASE_EXPIRY_DATE, formattedLeaseExpiryDate, false);
         vmInstanceDetailsDao.addDetail(vm.getId(), VmDetailConstants.INSTANCE_LEASE_EXPIRY_ACTION, leaseExpiryAction.name(), false);
         vmInstanceDetailsDao.addDetail(vm.getId(), VmDetailConstants.INSTANCE_LEASE_EXECUTION, "PENDING", false);
@@ -9749,10 +9784,12 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         DiskOffering diskOffering = rootDiskOfferingId != null ? _diskOfferingDao.findById(rootDiskOfferingId) : null;
 
         List<Reserver> reservations = new ArrayList<>();
+        String restart = null;
         try {
         checkRestoreVmFromTemplate(vm, template, rootVols, diskOffering, details, reservations);
 
         if (needRestart) {
+            restart = vmLeaseManager.beginRestart(vmId);
             try {
                 _itMgr.stop(vm.getUuid());
                 vm.setState(State.Stopped);
@@ -9904,6 +9941,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             throw new CloudRuntimeException("Failed to restore VM " + vm.getUuid() + " due to " + e.getMessage(), e);
         } finally {
             ReservationHelper.closeAll(reservations);
+            vmLeaseManager.endRestart(vmId, restart);
         }
     }
 
@@ -10685,6 +10723,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
     void unmanageVMFromDB(long vmId) {
         VMInstanceVO vm = _vmInstanceDao.findById(vmId);
+        // the Instance leaves management without a state transition, and a removal of all its details keeps its lifecycle state
+        vmLeaseManager.endSession(vmId);
         vmInstanceDetailsDao.removeDetails(vmId);
         vm.setState(State.Expunging);
         vm.setRemoved(new Date());

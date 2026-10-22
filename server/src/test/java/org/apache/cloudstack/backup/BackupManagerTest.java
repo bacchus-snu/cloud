@@ -143,6 +143,7 @@ import com.cloud.vm.VMInstanceDetailVO;
 import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.VirtualMachineManager;
+import com.cloud.vm.VmDetailConstants;
 import com.cloud.vm.VmDiskInfo;
 import com.cloud.vm.dao.VMInstanceDao;
 import com.cloud.vm.dao.VMInstanceDetailsDao;
@@ -1051,6 +1052,25 @@ public class BackupManagerTest {
         assertEquals("service-offering-uuid", details.get(ApiConstants.SERVICE_OFFERING_ID));
         assertEquals("[{\"networkid\":\"mocked-network-uuid\"}]", details.get(ApiConstants.NICS));
         assertEquals("{\"mocked-detail-name\":\"mocked-detail-value\"}", details.get(ApiConstants.VM_SETTINGS));
+    }
+
+    @Test
+    public void backupSettingsLeaveOutTheLifecycleStateOfTheInstance() {
+        VirtualMachine vm = mock(VirtualMachine.class);
+        when(vm.getServiceOfferingId()).thenReturn(1L);
+        when(vm.getTemplateId()).thenReturn(2L);
+        when(vm.getId()).thenReturn(1L);
+        when(serviceOfferingDao.findById(1L)).thenReturn(mock(ServiceOfferingVO.class));
+        List<VMInstanceDetailVO> vmDetails = new ArrayList<>();
+        vmDetails.add(new VMInstanceDetailVO(1L, "keyboard", "us", true));
+        for (String name : VmDetailConstants.LIFECYCLE_STATE_DETAILS) {
+            vmDetails.add(new VMInstanceDetailVO(1L, name, "x", false));
+        }
+        when(vmInstanceDetailsDao.listDetails(1L)).thenReturn(vmDetails);
+
+        Map<String, String> details = backupManager.getBackupDetailsFromVM(vm);
+
+        assertEquals("{\"keyboard\":\"us\"}", details.get(ApiConstants.VM_SETTINGS));
     }
 
     @Test

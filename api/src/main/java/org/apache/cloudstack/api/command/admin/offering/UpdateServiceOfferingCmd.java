@@ -29,6 +29,7 @@ import org.apache.cloudstack.api.Parameter;
 import org.apache.cloudstack.api.ServerApiException;
 import org.apache.cloudstack.api.command.offering.DomainAndZoneIdResolver;
 import org.apache.cloudstack.api.response.ServiceOfferingResponse;
+import org.apache.cloudstack.vm.lease.VMLeaseManager;
 import org.apache.commons.lang3.EnumUtils;
 import org.apache.commons.lang3.StringUtils;
 
@@ -108,9 +109,34 @@ public class UpdateServiceOfferingCmd extends BaseCmd implements DomainAndZoneId
             since = "4.22.0")
     protected Boolean cleanupExternalDetails;
 
+    @Parameter(name = ApiConstants.INSTANCE_LEASE_HOURS, type = CommandType.INTEGER, since = "4.23.0.100",
+            description = "Hours of lease an Instance of the offering gets at each start and renewal; 0 removes the lease. " +
+                    "Running Instances keep their current lease until their next start or renewal.")
+    private Integer leaseHours;
+
+    @Parameter(name = ApiConstants.INSTANCE_LEASE_EXPIRY_ACTION, type = CommandType.STRING, since = "4.23.0.100",
+            description = "The expiry action of the offering's lease of leasehours: STOP or DESTROY")
+    private String leaseExpiryAction;
+
     /////////////////////////////////////////////////////
     /////////////////// Accessors ///////////////////////
     /////////////////////////////////////////////////////
+
+    public Integer getLeaseHours() {
+        return leaseHours;
+    }
+
+    public VMLeaseManager.ExpiryAction getLeaseExpiryAction() {
+        if (StringUtils.isBlank(leaseExpiryAction)) {
+            return null;
+        }
+        VMLeaseManager.ExpiryAction action = EnumUtils.getEnumIgnoreCase(VMLeaseManager.ExpiryAction.class, leaseExpiryAction);
+        if (action == null) {
+            throw new InvalidParameterValueException("Invalid value for leaseexpiryaction, valid values are: " +
+                    com.cloud.utils.EnumUtils.listValues(VMLeaseManager.ExpiryAction.values()));
+        }
+        return action;
+    }
 
     public String getDisplayText() {
         return displayText;

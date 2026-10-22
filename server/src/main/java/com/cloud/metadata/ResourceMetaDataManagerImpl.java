@@ -50,6 +50,7 @@ import org.apache.cloudstack.resourcedetail.dao.LBStickinessPolicyDetailsDao;
 import org.apache.cloudstack.resourcedetail.dao.LBHealthCheckPolicyDetailsDao;
 import org.apache.cloudstack.resourcedetail.dao.GuestOsDetailsDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolDetailsDao;
+import org.apache.cloudstack.vm.lease.VMLeaseManager;
 
 import org.springframework.stereotype.Component;
 
@@ -70,6 +71,7 @@ import com.cloud.utils.db.DB;
 import com.cloud.utils.db.Transaction;
 import com.cloud.utils.db.TransactionCallback;
 import com.cloud.utils.db.TransactionStatus;
+import com.cloud.vm.VmDetailConstants;
 import com.cloud.vm.dao.NicDetailsDao;
 import com.cloud.vm.dao.VMInstanceDetailsDao;
 
@@ -186,6 +188,7 @@ public class ResourceMetaDataManagerImpl extends ManagerBase implements Resource
     @DB
     @ActionEvent(eventType = EventTypes.EVENT_RESOURCE_DETAILS_CREATE, eventDescription = "creating resource meta data")
     public boolean addResourceMetaData(final String resourceId, final ResourceObjectType resourceType, final Map<String, String> details, final boolean forDisplay) {
+        refuseLifecycleState(resourceType, details.keySet());
         checkDetailNames(resourceType, details::keySet);
         return Transaction.execute(new TransactionCallback<Boolean>() {
             @Override
@@ -210,6 +213,9 @@ public class ResourceMetaDataManagerImpl extends ManagerBase implements Resource
     @DB
     @ActionEvent(eventType = EventTypes.EVENT_RESOURCE_DETAILS_DELETE, eventDescription = "deleting resource meta data")
     public boolean deleteResourceMetaData(String resourceId, ResourceObjectType resourceType, String key) {
+        if (key != null) {
+            refuseLifecycleState(resourceType, List.of(key));
+        }
         long id = resourceManagerUtil.getResourceId(resourceId, resourceType);
 
         DetailDaoHelper newDetailDaoHelper = new DetailDaoHelper(resourceType);
@@ -230,6 +236,17 @@ public class ResourceMetaDataManagerImpl extends ManagerBase implements Resource
     private void checkDetailNames(ResourceObjectType resourceType, Supplier<Collection<String>> names) {
         if (s_daoMap.get(resourceType) instanceof ScopedConfigStorage) {
             configurationManager.checkCallerMayChangeAccessControlSettings(names.get());
+        }
+    }
+
+    private static void refuseLifecycleState(ResourceObjectType resourceType, Collection<String> names) {
+        for (String name : names) {
+            if (resourceType == ResourceObjectType.UserVm && VmDetailConstants.LIFECYCLE_STATE_DETAILS.contains(name)) {
+                throw new InvalidParameterValueException(String.format("The detail %s of an Instance is kept by the system and cannot be set or removed", name));
+            }
+            if (resourceType == ResourceObjectType.ServiceOffering && VMLeaseManager.OFFERING_LEASE_DETAILS.contains(name)) {
+                throw new InvalidParameterValueException(String.format("The detail %s of a service offering is set with the offering's own parameters", name));
+            }
         }
     }
 

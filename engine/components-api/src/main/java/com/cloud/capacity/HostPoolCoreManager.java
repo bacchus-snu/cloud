@@ -106,9 +106,15 @@ public interface HostPoolCoreManager extends HostPoolCoreService {
     int countFreePoolCores(long hostId);
 
     /**
-     * Assigns ceil(vcpus/2) free pool cores of the host to the VM, replacing any cores the VM held before. Cores are
-     * taken from one NUMA node when one node can supply them all: the node with the fewest free cores that suffice,
-     * the lowest such node on a tie; otherwise from the nodes in order. Within a node the lowest cores are taken.
+     * @return the registered pool cores of the host that no VM other than the given one holds
+     */
+    int countFreePoolCores(long hostId, long forVmId);
+
+    /**
+     * Assigns ceil(vcpus/2) free pool cores of the host to the VM, replacing any cores the VM held before. A VM that
+     * already holds exactly that many cores of the host keeps them. Otherwise cores are taken from one NUMA node when
+     * one node can supply them all: the node with the fewest free cores that suffice, the lowest such node on a tie;
+     * otherwise from the nodes in order. Within a node the lowest cores are taken.
      *
      * @return the assigned cores in vCPU order
      * @throws InsufficientServerCapacityException scoped to the host when it cannot supply the cores
@@ -116,13 +122,15 @@ public interface HostPoolCoreManager extends HostPoolCoreService {
     List<PoolCore> allocatePoolCores(VirtualMachine vm, Host host, int vcpus) throws InsufficientServerCapacityException;
 
     /**
-     * Releases the VM's cores if, at that moment, it is removed or in a state in which it cannot run; a release that
-     * arrives after a later start of the VM leaves that start's cores in place.
+     * Releases the VM's cores if, at that moment, it is removed, or is in a state in which it cannot run and no restart
+     * within its running session is in progress; a release that arrives after a later start of the VM leaves that
+     * start's cores in place.
      */
     void releasePoolCores(long vmId);
 
     /**
-     * Removes the host's assignments whose VM is gone, on another host, or in a state in which it cannot run.
+     * Removes the host's assignments whose VM is gone, on another host, or in a state in which it cannot run while no
+     * restart within its running session is in progress.
      */
     void removeStaleAssignments(long hostId);
 

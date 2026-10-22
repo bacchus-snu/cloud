@@ -164,6 +164,7 @@
 import { ref, reactive, toRaw } from 'vue'
 import { getAPI, postAPI } from '@/api'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
+import { SET_LEASE_API } from '@/utils/lease'
 
 export default {
   name: 'EditVM',
@@ -199,7 +200,8 @@ export default {
         loading: false,
         opts: []
       },
-      isLeaseEditable: this.$store.getters.features.instanceleaseenabled && this.resource.leaseduration > -1,
+      isLeaseEditable: this.$store.getters.features.instanceleaseenabled && SET_LEASE_API in this.$store.getters.apis &&
+        this.resource.leaseduration > -1,
       showLeaseOptions: false,
       leaseduration: this.resource.leaseduration === undefined ? 90 : this.resource.leaseduration,
       leaseexpiryaction: this.resource.leaseexpiryaction === undefined ? 'STOP' : this.resource.leaseexpiryaction,

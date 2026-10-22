@@ -464,6 +464,14 @@ public class UserVmResponse extends BaseResponseWithTagInformation implements Co
     @Param(description = "Instance lease expiry action", since = "4.21.0")
     private String leaseExpiryAction;
 
+    @SerializedName(ApiConstants.INSTANCE_LEASE_REMAINING_SECONDS)
+    @Param(description = "Seconds left of the Instance lease when the response was made", since = "4.23.0.100")
+    private Long leaseRemainingSeconds;
+
+    @SerializedName(ApiConstants.INSTANCE_LEASE_HOURS)
+    @Param(description = "The hours of lease the Instance gets at a start or a renewal, from its service offering", since = "4.23.0.100")
+    private Integer leaseHours;
+
     public UserVmResponse() {
         securityGroupList = new LinkedHashSet<>();
         nics = new TreeSet<>(Comparator.comparingInt(x -> Integer.parseInt(x.getDeviceId())));
@@ -1364,6 +1372,22 @@ public class UserVmResponse extends BaseResponseWithTagInformation implements Co
 
     public void setLeaseExpiryDate(Date leaseExpiryDate) {
         this.leaseExpiryDate = leaseExpiryDate;
+    }
+
+    public Long getLeaseRemainingSeconds() {
+        return leaseRemainingSeconds;
+    }
+
+    public void setLeaseRemainingSeconds(Long leaseRemainingSeconds) {
+        this.leaseRemainingSeconds = leaseRemainingSeconds;
+    }
+
+    public Integer getLeaseHours() {
+        return leaseHours;
+    }
+
+    public void setLeaseHours(Integer leaseHours) {
+        this.leaseHours = leaseHours;
     }
 
     public String getBackupProvider() {

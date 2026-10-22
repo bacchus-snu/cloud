@@ -878,6 +878,8 @@ public class EventTypes {
     public static final String VM_LEASE_DISABLED = "VM.LEASE.DISABLED";
     public static final String VM_LEASE_CANCELLED = "VM.LEASE.CANCELLED";
     public static final String VM_LEASE_EXPIRING = "VM.LEASE.EXPIRING";
+    public static final String VM_LEASE_RENEW = "VM.LEASE.RENEW";
+    public static final String VM_LEASE_UPDATE = "VM.LEASE.UPDATE";
 
     // GUI Theme
     public static final String EVENT_GUI_THEME_CREATE = "GUI.THEME.CREATE";
@@ -1463,6 +1465,8 @@ public class EventTypes {
         entityEventDetails.put(VM_LEASE_EXPIRING, VirtualMachine.class);
         entityEventDetails.put(VM_LEASE_DISABLED, VirtualMachine.class);
         entityEventDetails.put(VM_LEASE_CANCELLED, VirtualMachine.class);
+        entityEventDetails.put(VM_LEASE_RENEW, VirtualMachine.class);
+        entityEventDetails.put(VM_LEASE_UPDATE, VirtualMachine.class);
 
         // GUI theme
         entityEventDetails.put(EVENT_GUI_THEME_CREATE, "GuiTheme");

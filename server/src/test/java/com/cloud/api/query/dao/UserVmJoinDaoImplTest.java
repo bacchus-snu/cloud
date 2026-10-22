@@ -54,6 +54,7 @@ import com.cloud.user.dao.UserStatisticsDao;
 import com.cloud.host.dao.HostDetailsDao;
 import com.cloud.utils.db.SearchBuilder;
 import com.cloud.utils.db.SearchCriteria;
+import com.cloud.service.dao.ServiceOfferingDetailsDao;
 import com.cloud.vm.dao.VMInstanceDetailsDao;
 import com.cloud.vm.dao.VmIsoMapDao;
 
@@ -95,6 +96,9 @@ public class UserVmJoinDaoImplTest extends GenericDaoBaseWithTagInformationBaseT
 
     @Mock
     ExtensionHelper extensionHelper;
+
+    @Mock
+    ServiceOfferingDetailsDao serviceOfferingDetailsDao;
 
     private UserVmJoinVO userVm = new UserVmJoinVO();
     private UserVmResponse userVmResponse = new UserVmResponse();
@@ -211,5 +215,54 @@ public class UserVmJoinDaoImplTest extends GenericDaoBaseWithTagInformationBaseT
         Mockito.when(hostDetailsDao.findDetail(7L, com.cloud.host.Host.HOST_CDROM_MAX_COUNT)).thenReturn(detail);
         // Configured cap defaults to 1 (no cluster override mocked); host advertises 2; clamps to 1.
         Assert.assertEquals(1, _userVmJoinDaoImpl.effectiveCdromMaxCount(userVm));
+    }
+
+    @Test
+    public void responseCarriesTheTimeLeftOfTheLeaseAndTheOfferingsLeaseHours() throws Exception {
+        java.lang.reflect.Field enabled = org.apache.cloudstack.framework.config.ConfigKey.class.getDeclaredField("_defaultValue");
+        enabled.setAccessible(true);
+        String original = org.apache.cloudstack.vm.lease.VMLeaseManager.InstanceLeaseEnabled.defaultValue();
+        enabled.set(org.apache.cloudstack.vm.lease.VMLeaseManager.InstanceLeaseEnabled, "true");
+        try {
+            java.util.Date now = new java.util.Date(1_800_000_000_000L);
+            Mockito.when(userVmMock.getLeaseExpiryDate()).thenReturn(new java.util.Date(now.getTime() + 35L * 3_600_000L + 30_000L));
+            Mockito.when(userVmMock.getLeaseActionExecution()).thenReturn("PENDING");
+            Mockito.when(userVmMock.getLeaseExpiryAction()).thenReturn("STOP");
+            Mockito.when(userVmMock.getLeaseHours()).thenReturn("36");
+            UserVmResponse response = new UserVmResponse();
+
+            _userVmJoinDaoImpl.setLeaseResponse(userVmMock, response, now);
+
+            Assert.assertEquals(Long.valueOf(35L * 3600 + 30), response.getLeaseRemainingSeconds());
+            Assert.assertEquals(Integer.valueOf(36), response.getLeaseHours());
+            Assert.assertEquals("STOP", response.getLeaseExpiryAction());
+            Assert.assertEquals(userVmMock.getLeaseExpiryDate(), response.getLeaseExpiryDate());
+
+            Mockito.when(userVmMock.getLeaseExpiryDate()).thenReturn(new java.util.Date(now.getTime() - 60_000L));
+            UserVmResponse ended = new UserVmResponse();
+            _userVmJoinDaoImpl.setLeaseResponse(userVmMock, ended, now);
+            Assert.assertEquals("an ended lease has no time left", Long.valueOf(0), ended.getLeaseRemainingSeconds());
+
+            // a malformed lease of the offering lists as no lease hours
+            Mockito.when(userVmMock.getLeaseHours()).thenReturn("36h");
+            UserVmResponse unreadable = new UserVmResponse();
+            _userVmJoinDaoImpl.setLeaseResponse(userVmMock, unreadable, now);
+            Assert.assertNull(unreadable.getLeaseHours());
+            Assert.assertEquals(userVmMock.getLeaseExpiryDate(), unreadable.getLeaseExpiryDate());
+
+            Mockito.when(userVmMock.getLeaseActionExecution()).thenReturn("DISABLED");
+            UserVmResponse disabled = new UserVmResponse();
+            _userVmJoinDaoImpl.setLeaseResponse(userVmMock, disabled, now);
+            Assert.assertNull(disabled.getLeaseExpiryDate());
+            Assert.assertNull(disabled.getLeaseRemainingSeconds());
+
+            enabled.set(org.apache.cloudstack.vm.lease.VMLeaseManager.InstanceLeaseEnabled, "false");
+            UserVmResponse off = new UserVmResponse();
+            _userVmJoinDaoImpl.setLeaseResponse(userVmMock, off, now);
+            Assert.assertNull(off.getLeaseRemainingSeconds());
+            Mockito.verifyNoInteractions(serviceOfferingDetailsDao);
+        } finally {
+            enabled.set(org.apache.cloudstack.vm.lease.VMLeaseManager.InstanceLeaseEnabled, original);
+        }
     }
 }

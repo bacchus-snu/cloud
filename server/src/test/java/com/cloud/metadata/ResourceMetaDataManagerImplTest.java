@@ -36,12 +36,16 @@ import org.mockito.junit.MockitoJUnitRunner;
 
 import com.cloud.configuration.ConfigurationManager;
 import com.cloud.dc.dao.DataCenterDetailsDao;
+import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.PermissionDeniedException;
 import com.cloud.server.ResourceManagerUtil;
 import com.cloud.server.ResourceTag.ResourceObjectType;
+import com.cloud.service.dao.ServiceOfferingDetailsDao;
 import com.cloud.storage.dao.VolumeDetailsDao;
 import com.cloud.utils.db.Transaction;
 import com.cloud.utils.db.TransactionCallback;
+import com.cloud.vm.VmDetailConstants;
+import com.cloud.vm.dao.VMInstanceDetailsDao;
 
 @RunWith(MockitoJUnitRunner.class)
 public class ResourceMetaDataManagerImplTest {
@@ -52,6 +56,10 @@ public class ResourceMetaDataManagerImplTest {
     ResourceManagerUtil resourceManagerUtil;
     @Mock
     VolumeDetailsDao volumeDetailsDao;
+    @Mock
+    VMInstanceDetailsDao vmInstanceDetailsDao;
+    @Mock
+    ServiceOfferingDetailsDao serviceOfferingDetailsDao;
 
     DataCenterDetailsDao zoneDetailsDao = Mockito.mock(DataCenterDetailsDao.class, Mockito.withSettings().extraInterfaces(ScopedConfigStorage.class));
 
@@ -62,7 +70,38 @@ public class ResourceMetaDataManagerImplTest {
     public void setUp() throws ConfigurationException {
         resourceMetaDataManager._dcDetailsDao = zoneDetailsDao;
         resourceMetaDataManager._volumeDetailDao = volumeDetailsDao;
+        resourceMetaDataManager._userVmDetailDao = vmInstanceDetailsDao;
+        resourceMetaDataManager._serviceOfferingDetailsDao = serviceOfferingDetailsDao;
         resourceMetaDataManager.configure(null, null);
+    }
+
+    @Test
+    public void leaseOfAnOfferingIsNoFreeFormDetail() {
+        for (String name : List.of("leasehours", "leaseexpiryaction", "leaseduration")) {
+            Assert.assertThrows(name, InvalidParameterValueException.class, () -> resourceMetaDataManager.addResourceMetaData("so",
+                    ResourceObjectType.ServiceOffering, new HashMap<>(Map.of(name, "36h")), false));
+            Assert.assertThrows(name, InvalidParameterValueException.class,
+                    () -> resourceMetaDataManager.deleteResourceMetaData("so", ResourceObjectType.ServiceOffering, name));
+        }
+        Mockito.verify(serviceOfferingDetailsDao, Mockito.never()).addDetail(Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(), Mockito.anyBoolean());
+        Mockito.verify(serviceOfferingDetailsDao, Mockito.never()).removeDetail(Mockito.anyLong(), Mockito.anyString());
+    }
+
+    @Test
+    public void lifecycleStateOfAnInstanceIsNoDetailCallersSetOrRemove() {
+        for (String name : VmDetailConstants.LIFECYCLE_STATE_DETAILS) {
+            Assert.assertThrows(name, InvalidParameterValueException.class,
+                    () -> resourceMetaDataManager.addResourceMetaData("vm", ResourceObjectType.UserVm, new HashMap<>(Map.of(name, "x")), false));
+            Assert.assertThrows(name, InvalidParameterValueException.class,
+                    () -> resourceMetaDataManager.deleteResourceMetaData("vm", ResourceObjectType.UserVm, name));
+        }
+        Mockito.verify(vmInstanceDetailsDao, Mockito.never()).addDetail(Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(), Mockito.anyBoolean());
+        Mockito.verify(vmInstanceDetailsDao, Mockito.never()).removeDetail(Mockito.anyLong(), Mockito.anyString());
+
+        // removing every detail of an Instance is allowed: the whole removal leaves its lifecycle state
+        Mockito.when(resourceManagerUtil.getResourceId("vm", ResourceObjectType.UserVm)).thenReturn(3L);
+        Assert.assertTrue(resourceMetaDataManager.deleteResourceMetaData("vm", ResourceObjectType.UserVm, null));
+        Mockito.verify(vmInstanceDetailsDao).removeDetails(3L);
     }
 
     @Test

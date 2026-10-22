@@ -48,6 +48,7 @@ import org.apache.cloudstack.ha.dao.HAConfigDao;
 import org.apache.cloudstack.managed.context.ManagedContext;
 import org.apache.cloudstack.managed.context.ManagedContextRunnable;
 import org.apache.cloudstack.management.ManagementServerHost;
+import org.apache.cloudstack.vm.lease.VMLeaseManager;
 import org.apache.logging.log4j.ThreadContext;
 import org.apache.commons.collections.CollectionUtils;
 
@@ -170,6 +171,8 @@ public class HighAvailabilityManagerImpl extends ManagerBase implements Configur
     VpcVirtualNetworkApplianceService routerService;
     @Inject
     UserVmManager userVmManager;
+    @Inject
+    VMLeaseManager vmLeaseManager;
 
     long _serverId;
 
@@ -476,6 +479,26 @@ public class HighAvailabilityManagerImpl extends ManagerBase implements Configur
         }
 
         logger.debug("HA schedule restart");
+        // the stop and start of an HA restart continue the running session of a user Instance
+        String restart = null;
+        if (vm.getType() == VirtualMachine.Type.User && (ForceHA.value() || vm.isHaEnabled())
+                && vm.getHypervisorType() != HypervisorType.VMware && vm.getHypervisorType() != HypervisorType.Hyperv) {
+            restart = vmLeaseManager.beginRestart(vm.getId());
+        }
+        boolean handedOver = false;
+        try {
+            handedOver = scheduleRestartWork(vm, investigate, reasonType, restart);
+        } finally {
+            if (restart != null && !handedOver) {
+                vmLeaseManager.endRestart(vm.getId(), restart);
+            }
+        }
+    }
+
+    /**
+     * @return whether the restart begun for the Instance was handed over to the HA work item
+     */
+    private boolean scheduleRestartWork(VMInstanceVO vm, boolean investigate, ReasonType reasonType, String restart) {
         Long hostId = vm.getHostId();
         if (hostId == null) {
             try {
@@ -495,7 +518,7 @@ public class HighAvailabilityManagerImpl extends ManagerBase implements Configur
 
         if (vm.getHypervisorType() == HypervisorType.VMware || vm.getHypervisorType() == HypervisorType.Hyperv) {
             logger.info("Skip HA for VMware VM or Hyperv VM" + vm.getInstanceName());
-            return;
+            return false;
         }
 
         if (!investigate) {
@@ -540,7 +563,7 @@ public class HighAvailabilityManagerImpl extends ManagerBase implements Configur
 
         if (vm.getHypervisorType() == HypervisorType.VMware) {
             logger.info("Skip HA for VMware VM " + vm.getInstanceName());
-            return;
+            return false;
         }
 
         List<HaWorkVO> items = _haDao.findPreviousHA(vm.getId());
@@ -559,12 +582,18 @@ public class HighAvailabilityManagerImpl extends ManagerBase implements Configur
         HaWorkVO work = new HaWorkVO(vm.getId(), vm.getType(), WorkType.HA, investigate ? Step.Investigating : Step.Scheduled,
                 hostId != null ? hostId : 0L, vm.getState(), timesTried, vm.getUpdated(), reasonType);
         _haDao.persist(work);
+        boolean handedOver = false;
+        if (restart != null) {
+            vmLeaseManager.handRestartToHaWork(vm.getId(), restart, work.getId());
+            handedOver = true;
+        }
 
         if (logger.isInfoEnabled()) {
             logger.info("Schedule vm for HA:  " + vm);
         }
 
         wakeupWorkers();
+        return handedOver;
     }
 
     @Override
@@ -1135,6 +1164,13 @@ public class HighAvailabilityManagerImpl extends ManagerBase implements Configur
                 }
             }
             _haDao.update(work.getId(), work);
+            if (wt == WorkType.HA && Step.Done.equals(work.getStep())) {
+                try {
+                    vmLeaseManager.endRestart(work.getInstanceId(), VMLeaseManager.haWorkRestartMarker(work.getId()));
+                } catch (Exception e) {
+                    logger.warn("Unable to end the restart of work {}; the lease scheduler ends it later", work, e);
+                }
+            }
         }
     }
 

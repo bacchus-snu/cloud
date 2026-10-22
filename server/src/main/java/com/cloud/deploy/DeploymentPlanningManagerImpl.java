@@ -508,7 +508,7 @@ StateListener<State, VirtualMachine.Event, VirtualMachine>, Configurable {
         ClusterDetailsVO cluster_detail_ram = _clusterDetailsDao.findDetail(cluster_id, "memoryOvercommitRatio");
         float cpuOvercommitRatio = Float.parseFloat(cluster_detail_cpu.getValue());
         float memoryOvercommitRatio = Float.parseFloat(cluster_detail_ram.getValue());
-        if (!lastHostHasCapacity(lastHost, offering, cpuRequested, ramRequested, cpuOvercommitRatio, memoryOvercommitRatio)) {
+        if (!lastHostHasCapacity(lastHost, offering, vm.getId(), cpuRequested, ramRequested, cpuOvercommitRatio, memoryOvercommitRatio)) {
             logger.debug("Cannot deploy VM [{}] to the last host [{}] because this host does not have enough capacity to deploy this VM.", vm, lastHost);
             return null;
         }
@@ -574,9 +574,10 @@ StateListener<State, VirtualMachine.Event, VirtualMachine>, Configurable {
 
     /**
      * @return true when the VM's last host can take it again, from its reserved or its free capacity and with free
-     *         pool cores; a VM exempt from host capacity needs neither
+     *         pool cores, the cores the VM still holds there counting as free for it; a VM exempt from host capacity
+     *         needs neither
      */
-    protected boolean lastHostHasCapacity(Host lastHost, ServiceOffering offering, int cpuRequested, long ramRequested, float cpuOvercommitRatio,
+    protected boolean lastHostHasCapacity(Host lastHost, ServiceOffering offering, long vmId, int cpuRequested, long ramRequested, float cpuOvercommitRatio,
             float memoryOvercommitRatio) {
         if (CapacityManager.isHostCapacityExempt(offering)) {
             return true;
@@ -586,7 +587,7 @@ StateListener<State, VirtualMachine.Event, VirtualMachine>, Configurable {
         }
         boolean hostHasCapacity = _capacityMgr.checkIfHostHasCapacity(lastHost, cpuRequested, ramRequested, true, cpuOvercommitRatio, memoryOvercommitRatio, true)
                 || _capacityMgr.checkIfHostHasCapacity(lastHost, cpuRequested, ramRequested, false, cpuOvercommitRatio, memoryOvercommitRatio, true);
-        return hostHasCapacity && _capacityMgr.checkIfHostHasPoolCores(lastHost, offering.getCpu());
+        return hostHasCapacity && _capacityMgr.checkIfHostHasPoolCoresFor(lastHost, offering.getCpu(), vmId);
     }
 
     private boolean canUseLastHost(HostVO host, ExcludeList avoids, DeploymentPlan plan, VirtualMachine vm, ServiceOffering offering, boolean volumesRequireEncryption) {

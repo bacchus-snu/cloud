@@ -711,7 +711,7 @@ public class DeploymentPlanningManagerImplTest {
             DeployDestination dest = _dpm.planDeployment(vmProfile, plan, avoids, null);
 
             Assert.assertSame(host, dest.getHost());
-            verify(_dpm).lastHostHasCapacity(ArgumentMatchers.eq(host), ArgumentMatchers.any(), ArgumentMatchers.anyInt(), ArgumentMatchers.anyLong(),
+            verify(_dpm).lastHostHasCapacity(ArgumentMatchers.eq(host), ArgumentMatchers.any(), ArgumentMatchers.anyLong(), ArgumentMatchers.anyInt(), ArgumentMatchers.anyLong(),
                     ArgumentMatchers.anyFloat(), ArgumentMatchers.anyFloat());
         } finally {
             Mockito.when(resourceManager.isGPUDeviceAvailable(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.anyLong())).thenReturn(false);
@@ -729,7 +729,7 @@ public class DeploymentPlanningManagerImplTest {
                 ArgumentMatchers.any(DeploymentPlan.class), ArgumentMatchers.any(ExcludeList.class), ArgumentMatchers.anyInt());
         Mockito.when(clusterDetailsDao.findDetail(clusterId, "cpuOvercommitRatio")).thenReturn(new ClusterDetailsVO(clusterId, "cpuOvercommitRatio", "1"));
         Mockito.when(clusterDetailsDao.findDetail(clusterId, "memoryOvercommitRatio")).thenReturn(new ClusterDetailsVO(clusterId, "memoryOvercommitRatio", "1"));
-        Mockito.doReturn(true).when(_dpm).lastHostHasCapacity(ArgumentMatchers.any(Host.class), ArgumentMatchers.any(), ArgumentMatchers.anyInt(),
+        Mockito.doReturn(true).when(_dpm).lastHostHasCapacity(ArgumentMatchers.any(Host.class), ArgumentMatchers.any(), ArgumentMatchers.anyLong(), ArgumentMatchers.anyInt(),
                 ArgumentMatchers.anyLong(), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyFloat());
         Mockito.when(resourceManager.isGPUDeviceAvailable(ArgumentMatchers.any(), ArgumentMatchers.eq(host), ArgumentMatchers.anyLong())).thenReturn(true);
         VMTemplateVO template = Mockito.mock(VMTemplateVO.class);
@@ -764,7 +764,7 @@ public class DeploymentPlanningManagerImplTest {
 
             Assert.assertNull("Destination should be null since last host doesn't support encryption and root requires it", dest);
             verify(hostDao, Mockito.atLeastOnce()).findById(hostId);
-            verify(_dpm, Mockito.never()).lastHostHasCapacity(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.anyInt(),
+            verify(_dpm, Mockito.never()).lastHostHasCapacity(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.anyLong(), ArgumentMatchers.anyInt(),
                     ArgumentMatchers.anyLong(), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyFloat());
         } finally {
             Mockito.when(resourceManager.isGPUDeviceAvailable(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.anyLong())).thenReturn(false);
@@ -781,14 +781,17 @@ public class DeploymentPlanningManagerImplTest {
         Mockito.when(capacityMgr.checkIfHostHasCapacity(ArgumentMatchers.eq(lastHost), ArgumentMatchers.anyInt(), ArgumentMatchers.anyLong(),
                 ArgumentMatchers.anyBoolean(), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyBoolean())).thenReturn(true);
         try {
-            Mockito.when(capacityMgr.checkIfHostHasPoolCores(lastHost, 4)).thenReturn(false);
-            assertFalse(_dpm.lastHostHasCapacity(lastHost, poolOffering, 8000, 1L << 30, 1f, 1f));
-            assertTrue(_dpm.lastHostHasCapacity(lastHost, gpuOffering, 24000, 1L << 30, 1f, 1f));
+            Mockito.when(capacityMgr.checkIfHostHasPoolCoresFor(lastHost, 4, instanceId)).thenReturn(false);
+            assertFalse(_dpm.lastHostHasCapacity(lastHost, poolOffering, instanceId, 8000, 1L << 30, 1f, 1f));
+            assertTrue(_dpm.lastHostHasCapacity(lastHost, gpuOffering, instanceId, 24000, 1L << 30, 1f, 1f));
 
-            Mockito.when(capacityMgr.checkIfHostHasPoolCores(lastHost, 4)).thenReturn(true);
-            assertTrue(_dpm.lastHostHasCapacity(lastHost, poolOffering, 8000, 1L << 30, 1f, 1f));
+            Mockito.when(capacityMgr.checkIfHostHasPoolCoresFor(lastHost, 4, instanceId)).thenReturn(true);
+            assertTrue("the cores the VM itself holds there count as free for it", _dpm.lastHostHasCapacity(lastHost, poolOffering, instanceId,
+                    8000, 1L << 30, 1f, 1f));
+            Mockito.verify(capacityMgr, Mockito.never()).checkIfHostHasPoolCores(lastHost, 4);
         } finally {
-            Mockito.when(capacityMgr.checkIfHostHasPoolCores(ArgumentMatchers.any(Host.class), ArgumentMatchers.anyInt())).thenReturn(true);
+            Mockito.when(capacityMgr.checkIfHostHasPoolCoresFor(ArgumentMatchers.any(Host.class), ArgumentMatchers.anyInt(), ArgumentMatchers.anyLong()))
+                    .thenReturn(true);
         }
     }
 
@@ -975,6 +978,8 @@ public class DeploymentPlanningManagerImplTest {
         Mockito.when(capacityMgr.checkIfHostReachMaxGuestLimit(host)).thenReturn(false);
         Mockito.when(capacityMgr.checkIfHostHasCpuCapability(ArgumentMatchers.any(Host.class), ArgumentMatchers.anyInt(), ArgumentMatchers.anyInt())).thenReturn(true);
         Mockito.when(capacityMgr.checkIfHostHasPoolCores(ArgumentMatchers.any(Host.class), ArgumentMatchers.anyInt())).thenReturn(true);
+        Mockito.when(capacityMgr.checkIfHostHasPoolCoresFor(ArgumentMatchers.any(Host.class), ArgumentMatchers.anyInt(), ArgumentMatchers.anyLong()))
+                .thenReturn(true);
         Mockito.when(capacityMgr.checkIfHostHasCapacity(
             ArgumentMatchers.any(),
                 ArgumentMatchers.anyInt(),
@@ -1423,7 +1428,7 @@ public class DeploymentPlanningManagerImplTest {
         Mockito.when(host.getStatus()).thenReturn(Status.Up);
         VolumeVO vol1 = new VolumeVO("vol1", dataCenterId, podId, 1L, 1L, instanceId, "folder", "path", Storage.ProvisioningType.THIN, (long) 10 << 30, Volume.Type.ROOT);
         setupMocksForLastHostTests(host, vol1);
-        Mockito.doCallRealMethod().when(_dpm).lastHostHasCapacity(ArgumentMatchers.any(Host.class), ArgumentMatchers.any(), ArgumentMatchers.anyInt(),
+        Mockito.doCallRealMethod().when(_dpm).lastHostHasCapacity(ArgumentMatchers.any(Host.class), ArgumentMatchers.any(), ArgumentMatchers.anyLong(), ArgumentMatchers.anyInt(),
                 ArgumentMatchers.anyLong(), ArgumentMatchers.anyFloat(), ArgumentMatchers.anyFloat());
         Mockito.doReturn(new Pair<Host, Map<Volume, StoragePool>>(host, new HashMap<>())).when(_dpm).findPotentialDeploymentResources(ArgumentMatchers.anyList(),
                 ArgumentMatchers.anyMap(), ArgumentMatchers.any(ExcludeList.class), ArgumentMatchers.any(), ArgumentMatchers.anyList(),

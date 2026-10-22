@@ -331,8 +331,9 @@ public class GpuDeviceDaoImplTest {
 
     @Test
     public void releaseDecidesByTheVmStateInOneStatement() {
-        Assert.assertEquals("UPDATE `cloud`.`gpu_device` d JOIN `cloud`.`vm_instance` v ON v.id = d.vm_id SET d.state = 'Free', d.vm_id = NULL "
-                        + "WHERE d.id = ? AND d.vm_id = ? AND (v.removed IS NOT NULL OR v.state IN ('Destroyed', 'Error', 'Expunging', 'Stopped'))",
+        Assert.assertEquals("UPDATE `cloud`.`gpu_device` d JOIN `cloud`.`vm_instance` v ON v.id = d.vm_id "
+                        + "SET d.state = IF(d.state = 'Error', 'Error', 'Free'), d.vm_id = NULL WHERE d.id = ? AND d.vm_id = ? AND (v.removed IS NOT NULL OR (v.state IN ('Destroyed', 'Error', 'Expunging', 'Stopped') "
+                        + "AND NOT EXISTS (SELECT 1 FROM `cloud`.`vm_instance_details` r WHERE r.vm_id = v.id AND r.name = 'restartinprogress')))",
                 GpuDeviceDaoImpl.RELEASE_IF_VM_HOLDS_NONE_SQL);
     }
 }

@@ -25,11 +25,13 @@ public class HostCoreAssignmentDaoImplTest {
     @Test
     public void releaseAndSweepDecideByTheSharedStatesInOneStatement() {
         assertEquals("DELETE a FROM `cloud`.`host_core_assignment` a JOIN `cloud`.`vm_instance` v ON v.id = a.vm_id "
-                + "WHERE a.vm_id = ? AND (v.removed IS NOT NULL OR v.state IN ('Destroyed', 'Error', 'Expunging', 'Stopped'))",
+                + "WHERE a.vm_id = ? AND (v.removed IS NOT NULL OR (v.state IN ('Destroyed', 'Error', 'Expunging', 'Stopped') "
+                + "AND NOT EXISTS (SELECT 1 FROM `cloud`.`vm_instance_details` r WHERE r.vm_id = v.id AND r.name = 'restartinprogress')))",
                 HostCoreAssignmentDaoImpl.RELEASE_SQL);
         assertEquals("DELETE a FROM `cloud`.`host_core_assignment` a JOIN `cloud`.`vm_instance` v ON v.id = a.vm_id "
-                + "WHERE a.host_id = ? AND (v.removed IS NOT NULL OR v.host_id IS NULL OR v.host_id <> a.host_id "
-                + "OR v.state IN ('Destroyed', 'Error', 'Expunging', 'Stopped'))",
+                + "WHERE a.host_id = ? AND (v.removed IS NOT NULL OR ((v.host_id IS NULL OR v.host_id <> a.host_id "
+                + "OR v.state IN ('Destroyed', 'Error', 'Expunging', 'Stopped')) "
+                + "AND NOT EXISTS (SELECT 1 FROM `cloud`.`vm_instance_details` r WHERE r.vm_id = v.id AND r.name = 'restartinprogress')))",
                 HostCoreAssignmentDaoImpl.REMOVE_STALE_SQL);
     }
 }

@@ -53,9 +53,12 @@ import com.cloud.utils.db.TransactionCallbackNoReturn;
 import com.cloud.utils.db.TransactionCallbackWithException;
 import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.vm.UserVmManager;
+import com.cloud.vm.VMInstanceDetailVO;
 import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VirtualMachine;
+import com.cloud.vm.VmDetailConstants;
 import com.cloud.vm.dao.VMInstanceDao;
+import com.cloud.vm.dao.VMInstanceDetailsDao;
 import org.apache.cloudstack.api.ResponseObject;
 import org.apache.cloudstack.api.command.admin.gpu.CreateGpuCardCmd;
 import org.apache.cloudstack.api.command.admin.gpu.CreateGpuDeviceCmd;
@@ -1436,6 +1439,9 @@ public class GpuServiceImplTest {
     private ServiceOfferingDetailsDao serviceOfferingDetailsDao;
 
     @Mock
+    private VMInstanceDetailsDao vmInstanceDetailsDao;
+
+    @Mock
     private DiskOfferingDao diskOfferingDao;
 
     @Mock
@@ -2285,6 +2291,8 @@ public class GpuServiceImplTest {
             });
             Mockito.lenient().when(gpuDeviceDao.listByVmId(Mockito.anyLong())).thenAnswer(invocation -> rows.values().stream()
                     .filter(row -> Objects.equals(row.getVmId(), invocation.getArgument(0))).map(this::copy).collect(Collectors.toList()));
+            Mockito.lenient().when(gpuDeviceDao.listByHostAndVm(Mockito.eq(GROUP_HOST_ID), Mockito.anyLong())).thenAnswer(invocation -> rows.values().stream()
+                    .filter(row -> Objects.equals(row.getVmId(), invocation.getArgument(1))).map(this::copy).collect(Collectors.toList()));
             Mockito.lenient().when(gpuDeviceDao.persist(any(GpuDeviceVO.class))).thenAnswer(invocation -> {
                 GpuDeviceVO row = invocation.getArgument(0);
                 rows.put(row.getId(), copy(row));
@@ -2462,5 +2470,136 @@ public class GpuServiceImplTest {
 
         when(vm.getState()).thenReturn(VirtualMachine.State.Running);
         assertEquals("a running VM's description keeps what it holds", 1, gpuService.getGPUDevice(vm, GROUP_HOST_ID, profile, 2).getGpuDevices().size());
+    }
+
+    @Test
+    public void forcedRebootKeepsItsGroupWhileOtherStartsRaceForGroups() throws Exception {
+        registerPartitions(GROUP_HOST_ID, List.of(positions(0, 1), positions(2, 3), positions(4, 5), positions(6, 7)));
+        VgpuProfile profile = a100Profile();
+        DeviceTable table = new DeviceTable(true, null);
+        long rebooting = 401L;
+        List<Long> vmIds = List.of(rebooting, 402L, 403L, 404L);
+
+        for (int round = 0; round < 30; round++) {
+            table.reset(8);
+            for (int position : new int[] {6, 7}) {
+                GpuDeviceVO held = table.rows.get(GROUP_HOST_ID * 100 + position);
+                held.setVmId(rebooting);
+                held.setState(GpuDevice.State.Allocated);
+            }
+            for (int position : new int[] {0, 1}) {
+                GpuDeviceVO held = table.rows.get(GROUP_HOST_ID * 100 + position);
+                held.setVmId(410L);
+                held.setState(GpuDevice.State.Allocated);
+            }
+
+            Map<Long, List<String>> results = raceStarts(vmIds, profile, new CyclicBarrier(vmIds.size()));
+
+            assertEquals("the restart reuses exactly the group it held", positions(6, 7), results.get(rebooting));
+            List<List<String>> others = vmIds.stream().filter(id -> id != rebooting).map(results::get).filter(Objects::nonNull).collect(Collectors.toList());
+            assertEquals("the two free pairs go to two of the other starts, the third gets none", 2, others.size());
+            assertTrue(others.containsAll(List.of(positions(2, 3), positions(4, 5))));
+            assertEquals(positions(6, 7), table.holders().get(rebooting));
+            assertEquals(positions(0, 1), table.holders().get(410L));
+        }
+    }
+
+    @Test
+    public void restartKeepsTheGroupItHoldsRatherThanABetterFit() throws Exception {
+        registerPartitions(GROUP_HOST_ID, fabricManagerPartitions());
+        List<GpuDeviceVO> devices = hostGpus(GROUP_HOST_ID, 8, 4, 5, 6, 7);
+        devices.get(4).setVmId(VM_ID_100 + 1);
+        devices.get(5).setVmId(VM_ID_100 + 1);
+        when(gpuDeviceDao.listByHostAndVm(GROUP_HOST_ID, VM_ID_100)).thenReturn(List.of(devices.get(7), devices.get(6)));
+        a100Profile();
+        runTransactionsInline();
+
+        GpuGroupPick pick = gpuService.allocateGpuGroup(startingVm(VM_ID_100, GROUP_HOST_ID), GROUP_HOST_ID, A100_PROFILE_ID, 2);
+
+        assertEquals(positions(6, 7), pick.getPositions());
+        verify(gpuDeviceDao).lockByHostId(GROUP_HOST_ID);
+        verify(gpuDeviceDao, never()).persist(any(GpuDeviceVO.class));
+        assertEquals(Long.valueOf(VM_ID_100), devices.get(6).getVmId());
+        assertEquals(GpuDevice.State.Allocated, devices.get(7).getState());
+
+        when(gpuDeviceDao.listByHostAndVm(GROUP_HOST_ID, VM_ID_100)).thenReturn(List.of(devices.get(6)));
+        GpuGroupPick fresh = gpuService.allocateGpuGroup(startingVm(VM_ID_100, GROUP_HOST_ID), GROUP_HOST_ID, A100_PROFILE_ID, 2);
+        assertEquals("a VM holding part of a group gets a whole group again", 2, fresh.getPositions().size());
+        verify(gpuDeviceDao, Mockito.atLeastOnce()).persist(any(GpuDeviceVO.class));
+    }
+
+    @Test
+    public void restartDoesNotKeepHeldDevicesThatFailedOrLeftManagement() throws Exception {
+        registerPartitions(GROUP_HOST_ID, fabricManagerPartitions());
+        a100Profile();
+        runTransactionsInline();
+        for (boolean failed : new boolean[] {true, false}) {
+            List<GpuDeviceVO> devices = hostGpus(GROUP_HOST_ID, 8, 6, 7);
+            if (failed) {
+                devices.get(7).setState(GpuDevice.State.Error);
+            } else {
+                devices.get(7).setManagedState(GpuDevice.ManagedState.Unmanaged);
+            }
+            when(gpuDeviceDao.listByHostAndVm(GROUP_HOST_ID, VM_ID_100)).thenReturn(List.of(devices.get(6), devices.get(7)));
+
+            GpuGroupPick pick = gpuService.allocateGpuGroup(startingVm(VM_ID_100, GROUP_HOST_ID), GROUP_HOST_ID, A100_PROFILE_ID, 2);
+
+            assertEquals(2, pick.getPositions().size());
+            assertFalse(pick.getPositions().toString(), pick.getPositions().contains(positions(7).get(0)));
+            assertNull(devices.get(7).getVmId());
+            assertEquals("a device in error stays so when it is given up", failed ? GpuDevice.State.Error : GpuDevice.State.Free,
+                    devices.get(7).getState());
+        }
+    }
+
+    @Test
+    public void syncKeepsTheDevicesOfAStoppedVmWhoseRestartIsInProgress() throws Exception {
+        java.lang.reflect.Field defaultValue = ConfigKey.class.getDeclaredField("_defaultValue");
+        defaultValue.setAccessible(true);
+        String original = GpuService.GpuDetachOnStop.defaultValue();
+        defaultValue.set(GpuService.GpuDetachOnStop, "true");
+        try {
+            Date reportTime = new Date(1_000_000L);
+            String[] buses = {GPU_BUS_ADDRESS, GPU_BUS_ADDRESS_2};
+            List<GpuDeviceVO> rows = new ArrayList<>();
+            List<VgpuTypesInfo> reported = new ArrayList<>();
+            for (int i = 0; i < buses.length; i++) {
+                GpuDeviceVO row = gpu(HOST_ID, 21L + i, buses[i], null, GpuDevice.State.Allocated);
+                row.setVmId(VM_ID_100 + i);
+                rows.add(row);
+                VMInstanceVO vm = mock(VMInstanceVO.class);
+                Mockito.lenient().when(vm.getId()).thenReturn(VM_ID_100 + i);
+                when(vm.getState()).thenReturn(VirtualMachine.State.Stopped);
+                Mockito.lenient().when(vm.getDomainId()).thenReturn(1L);
+                when(vmInstanceDao.findById(VM_ID_100 + i)).thenReturn(vm);
+                VgpuTypesInfo info = mock(VgpuTypesInfo.class);
+                when(info.getBusAddress()).thenReturn(buses[i]);
+                when(info.getDeviceId()).thenReturn(GPU_DEVICE_ID);
+                when(info.getVendorId()).thenReturn(GPU_VENDOR_ID);
+                when(info.getModelName()).thenReturn(PASSTHROUGH_PROFILE);
+                reported.add(info);
+            }
+            when(vmInstanceDetailsDao.findDetail(VM_ID_100, VmDetailConstants.RESTART_IN_PROGRESS))
+                    .thenReturn(new VMInstanceDetailVO(VM_ID_100, VmDetailConstants.RESTART_IN_PROGRESS, "job:3", false));
+            when(gpuDeviceDao.listByHostId(HOST_ID)).thenReturn(rows);
+            when(gpuCardDao.findByVendorIdAndDeviceId(GPU_VENDOR_ID, GPU_DEVICE_ID)).thenReturn(mockGpuCard);
+            when(vgpuProfileDao.findByNameAndCardId(PASSTHROUGH_PROFILE, GPU_CARD_ID)).thenReturn(mockVgpuProfile);
+
+            try (MockedStatic<GlobalLock> ignored = Mockito.mockStatic(GlobalLock.class)) {
+                GlobalLock lock = mock(GlobalLock.class);
+                when(GlobalLock.getInternLock("add-gpu-devices-to-host-" + HOST_ID)).thenReturn(lock);
+                when(lock.lock(30)).thenReturn(true);
+                runTransactionsInline();
+
+                gpuService.addGpuDevicesToHost(mockHost, reported, reportTime);
+            }
+
+            assertEquals("a forced reboot's intermediate stop keeps the devices", GpuDevice.State.Allocated, rows.get(0).getState());
+            assertEquals(Long.valueOf(VM_ID_100), rows.get(0).getVmId());
+            assertEquals("a stopped VM gives them up", GpuDevice.State.Free, rows.get(1).getState());
+            assertNull(rows.get(1).getVmId());
+        } finally {
+            defaultValue.set(GpuService.GpuDetachOnStop, original);
+        }
     }
 }

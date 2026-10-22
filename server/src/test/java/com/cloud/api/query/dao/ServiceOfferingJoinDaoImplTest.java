@@ -25,6 +25,7 @@ import org.apache.cloudstack.annotation.dao.AnnotationDao;
 import org.apache.cloudstack.api.response.ServiceOfferingResponse;
 import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.gpu.GpuService;
+import org.apache.cloudstack.vm.lease.VMLeaseManager;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -41,6 +42,7 @@ import com.cloud.api.query.vo.ServiceOfferingJoinVO;
 import com.cloud.offering.ServiceOffering;
 import com.cloud.service.ServiceOfferingVO;
 import com.cloud.service.dao.ServiceOfferingDao;
+import com.cloud.service.dao.ServiceOfferingDetailsDao;
 import com.cloud.storage.Storage;
 import com.cloud.user.Account;
 import com.cloud.user.AccountManager;
@@ -59,6 +61,9 @@ public class ServiceOfferingJoinDaoImplTest {
 
     @Mock
     private AccountManager accountManager;
+
+    @Mock
+    private ServiceOfferingDetailsDao serviceOfferingDetailsDao;
 
     @InjectMocks
     private ServiceOfferingJoinDaoImpl serviceOfferingJoinDao;
@@ -108,5 +113,54 @@ public class ServiceOfferingJoinDaoImplTest {
         Assert.assertNull("no GPU slots on an offering without a vGPU profile", cpuOnly.getGpuSlotsAvailable());
         Assert.assertNull(cpuOnly.getGpuSlotsTotal());
         verify(serviceOfferingDao, never()).findByIdIncludingRemoved(41L);
+    }
+
+    @Test
+    public void dayLeaseWithAnActionTheEnumDoesNotKnowStillLists() throws Exception {
+        java.lang.reflect.Field defaultValue = org.apache.cloudstack.framework.config.ConfigKey.class.getDeclaredField("_defaultValue");
+        defaultValue.setAccessible(true);
+        String original = VMLeaseManager.InstanceLeaseEnabled.defaultValue();
+        defaultValue.set(VMLeaseManager.InstanceLeaseEnabled, "true");
+        try {
+            ServiceOfferingJoinVO view = offeringView(43L, null);
+            when(view.getLeaseDuration()).thenReturn(3);
+
+            ServiceOfferingResponse response = serviceOfferingJoinDao.newServiceOfferingResponse(view);
+
+            Assert.assertEquals(Integer.valueOf(3), response.getLeaseDuration());
+            Assert.assertEquals("STOP", response.getLeaseExpiryAction());
+        } finally {
+            defaultValue.set(VMLeaseManager.InstanceLeaseEnabled, original);
+        }
+    }
+
+    @Test
+    public void offeringResponseCarriesItsLeaseHours() {
+        ServiceOfferingJoinVO destroying = offeringView(40L, null);
+        when(destroying.getLeaseHours()).thenReturn("36");
+        when(destroying.getLeaseExpiryAction()).thenReturn(VMLeaseManager.ExpiryAction.DESTROY);
+        ServiceOfferingJoinVO stopping = offeringView(42L, null);
+        when(stopping.getLeaseHours()).thenReturn("48");
+
+        ServiceOfferingResponse gpu = serviceOfferingJoinDao.newServiceOfferingResponse(destroying);
+        Assert.assertEquals(Integer.valueOf(36), gpu.getLeaseHours());
+        Assert.assertEquals("DESTROY", gpu.getLeaseExpiryAction());
+
+        ServiceOfferingResponse defaultAction = serviceOfferingJoinDao.newServiceOfferingResponse(stopping);
+        Assert.assertEquals(Integer.valueOf(48), defaultAction.getLeaseHours());
+        Assert.assertEquals("STOP", defaultAction.getLeaseExpiryAction());
+
+        ServiceOfferingResponse cpuOnly = serviceOfferingJoinDao.newServiceOfferingResponse(offeringView(41L, null));
+        Assert.assertNull(cpuOnly.getLeaseHours());
+        Assert.assertNull(cpuOnly.getLeaseExpiryAction());
+
+        // a malformed stored value lists as no lease
+        ServiceOfferingJoinVO malformed = offeringView(44L, null);
+        when(malformed.getLeaseHours()).thenReturn("36h");
+        ServiceOfferingResponse unreadable = serviceOfferingJoinDao.newServiceOfferingResponse(malformed);
+        Assert.assertNull(unreadable.getLeaseHours());
+        Assert.assertNull(unreadable.getLeaseExpiryAction());
+        // the lease of an offering comes with the offering's row, not with a lookup per offering
+        Mockito.verifyNoInteractions(serviceOfferingDetailsDao);
     }
 }

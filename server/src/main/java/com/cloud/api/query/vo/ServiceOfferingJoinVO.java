@@ -227,6 +227,9 @@ public class ServiceOfferingJoinVO extends BaseViewVO implements InternalIdentit
     @Enumerated(value = EnumType.STRING)
     private VMLeaseManager.ExpiryAction leaseExpiryAction;
 
+    @Column(name = "lease_hours")
+    private String leaseHours;
+
     @Column(name = "gpu_card_id")
     private Long gpuCardId;
 
@@ -508,6 +511,10 @@ public class ServiceOfferingJoinVO extends BaseViewVO implements InternalIdentit
 
     public VMLeaseManager.ExpiryAction getLeaseExpiryAction() {
         return leaseExpiryAction;
+    }
+
+    public String getLeaseHours() {
+        return leaseHours;
     }
 
     public Long getGpuCardId() {

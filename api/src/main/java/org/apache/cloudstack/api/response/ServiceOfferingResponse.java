@@ -296,6 +296,10 @@ public class ServiceOfferingResponse extends BaseResponseWithAnnotations {
     @Param(description = "Action to be taken once lease is over", since = "4.21.0")
     private String leaseExpiryAction;
 
+    @SerializedName(ApiConstants.INSTANCE_LEASE_HOURS)
+    @Param(description = "Hours of lease an Instance of the offering gets at each start and renewal", since = "4.23.0.100")
+    private Integer leaseHours;
+
     public ServiceOfferingResponse() {
     }
 
@@ -577,6 +581,14 @@ public class ServiceOfferingResponse extends BaseResponseWithAnnotations {
 
     public void setLeaseExpiryAction(String leaseExpiryAction) {
         this.leaseExpiryAction = leaseExpiryAction;
+    }
+
+    public Integer getLeaseHours() {
+        return leaseHours;
+    }
+
+    public void setLeaseHours(Integer leaseHours) {
+        this.leaseHours = leaseHours;
     }
 
     public String getVsphereStoragePolicy() {

@@ -187,7 +187,8 @@ SELECT
     `vm_template`.`user_data_link_policy` AS `user_data_policy`,
     `lease_expiry_date`.`value` AS `lease_expiry_date`,
     `lease_expiry_action`.`value` AS `lease_expiry_action`,
-    `lease_action_execution`.`value` AS `lease_action_execution`
+    `lease_action_execution`.`value` AS `lease_action_execution`,
+    `lease_hours`.`value` AS `lease_hours`
 FROM
     ((((((((((((((((((((((((((((((((((((((`user_vm`
         JOIN `vm_instance` ON (((`vm_instance`.`id` = `user_vm`.`id`)
@@ -243,4 +244,6 @@ FROM
         LEFT JOIN `vm_instance_details` `lease_action_execution` ON ((`lease_action_execution`.`vm_id` = `vm_instance`.`id`)
         AND (`lease_action_execution`.`name` = 'leaseactionexecution'))
         LEFT JOIN `vm_instance_details` `lease_expiry_action` ON (((`lease_expiry_action`.`vm_id` = `vm_instance`.`id`)
-        AND (`lease_expiry_action`.`name` = 'leaseexpiryaction'))));
+        AND (`lease_expiry_action`.`name` = 'leaseexpiryaction'))))
+        LEFT JOIN `service_offering_details` `lease_hours` ON ((`lease_hours`.`service_offering_id` = `vm_instance`.`service_offering_id`)
+        AND (`lease_hours`.`name` = 'leasehours'));

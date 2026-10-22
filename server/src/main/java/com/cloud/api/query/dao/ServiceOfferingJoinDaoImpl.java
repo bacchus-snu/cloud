@@ -195,9 +195,20 @@ public class ServiceOfferingJoinDaoImpl extends GenericDaoBase<ServiceOfferingJo
             }
         }
 
+        // a stored action the enum does not know maps to none, and the lease then stops, as the lease manager does
+        VMLeaseManager.ExpiryAction leaseExpiryAction = offering.getLeaseExpiryAction() != null ? offering.getLeaseExpiryAction() : VMLeaseManager.ExpiryAction.STOP;
         if (VMLeaseManager.InstanceLeaseEnabled.value() && offering.getLeaseDuration() != null && offering.getLeaseDuration() > 0L) {
             offeringResponse.setLeaseDuration(offering.getLeaseDuration());
-            offeringResponse.setLeaseExpiryAction(offering.getLeaseExpiryAction().name());
+            offeringResponse.setLeaseExpiryAction(leaseExpiryAction.name());
+        }
+        Integer leaseHours = VMLeaseManager.leaseHoursOf(offering.getLeaseHours());
+        if (leaseHours == null && StringUtils.isNotBlank(offering.getLeaseHours())) {
+            logger.warn("Service offering {} has the malformed lease detail {}={}; reading it as no lease", offering.getUuid(), VMLeaseManager.LEASE_HOURS,
+                    offering.getLeaseHours());
+        }
+        if (leaseHours != null) {
+            offeringResponse.setLeaseHours(leaseHours);
+            offeringResponse.setLeaseExpiryAction(leaseExpiryAction.name());
         }
 
         long rootDiskSizeInGb = (long) offering.getRootDiskSize() / GB_TO_BYTES;

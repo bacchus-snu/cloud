@@ -76,6 +76,7 @@ import org.apache.cloudstack.api.command.admin.vm.MigrateVMCmd;
 import org.apache.cloudstack.api.command.admin.vm.MigrateVirtualMachineWithVolumeCmd;
 import org.apache.cloudstack.api.command.admin.vm.RecoverVMCmd;
 import org.apache.cloudstack.api.command.user.vm.CreateVMFromBackupCmd;
+import org.apache.cloudstack.api.command.user.vm.BaseDeployVMCmd;
 import org.apache.cloudstack.api.command.user.vm.DeployVMCmd;
 import org.apache.cloudstack.api.command.user.vm.DeployVnfApplianceCmd;
 import org.apache.cloudstack.api.command.user.vm.DestroyVMCmd;
@@ -114,6 +115,8 @@ import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
 import org.apache.cloudstack.storage.template.VnfTemplateManager;
 import org.apache.cloudstack.userdata.UserDataManager;
 import org.apache.cloudstack.vm.UnmanagedVMsManager;
+import org.apache.cloudstack.storage.datastore.db.TemplateDataStoreDao;
+import org.apache.cloudstack.storage.datastore.db.TemplateDataStoreVO;
 import org.apache.cloudstack.vm.lease.VMLeaseManager;
 import org.junit.After;
 import org.junit.Assert;
@@ -206,6 +209,7 @@ import com.cloud.storage.Storage;
 import com.cloud.storage.StorageManager;
 import com.cloud.storage.StoragePool;
 import com.cloud.storage.StorageService;
+import com.cloud.storage.Snapshot;
 import com.cloud.storage.VMTemplateVO;
 import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeApiService;
@@ -380,6 +384,12 @@ public class UserVmManagerImplTest {
 
     @Mock
     private VMSnapshotDao vmSnapshotDaoMock;
+
+    @Mock
+    private VMLeaseManager vmLeaseManager;
+
+    @Mock
+    private TemplateDataStoreDao templateDataStoreDao;
 
     @Mock
     AccountVO account;
@@ -3959,6 +3969,7 @@ public class UserVmManagerImplTest {
         userVmManagerImpl.addLeaseDetailsForInstance(userVm, 10, VMLeaseManager.ExpiryAction.STOP);
         verify(vmInstanceDetailsDao).addDetail(eq(vmId), eq(VmDetailConstants.INSTANCE_LEASE_EXPIRY_ACTION), eq(VMLeaseManager.ExpiryAction.STOP.name()), anyBoolean());
         verify(vmInstanceDetailsDao).addDetail(eq(vmId), eq(VmDetailConstants.INSTANCE_LEASE_EXPIRY_DATE), eq(getLeaseExpiryDate(10L)), anyBoolean());
+        verify(vmInstanceDetailsDao).removeDetail(vmId, VmDetailConstants.INSTANCE_LEASE_EXPIRY_WARNING);
     }
 
     @Test
@@ -6377,5 +6388,311 @@ public class UserVmManagerImplTest {
 
         assertThrows(InvalidParameterValueException.class, () -> userVmManagerImpl.upgradeVirtualMachine(upgrade));
         verify(volumeApiService).checkCallerMayAutoMigrate(false);
+    }
+
+    @Test
+    public void userCannotSetLeaseDirectly() throws Exception {
+        doThrow(new PermissionDeniedException("the role denies setVirtualMachineLease")).when(accountManager)
+                .checkApiAccess(any(Account.class), eq(VMLeaseManager.SET_LEASE_API));
+
+        // deploy: the lease fields are refused before anything is created
+        BaseDeployVMCmd deploy = mock(BaseDeployVMCmd.class);
+        when(deploy.getLeaseDuration()).thenReturn(3);
+        java.lang.reflect.Method create = UserVmManagerImpl.class.getDeclaredMethod("createVirtualMachine", BaseDeployVMCmd.class, DataCenter.class,
+                Account.class, ServiceOffering.class, VirtualMachineTemplate.class, Hypervisor.HypervisorType.class, Long.class, Long.class, Long.class,
+                List.class, List.class, Map.class, Volume.class, Snapshot.class, Map.class);
+        create.setAccessible(true);
+        java.lang.reflect.InvocationTargetException deployed = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                () -> create.invoke(userVmManagerImpl, deploy, null, accountMock, mock(ServiceOffering.class), null, null, null, null, null,
+                        null, null, null, null, null, null));
+        assertTrue(String.valueOf(deployed.getCause()), deployed.getCause() instanceof PermissionDeniedException);
+        assertTrue(deployed.getCause().getMessage(), deployed.getCause().getMessage().contains("leaseduration"));
+        verify(serviceOfferingJoinDao, never()).findById(anyLong());
+
+        when(deploy.getLeaseDuration()).thenReturn(null);
+        when(deploy.getLeaseExpiryAction()).thenReturn(VMLeaseManager.ExpiryAction.DESTROY);
+        deployed = assertThrows(java.lang.reflect.InvocationTargetException.class, () -> create.invoke(userVmManagerImpl, deploy, null, accountMock,
+                mock(ServiceOffering.class), null, null, null, null, null, null, null, null, null, null, null));
+        assertTrue(String.valueOf(deployed.getCause()), deployed.getCause() instanceof PermissionDeniedException);
+
+        // updateVirtualMachine
+        doNothing().when(userVmManagerImpl).validateInputsAndPermissionForUpdateVirtualMachineCommand(updateVmCommand);
+        when(updateVmCommand.getLeaseDuration()).thenReturn(10);
+        PermissionDeniedException updated = assertThrows(PermissionDeniedException.class, () -> userVmManagerImpl.updateVirtualMachine(updateVmCommand));
+        assertTrue(updated.getMessage(), updated.getMessage().contains("leaseduration"));
+        verify(vmInstanceDetailsDao, never()).addDetail(anyLong(), anyString(), anyString(), anyBoolean());
+        verify(userVmDao, never()).findById(anyLong());
+
+        // a caller that may call setVirtualMachineLease passes them as before; leaving them out needs no access
+        Mockito.reset(accountManager);
+        userVmManagerImpl.refuseLeaseFieldsUnlessAllowed(5, VMLeaseManager.ExpiryAction.STOP);
+        verify(accountManager).checkApiAccess(any(Account.class), eq(VMLeaseManager.SET_LEASE_API));
+        Mockito.reset(accountManager);
+        userVmManagerImpl.refuseLeaseFieldsUnlessAllowed(null, null);
+        verifyNoInteractions(accountManager);
+    }
+
+    @Test
+    public void detailsOfTheLeaseAndOfARestartAreNotSetThroughUpdateVirtualMachine() throws Exception {
+        for (String name : VmDetailConstants.LIFECYCLE_STATE_DETAILS) {
+            Mockito.reset(updateVmCommand);
+            lenient().doNothing().when(userVmManagerImpl).validateInputsAndPermissionForUpdateVirtualMachineCommand(updateVmCommand);
+            lenient().doReturn(new ArrayList<Long>()).when(userVmManagerImpl).getSecurityGroupIdList(updateVmCommand);
+            lenient().when(updateVmCommand.getId()).thenReturn(vmId);
+            lenient().when(userVmDao.findById(vmId)).thenReturn(userVmVoMock);
+            lenient().when(updateVmCommand.getUserdataId()).thenReturn(null);
+            lenient().when(updateVmCommand.getDetails()).thenReturn(new HashMap<>(Map.of(name, "x")));
+            lenient().when(updateVmCommand.isCleanupDetails()).thenReturn(false);
+            InvalidParameterValueException e = assertThrows(name, InvalidParameterValueException.class, () -> userVmManagerImpl.updateVirtualMachine(updateVmCommand));
+            assertTrue(e.getMessage(), e.getMessage().contains("should not be included in details"));
+        }
+        verify(userVmDao, never()).saveDetails(any());
+    }
+
+    @Test
+    public void forcedRebootKeepsTheSession() throws Exception {
+        UserVmVO vm = stoppedKvmVm(VirtualMachine.State.Running);
+        doReturn(vm).when(userVmManagerImpl).stopVirtualMachine(MOVING_VM_ID, false);
+        when(vmLeaseManager.beginRestart(MOVING_VM_ID)).thenReturn("job:31");
+        doReturn(new Pair<>(vm, new HashMap<>())).when(userVmManagerImpl).startVirtualMachine(eq(MOVING_VM_ID), isNull(), isNull(), eq(7L), isNull(), anyMap(),
+                isNull(), eq(false), eq(false), eq(false));
+
+        assertEquals(vm, userVmManagerImpl.forceRebootVirtualMachine(vm, 7L, false));
+
+        InOrder inOrder = Mockito.inOrder(vmLeaseManager, userVmManagerImpl);
+        inOrder.verify(vmLeaseManager).beginRestart(MOVING_VM_ID);
+        inOrder.verify(userVmManagerImpl).stopVirtualMachine(MOVING_VM_ID, false);
+        inOrder.verify(userVmManagerImpl).startVirtualMachine(eq(MOVING_VM_ID), isNull(), isNull(), eq(7L), isNull(), anyMap(), isNull(), eq(false),
+                eq(false), eq(false));
+        inOrder.verify(vmLeaseManager).endRestart(MOVING_VM_ID, "job:31");
+
+        Mockito.clearInvocations(vmLeaseManager);
+        doThrow(new InsufficientServerCapacityException("the host is gone", com.cloud.host.Host.class, 7L)).when(userVmManagerImpl)
+                .startVirtualMachine(eq(MOVING_VM_ID), isNull(), isNull(), eq(7L), isNull(), anyMap(), isNull(), eq(false), eq(false), eq(false));
+        assertThrows(CloudRuntimeException.class, () -> userVmManagerImpl.forceRebootVirtualMachine(vm, 7L, false));
+        verify(vmLeaseManager).endRestart(MOVING_VM_ID, "job:31");
+    }
+
+    private VolumeVO reinstallFixture(VirtualMachine.State state) {
+        return reinstallFixture(state, Volume.State.Ready);
+    }
+
+    private VolumeVO reinstallFixture(VirtualMachine.State state, Volume.State rootState) {
+        long currentTemplateId = 31L;
+        when(userVmDao.findById(vmId)).thenReturn(userVmVoMock);
+        lenient().when(userVmVoMock.getId()).thenReturn(vmId);
+        lenient().when(userVmVoMock.getUuid()).thenReturn("reinstalled-vm");
+        when(userVmVoMock.getAccountId()).thenReturn(2L);
+        when(userVmVoMock.getState()).thenReturn(state);
+        when(userVmVoMock.getTemplateId()).thenReturn(currentTemplateId);
+        when(userVmVoMock.getDataCenterId()).thenReturn(1L);
+        when(accountDao.findById(2L)).thenReturn(callerAccount);
+        VMTemplateVO template = mock(VMTemplateVO.class);
+        when(template.getId()).thenReturn(currentTemplateId);
+        when(templateDao.findById(currentTemplateId)).thenReturn(template);
+        when(templateDataStoreDao.findByTemplateZoneReady(currentTemplateId, 1L)).thenReturn(mock(TemplateDataStoreVO.class));
+        VolumeVO root = mock(VolumeVO.class);
+        when(root.getTemplateId()).thenReturn(currentTemplateId);
+        when(root.getSize()).thenReturn(10L << 30);
+        when(root.getState()).thenReturn(rootState);
+        when(volumeDaoMock.findByInstanceAndType(vmId, Volume.Type.ROOT)).thenReturn(List.of(root));
+        doReturn(null).when(userVmManagerImpl).getRootVolumeSizeForVmRestore(any(), any(), any(), any(), any(), eq(false));
+        lenient().doThrow(new CloudRuntimeException("the old root volume cannot go")).when(volumeApiService).validateDestroyVolume(eq(root),
+                eq(accountMock), anyBoolean(), eq(false));
+        return root;
+    }
+
+    @Test
+    public void reinstallRestartKeepsTheSession() throws Exception {
+        reinstallFixture(VirtualMachine.State.Running);
+        when(vmLeaseManager.beginRestart(vmId)).thenReturn("job:41");
+
+        assertThrows(CloudRuntimeException.class, () -> userVmManagerImpl.restoreVirtualMachine(accountMock, vmId, null, null, false, null));
+
+        InOrder inOrder = Mockito.inOrder(vmLeaseManager, virtualMachineManager);
+        inOrder.verify(vmLeaseManager).beginRestart(vmId);
+        inOrder.verify(virtualMachineManager).stop("reinstalled-vm");
+        inOrder.verify(vmLeaseManager).endRestart(vmId, "job:41");
+    }
+
+    @Test
+    public void reinstallOfAStoppedInstanceIsNoRestart() throws Exception {
+        reinstallFixture(VirtualMachine.State.Stopped);
+
+        assertThrows(CloudRuntimeException.class, () -> userVmManagerImpl.restoreVirtualMachine(accountMock, vmId, null, null, false, null));
+
+        verify(vmLeaseManager, never()).beginRestart(anyLong());
+        verify(virtualMachineManager, never()).stop(anyString());
+    }
+
+    @Test
+    public void restartOfASessionIsAdmittedOnItsHostWithTheCoresItHolds() throws Exception {
+        UserVmVO vm = stoppedKvmVm(VirtualMachine.State.Stopped);
+        when(userVmDao.findById(MOVING_VM_ID)).thenReturn(vm);
+        ServiceOfferingVO offering = mock(ServiceOfferingVO.class);
+        when(_serviceOfferingDao.findById(MOVING_VM_ID, 20L)).thenReturn(offering);
+        HostVO host = mock(HostVO.class);
+        when(host.getResourceState()).thenReturn(com.cloud.resource.ResourceState.Enabled);
+        when(host.getStatus()).thenReturn(com.cloud.host.Status.Up);
+        when(hostDao.findById(7L)).thenReturn(host);
+        doNothing().when(userVmManagerImpl).validateStrictHostTagCheck(vm, host);
+        CapacityManager capacityManager = mock(CapacityManager.class);
+        ReflectionTestUtils.setField(userVmManagerImpl, "_capacityMgr", capacityManager);
+        when(capacityManager.checkIfHostHasCpuCapabilityAndCapacity(host, offering, false, MOVING_VM_ID)).thenReturn(new Pair<>(true, false));
+
+        assertThrows(InvalidParameterValueException.class, () -> userVmManagerImpl.startVirtualMachine(MOVING_VM_ID, null, null, 7L, null,
+                new HashMap<>(), null, false, false, false));
+
+        verify(capacityManager).checkIfHostHasCpuCapabilityAndCapacity(host, offering, false, MOVING_VM_ID);
+        verify(capacityManager, never()).checkIfHostHasCpuCapabilityAndCapacity(any(), any(), anyBoolean());
+    }
+
+    @Test
+    public void leaseDetailsAndTheRestartMarkAreRefusedAtDeploy() throws Exception {
+        java.lang.reflect.Method create = UserVmManagerImpl.class.getDeclaredMethod("createVirtualMachine", BaseDeployVMCmd.class, DataCenter.class,
+                Account.class, ServiceOffering.class, VirtualMachineTemplate.class, Hypervisor.HypervisorType.class, Long.class, Long.class, Long.class,
+                List.class, List.class, Map.class, Volume.class, Snapshot.class, Map.class);
+        create.setAccessible(true);
+        for (String name : VmDetailConstants.LIFECYCLE_STATE_DETAILS) {
+            java.lang.reflect.InvocationTargetException deployed = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> create.invoke(userVmManagerImpl, mock(BaseDeployVMCmd.class), null, accountMock, mock(ServiceOffering.class), null, null, null,
+                            null, null, null, null, null, null, null, new HashMap<>(Map.of(name, "x"))));
+            assertTrue(String.valueOf(deployed.getCause()), deployed.getCause() instanceof InvalidParameterValueException);
+        }
+        verify(serviceOfferingJoinDao, never()).findById(anyLong());
+    }
+
+    /**
+     * Runs updateVirtualMachine with new details over the detail table, the real Instance DAO saving the whole set that
+     * updateVirtualMachine read; {@code afterTheCopyIsRead} runs right after that read.
+     */
+    @SuppressWarnings("unchecked")
+    private void updateDetailsOver(InstanceDetailTable table, Runnable afterTheCopyIsRead) throws Exception {
+        configureDoNothingForMethodsThatWeDoNotWantToTest();
+        ServiceOffering offering = getSvcoffering(512);
+        when(_serviceOfferingDao.findById(anyLong(), anyLong())).thenReturn((ServiceOfferingVO) offering);
+        lenient().when(nicDao.listByVmId(anyLong())).thenReturn(List.of(mock(NicVO.class)));
+        lenient().when(_networkDao.findById(anyLong())).thenReturn(networkMock);
+        lenient().doNothing().when(_networkMgr).saveExtraDhcpOptions(anyString(), anyLong(), anyMap());
+        lenient().doNothing().when(userVmManagerImpl).updateDisplayVmFlag(false, vmId, userVmVoMock);
+        when(updateVmCommand.getUserdataId()).thenReturn(null);
+        when(updateVmCommand.getDetails()).thenReturn(new HashMap<>(Map.of("keyboard", "us")));
+        when(updateVmCommand.isCleanupDetails()).thenReturn(false);
+        doNothing().when(userVmManagerImpl).verifyVmLimits(any(), anyMap());
+        Map<String, String>[] set = new Map[1];
+        Mockito.doAnswer(i -> {
+            set[0] = i.getArgument(0);
+            return null;
+        }).when(userVmVoMock).setDetails(anyMap());
+        lenient().when(userVmVoMock.getDetails()).thenAnswer(i -> set[0]);
+        lenient().when(userVmVoMock.getId()).thenReturn(vmId);
+        Mockito.doAnswer(i -> {
+            table.userVmDao.saveDetails((UserVmVO) i.getArgument(0));
+            return null;
+        }).when(userVmDao).saveDetails(any(UserVmVO.class));
+        boolean[] first = {true};
+        Mockito.doAnswer(i -> {
+            Object copy = i.callRealMethod();
+            if (first[0]) {
+                first[0] = false;
+                afterTheCopyIsRead.run();
+            }
+            return copy;
+        }).when(table.detailsDao).listDetails(vmId);
+        ReflectionTestUtils.setField(userVmManagerImpl, "vmInstanceDetailsDao", table.detailsDao);
+
+        try (MockedStatic<com.cloud.utils.db.TransactionLegacy> txn = mockStatic(com.cloud.utils.db.TransactionLegacy.class)) {
+            txn.when(com.cloud.utils.db.TransactionLegacy::currentTxn).thenReturn(mock(com.cloud.utils.db.TransactionLegacy.class));
+            userVmManagerImpl.updateVirtualMachine(updateVmCommand);
+        }
+    }
+
+    @Test
+    public void detailsSavedFromAnEarlierCopyKeepARestartBegunAfterTheCopy() throws Exception {
+        InstanceDetailTable table = new InstanceDetailTable();
+        table.put(vmId, "keyboard", "de", true);
+        table.put(vmId, VmDetailConstants.INSTANCE_LEASE_EXPIRY_DATE, "2027-01-15 08:00:00", false);
+        table.put(vmId, VmDetailConstants.INSTANCE_LEASE_EXECUTION, "PENDING", false);
+
+        // a forced reboot begins between updateVirtualMachine's read of the details and its save
+        updateDetailsOver(table, () -> table.detailsDao.addDetail(vmId, VmDetailConstants.RESTART_IN_PROGRESS, "job:7", false));
+
+        assertEquals("job:7", table.get(vmId, VmDetailConstants.RESTART_IN_PROGRESS));
+        assertEquals("2027-01-15 08:00:00", table.get(vmId, VmDetailConstants.INSTANCE_LEASE_EXPIRY_DATE));
+        assertEquals("PENDING", table.get(vmId, VmDetailConstants.INSTANCE_LEASE_EXECUTION));
+        assertEquals("us", table.get(vmId, "keyboard"));
+    }
+
+    @Test
+    public void detailsSavedFromAnEarlierCopyDoNotReviveARestartEndedAfterTheCopy() throws Exception {
+        InstanceDetailTable table = new InstanceDetailTable();
+        table.put(vmId, "keyboard", "de", true);
+        table.put(vmId, VmDetailConstants.RESTART_IN_PROGRESS, "job:7", false);
+        table.put(vmId, VmDetailConstants.INSTANCE_LEASE_EXPIRY_DATE, "2027-01-15 08:00:00", false);
+
+        // the restart ends, without the Instance running again, between the read and the save
+        updateDetailsOver(table, () -> {
+            table.detailsDao.removeDetail(vmId, VmDetailConstants.RESTART_IN_PROGRESS);
+            table.detailsDao.removeDetail(vmId, VmDetailConstants.INSTANCE_LEASE_EXPIRY_DATE);
+        });
+
+        assertNull(table.get(vmId, VmDetailConstants.RESTART_IN_PROGRESS));
+        assertNull(table.get(vmId, VmDetailConstants.INSTANCE_LEASE_EXPIRY_DATE));
+        assertEquals("us", table.get(vmId, "keyboard"));
+    }
+
+    @Test
+    public void cleanupOfDetailsLeavesTheLifecycleState() throws Exception {
+        for (Account.Type type : List.of(Account.Type.ADMIN, Account.Type.NORMAL)) {
+            Mockito.clearInvocations(vmInstanceDetailsDao);
+            when(callerAccount.getType()).thenReturn(type);
+            configureDoNothingForMethodsThatWeDoNotWantToTest();
+            ServiceOffering offering = getSvcoffering(512);
+            lenient().when(_serviceOfferingDao.findById(anyLong(), anyLong())).thenReturn((ServiceOfferingVO) offering);
+            when(updateVmCommand.isCleanupDetails()).thenReturn(true);
+            lenient().doNothing().when(userVmManagerImpl).updateDisplayVmFlag(false, vmId, userVmVoMock);
+            when(updateVmCommand.getUserdataId()).thenReturn(null);
+            // shown rows, as a whole-set save that reinserted them used to write them
+            when(vmInstanceDetailsDao.listDetails(vmId)).thenReturn(List.of(new VMInstanceDetailVO(vmId, "userdetail", "foo", true),
+                    new VMInstanceDetailVO(vmId, VmDetailConstants.RESTART_IN_PROGRESS, "job:7", true),
+                    new VMInstanceDetailVO(vmId, VmDetailConstants.INSTANCE_LEASE_EXPIRY_DATE, "2027-01-15 08:00:00", true)));
+
+            userVmManagerImpl.updateVirtualMachine(updateVmCommand);
+
+            verify(vmInstanceDetailsDao).removeDetail(vmId, "userdetail");
+            verify(vmInstanceDetailsDao, never()).removeDetail(vmId, VmDetailConstants.RESTART_IN_PROGRESS);
+            verify(vmInstanceDetailsDao, never()).removeDetail(vmId, VmDetailConstants.INSTANCE_LEASE_EXPIRY_DATE);
+        }
+    }
+
+    @Test
+    public void reinstallRestartHoldsTheSessionUntilTheInstanceRunsAgain() throws Exception {
+        // a root volume that was never created is kept, so the reinstall goes from the stop straight to the start
+        reinstallFixture(VirtualMachine.State.Running, Volume.State.Allocated);
+        when(vmLeaseManager.beginRestart(vmId)).thenReturn("job:42");
+
+        userVmManagerImpl.restoreVirtualMachine(accountMock, vmId, null, null, false, null);
+
+        InOrder inOrder = Mockito.inOrder(vmLeaseManager, virtualMachineManager);
+        inOrder.verify(vmLeaseManager).beginRestart(vmId);
+        inOrder.verify(virtualMachineManager).stop("reinstalled-vm");
+        inOrder.verify(virtualMachineManager).start("reinstalled-vm", null);
+        inOrder.verify(vmLeaseManager).endRestart(vmId, "job:42");
+    }
+
+    @Test
+    public void unmanagedInstanceEndsItsLeaseSessionBeforeItIsRemoved() {
+        VMInstanceDao vmInstanceDao = mock(VMInstanceDao.class);
+        ReflectionTestUtils.setField(userVmManagerImpl, "_vmInstanceDao", vmInstanceDao);
+        VMInstanceVO vm = mock(VMInstanceVO.class);
+        when(vm.getId()).thenReturn(vmId);
+        when(vmInstanceDao.findById(vmId)).thenReturn(vm);
+
+        userVmManagerImpl.unmanageVMFromDB(vmId);
+
+        InOrder inOrder = Mockito.inOrder(vmLeaseManager, vmInstanceDetailsDao, vmInstanceDao);
+        inOrder.verify(vmLeaseManager).endSession(vmId);
+        inOrder.verify(vmInstanceDetailsDao).removeDetails(vmId);
+        inOrder.verify(vmInstanceDao).update(eq(vmId), any(VMInstanceVO.class));
     }
 }

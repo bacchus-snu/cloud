@@ -126,6 +126,12 @@
                 <status class="status" :text="resource.state || resource.status" displayText/>
               </div>
             </div>
+            <div class="resource-detail-item" v-if="$route.meta.name === 'vm' && resource.leaseexpirydate">
+              <div class="resource-detail-item__label">{{ $t('label.lease.remaining') }}</div>
+              <div class="resource-detail-item__details">
+                <lease-countdown :resource="resource" />
+              </div>
+            </div>
             <div class="resource-detail-item" v-if="resource.apikeyaccess && $route.meta.name === 'accountuser'">
               <div class="resource-detail-item__label">{{ $t('label.apikeyaccess') }}</div>
               <div class="resource-detail-item__details">
@@ -696,9 +702,9 @@
                 <router-link v-if="!isStatic && ($route.meta.name === 'router' || $route.meta.name === 'systemvm')" :to="{ path: '/systemoffering/' + resource.serviceofferingid}">{{ resource.serviceofferingname || resource.serviceofferingid }} </router-link>
                 <router-link v-else-if="$router.resolve('/computeoffering/' + resource.serviceofferingid).matched[0].redirect !== '/exception/404'" :to="{ path: '/computeoffering/' + resource.serviceofferingid }">{{ resource.serviceofferingname || resource.serviceofferingid }} </router-link>
                 <span v-else>{{ resource.serviceofferingname || resource.serviceofferingid }}</span>
-                <span v-if="resource.leaseduration !== undefined">
+                <span v-if="resource.leaseduration !== undefined && !isHourLease(resource)">
                   <a-tooltip>
-                    <template #title>{{ $t('label.remainingdays')  + ": " + getRemainingLeaseText(record.leaseduration) }}</template>
+                    <template #title>{{ $t('label.remainingdays')  + ": " + remainingLeaseDaysText(resource.leaseduration) }}</template>
                     <field-time-outlined
                       :style="{
                         color: $store.getters.darkMode ? { color: 'rgba(255, 255, 255, 0.65)' } : { color: '#888' },
@@ -1031,6 +1037,8 @@ import eventBus from '@/config/eventBus'
 import ResourceIcon from '@/components/view/ResourceIcon'
 import ResourceLabel from '@/components/widgets/ResourceLabel'
 import ImageDeployInstanceButton from '@/components/view/ImageDeployInstanceButton'
+import LeaseCountdown from '@/components/view/LeaseCountdown'
+import { isHourLease, remainingLeaseDaysText } from '@/utils/lease'
 import { FileTextOutlined } from '@ant-design/icons-vue'
 
 export default {
@@ -1045,6 +1053,7 @@ export default {
     ResourceIcon,
     ResourceLabel,
     ImageDeployInstanceButton,
+    LeaseCountdown,
     FileTextOutlined
   },
   props: {
@@ -1175,6 +1184,8 @@ export default {
   },
   methods: {
     createPathBasedOnVmType: createPathBasedOnVmType,
+    isHourLease,
+    remainingLeaseDaysText,
     updateResourceAdditionalData () {
       if (!this.resource) return
       this.resourceType = this.$route.meta.resourceType

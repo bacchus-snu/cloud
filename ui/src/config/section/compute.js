@@ -18,6 +18,7 @@
 import { shallowRef, defineAsyncComponent } from 'vue'
 import store from '@/store'
 import { isZoneCreated } from '@/utils/zone'
+import { hasLease, RENEW_LEASE_API } from '@/utils/lease'
 import { getAPI, postAPI, getBaseUrl } from '@/api'
 import { getLatestKubernetesIsoParams } from '@/utils/acsrepo'
 import kubernetesIcon from '@/assets/icons/kubernetes.svg?inline'
@@ -164,6 +165,14 @@ export default {
               ? ['forced'] : []
           },
           show: (record) => { return ['Running'].includes(record.state) }
+        },
+        {
+          api: RENEW_LEASE_API,
+          icon: 'field-time-outlined',
+          label: 'label.lease.renew',
+          message: 'message.lease.renew',
+          dataView: true,
+          show: (record) => { return record.state === 'Running' && hasLease(record) }
         },
         {
           api: 'rebootVirtualMachine',

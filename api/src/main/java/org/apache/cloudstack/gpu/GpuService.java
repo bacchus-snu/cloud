@@ -215,7 +215,8 @@ public interface GpuService extends Manager {
 
     /**
      * Gives a starting VM one whole usable GPU group of the given size on the host, in place of any devices it held,
-     * under the row locks of the host's GPU devices.
+     * under the row locks of the host's GPU devices. A VM that holds exactly that many devices of the profile on the
+     * host keeps them, as the start that ends a restart within its running session does.
      *
      * @throws InsufficientServerCapacityException scoped to the host when it has no usable group; nothing is changed
      */

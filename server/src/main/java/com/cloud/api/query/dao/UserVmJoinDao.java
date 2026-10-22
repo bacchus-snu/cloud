@@ -27,6 +27,7 @@ import org.apache.cloudstack.api.ApiConstants.VMDetails;
 import org.apache.cloudstack.api.ResponseObject.ResponseView;
 import org.apache.cloudstack.api.response.UserVmResponse;
 
+import java.util.Date;
 import java.util.List;
 import java.util.Set;
 
@@ -48,9 +49,16 @@ public interface UserVmJoinDao extends GenericDao<UserVmJoinVO, Long> {
     List<UserVmJoinVO> listByAccountServiceOfferingTemplateAndNotInState(long accountId,
              List<VirtualMachine.State> states, List<Long> offeringIds, List<Long> templateIds);
 
+    /**
+     * @return running Instances whose pending lease has ended and whose expiry action is STOP or DESTROY
+     */
     List<UserVmJoinVO> listEligibleInstancesWithExpiredLease();
 
-    List<UserVmJoinVO> listLeaseInstancesExpiringInDays(int days);
+    /**
+     * @param expiringBefore null for every pending lease, or the time before which a pending lease that has not ended
+     *                       yet ends
+     */
+    List<UserVmJoinVO> listInstancesWithPendingLease(Date expiringBefore);
 
     List<UserVmJoinVO> listByZonesHypervisorNotTypesAndOwners(List<Long> zoneIds, Hypervisor.HypervisorType hypervisorType,
                                                               List<String> excludeTypes, List<Long> accountIds,

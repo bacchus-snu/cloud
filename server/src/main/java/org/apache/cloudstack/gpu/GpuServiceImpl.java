@@ -60,7 +60,9 @@ import com.cloud.vm.UserVmManager;
 import com.cloud.vm.UserVmVO;
 import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VirtualMachine;
+import com.cloud.vm.VmDetailConstants;
 import com.cloud.vm.dao.VMInstanceDao;
+import com.cloud.vm.dao.VMInstanceDetailsDao;
 import org.apache.cloudstack.api.BaseCmd;
 import org.apache.cloudstack.api.ResponseObject;
 import org.apache.cloudstack.api.command.admin.gpu.CreateGpuCardCmd;
@@ -145,6 +147,8 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
 
     @Inject
     private VMInstanceDao vmInstanceDao;
+    @Inject
+    private VMInstanceDetailsDao vmInstanceDetailsDao;
 
     @Inject
     private ResourceManager resourceManager;
@@ -743,10 +747,15 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
         }
     }
 
+    /**
+     * A device in error stays so: only the host's report of its devices clears that state.
+     */
     private void deallocateGpuDevices(List<GpuDeviceVO> devices) {
         if (CollectionUtils.isNotEmpty(devices)) {
             for (GpuDeviceVO device : devices) {
-                device.setState(GpuDevice.State.Free);
+                if (!GpuDevice.State.Error.equals(device.getState())) {
+                    device.setState(GpuDevice.State.Free);
+                }
                 device.setVmId(null);
                 gpuDeviceDao.persist(device);
                 checkAndUpdateParentGpuDeviceState(device.getParentGpuDeviceId());
@@ -882,7 +891,14 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
             @Override
             public GpuGroupPick doInTransaction(TransactionStatus status) throws InsufficientServerCapacityException {
                 gpuDeviceDao.lockByHostId(hostId);
-                deallocateGpuDevices(gpuDeviceDao.listByHostAndVm(hostId, vm.getId()));
+                List<GpuDeviceVO> held = gpuDeviceDao.listByHostAndVm(hostId, vm.getId());
+                if (held.size() == count && held.stream().allMatch(device -> device.getVgpuProfileId() == vgpuProfileId
+                        && GpuDevice.ManagedState.Managed.equals(device.getManagedState()) && GpuDevice.State.Allocated.equals(device.getState()))) {
+                    logger.debug("VM {} keeps its GPU group {} of host {}", vm, held, hostId);
+                    return toPick(hostId, held.stream().sorted(Comparator.comparing(device -> normalizeBusAddress(device.getBusAddress())))
+                            .collect(Collectors.toList()));
+                }
+                deallocateGpuDevices(held);
                 List<GpuDeviceVO> group = chooseGroup(hostId, vgpuProfileId, count).orElseThrow(() -> new InsufficientServerCapacityException(
                         String.format("Host %d has no whole free group of %d GPUs for VM %s", hostId, count, vm.getUuid()), Host.class, hostId));
                 for (GpuDeviceVO device : group) {
@@ -1199,11 +1215,13 @@ public class GpuServiceImpl extends ManagerBase implements GpuService, Pluggable
     /**
      * The host's report of which domain uses a device is authoritative, except for a VM starting on the device's host,
      * which holds its devices before its domain exists, and a VM whose state changed after the report was gathered.
-     * A stopped VM keeps its devices only when GPUs are not detached on stop.
+     * A stopped VM keeps its devices only when GPUs are not detached on stop, or while a restart within its running
+     * session is in progress.
      */
     private boolean vmMayHoldDevice(VMInstanceVO vm, GpuDeviceVO device, Date reportTime) {
         if (VirtualMachine.State.Stopped.equals(vm.getState())) {
-            return !GpuDetachOnStop.valueIn(vm.getDomainId());
+            return !GpuDetachOnStop.valueIn(vm.getDomainId())
+                    || vmInstanceDetailsDao.findDetail(vm.getId(), VmDetailConstants.RESTART_IN_PROGRESS) != null;
         }
         if (!Objects.equals(vm.getHostId(), device.getHostId())) {
             return false;

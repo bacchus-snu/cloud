@@ -35,8 +35,9 @@ public interface GpuDeviceDao extends GenericDao<GpuDeviceVO, Long> {
             VirtualMachine.State.Destroyed, VirtualMachine.State.Expunging, VirtualMachine.State.Error));
 
     /**
-     * Frees the device if the VM holds it and is removed or in one of {@link #STATES_WITHOUT_GPUS}, in one statement
-     * that decides by the VM's committed state, so that a release running late never frees a device of a later start.
+     * Frees the device if the VM holds it and is removed, or is in one of {@link #STATES_WITHOUT_GPUS} with no restart
+     * within its running session in progress, in one statement that decides by the VM's committed state, so that a
+     * release running late never frees a device of a later start. A device in error is given up but stays in error.
      *
      * @return true when the device was freed
      */

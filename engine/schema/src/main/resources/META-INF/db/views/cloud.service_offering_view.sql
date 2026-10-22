@@ -73,6 +73,7 @@ SELECT
     `vsphere_storage_policy`.`value` AS `vsphere_storage_policy`,
     `lease_duration_details`.`value` AS `lease_duration`,
     `lease_expiry_action_details`.`value` AS `lease_expiry_action`,
+    `lease_hours_details`.`value` AS `lease_hours`,
     `gpu_card`.`id` AS `gpu_card_id`,
     `gpu_card`.`uuid` AS `gpu_card_uuid`,
     `gpu_card`.`name` AS `gpu_card_name`,
@@ -133,5 +134,8 @@ FROM
         LEFT JOIN
     `cloud`.`service_offering_details` AS `lease_expiry_action_details` ON `lease_expiry_action_details`.`service_offering_id` = `service_offering`.`id`
         AND `lease_expiry_action_details`.`name` = 'leaseexpiryaction'
+        LEFT JOIN
+    `cloud`.`service_offering_details` AS `lease_hours_details` ON `lease_hours_details`.`service_offering_id` = `service_offering`.`id`
+        AND `lease_hours_details`.`name` = 'leasehours'
 GROUP BY
     `service_offering`.`id`;

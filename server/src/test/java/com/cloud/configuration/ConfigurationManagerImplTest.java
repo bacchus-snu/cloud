@@ -211,6 +211,8 @@ public class ConfigurationManagerImplTest {
     StoragePoolDetailsDao storagePoolDetailsDao;
     @Mock
     DomainHelper domainHelper;
+    @Mock
+    com.cloud.service.dao.ServiceOfferingDetailsDao serviceOfferingDetailsDao;
 
     DeleteZoneCmd deleteZoneCmd;
     CreateNetworkOfferingCmd createNetworkOfferingCmd;
@@ -1595,5 +1597,73 @@ public class ConfigurationManagerImplTest {
         Map<Network.Service, Set<Network.Provider>> mapWithEmptySet = new HashMap<>();
         mapWithEmptySet.put(Network.Service.Firewall, Collections.emptySet());
         Assert.assertNull(ConfigurationManagerImpl.getExternalNetworkProvider(null, mapWithEmptySet));
+    }
+
+    @Test
+    public void offeringLeaseHoursAreStoredAsHiddenDetails() {
+        configurationManagerImplSpy.applyServiceOfferingLease(5L, 36, null);
+        Mockito.verify(serviceOfferingDetailsDao).addDetail(5L, "leasehours", "36", false);
+        Mockito.verify(serviceOfferingDetailsDao).addDetail(5L, "leaseexpiryaction", "STOP", false);
+
+        configurationManagerImplSpy.applyServiceOfferingLease(6L, 36, org.apache.cloudstack.vm.lease.VMLeaseManager.ExpiryAction.DESTROY);
+        Mockito.verify(serviceOfferingDetailsDao).addDetail(6L, "leaseexpiryaction", "DESTROY", false);
+
+        configurationManagerImplSpy.applyServiceOfferingLease(7L, null, null);
+        Mockito.verify(serviceOfferingDetailsDao, Mockito.never()).addDetail(Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(), Mockito.anyBoolean());
+    }
+
+    @Test
+    public void offeringLeaseHoursChangeInPlace() {
+        Mockito.when(serviceOfferingDetailsDao.getDetail(5L, "leasehours")).thenReturn("36");
+        Mockito.when(serviceOfferingDetailsDao.getDetail(5L, "leaseexpiryaction")).thenReturn("DESTROY");
+
+        configurationManagerImplSpy.applyServiceOfferingLease(5L, 48, null);
+        Mockito.verify(serviceOfferingDetailsDao).addDetail(5L, "leasehours", "48", false);
+        Mockito.verify(serviceOfferingDetailsDao).addDetail(5L, "leaseexpiryaction", "DESTROY", false);
+
+        configurationManagerImplSpy.applyServiceOfferingLease(5L, null, org.apache.cloudstack.vm.lease.VMLeaseManager.ExpiryAction.STOP);
+        Mockito.verify(serviceOfferingDetailsDao).addDetail(5L, "leaseexpiryaction", "STOP", false);
+
+        configurationManagerImplSpy.applyServiceOfferingLease(5L, 0, null);
+        Mockito.verify(serviceOfferingDetailsDao).removeDetail(5L, "leasehours");
+        Mockito.verify(serviceOfferingDetailsDao).removeDetail(5L, "leaseexpiryaction");
+
+        Assert.assertThrows("an action without leasehours", InvalidParameterValueException.class,
+                () -> configurationManagerImplSpy.applyServiceOfferingLease(9L, null, org.apache.cloudstack.vm.lease.VMLeaseManager.ExpiryAction.STOP));
+    }
+
+    @Test
+    public void offeringLeaseHoursAreValidated() {
+        configurationManagerImplSpy.validateServiceOfferingLeaseHours(36, null);
+        configurationManagerImplSpy.validateServiceOfferingLeaseHours(null, 3);
+        configurationManagerImplSpy.validateServiceOfferingLeaseHours(0, null);
+        Assert.assertThrows(InvalidParameterValueException.class, () -> configurationManagerImplSpy.validateServiceOfferingLeaseHours(36, 3));
+        Assert.assertThrows(InvalidParameterValueException.class, () -> configurationManagerImplSpy.validateServiceOfferingLeaseHours(-1, null));
+        Assert.assertThrows(InvalidParameterValueException.class,
+                () -> configurationManagerImplSpy.validateServiceOfferingLeaseHours(org.apache.cloudstack.vm.lease.VMLeaseManager.MAX_LEASE_HOURS + 1, null));
+
+        org.apache.cloudstack.api.command.admin.offering.CreateServiceOfferingCmd create =
+                Mockito.mock(org.apache.cloudstack.api.command.admin.offering.CreateServiceOfferingCmd.class);
+        Mockito.when(create.getLeaseHours()).thenReturn(36);
+        Mockito.when(create.getLeaseDuration()).thenReturn(3);
+        Assert.assertThrows(InvalidParameterValueException.class, () -> configurationManagerImplSpy.createServiceOffering(create));
+    }
+
+    @Test
+    public void offeringLeaseIsSetOnlyThroughItsOwnParameters() {
+        for (String key : List.of("leasehours", "leaseexpiryaction", "leaseduration")) {
+            org.apache.cloudstack.api.command.admin.offering.CreateServiceOfferingCmd create =
+                    Mockito.mock(org.apache.cloudstack.api.command.admin.offering.CreateServiceOfferingCmd.class);
+            Mockito.when(create.getDetails()).thenReturn(new HashMap<>(Map.of(key, "36h")));
+            InvalidParameterValueException e = Assert.assertThrows(key, InvalidParameterValueException.class,
+                    () -> configurationManagerImplSpy.createServiceOffering(create));
+            Assert.assertTrue(e.getMessage(), e.getMessage().contains(key));
+        }
+        Mockito.verify(serviceOfferingDetailsDao, Mockito.never()).addDetail(Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(), Mockito.anyBoolean());
+
+        org.apache.cloudstack.api.command.admin.offering.UpdateServiceOfferingCmd update =
+                new org.apache.cloudstack.api.command.admin.offering.UpdateServiceOfferingCmd();
+        ReflectionTestUtils.setField(update, "leaseExpiryAction", "SUSPEND");
+        Assert.assertThrows(InvalidParameterValueException.class, update::getLeaseExpiryAction);
     }
 }

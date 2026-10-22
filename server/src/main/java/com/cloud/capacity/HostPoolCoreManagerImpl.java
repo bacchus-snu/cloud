@@ -209,9 +209,34 @@ public class HostPoolCoreManagerImpl extends ManagerBase implements HostPoolCore
     }
 
     @Override
+    public int countFreePoolCores(long hostId, long forVmId) {
+        return listFreePoolCores(hostId, forVmId).size();
+    }
+
+    /**
+     * @return the registered cores of the host the VM holds, in core order, when they are exactly the number it needs
+     */
+    private List<PoolCore> heldPoolCores(long hostId, long vmId, int needed) {
+        Set<Integer> held = hostCoreAssignmentDao.listByHostId(hostId).stream()
+                .filter(assignment -> assignment.getVmId() == vmId)
+                .map(HostCoreAssignmentVO::getCore)
+                .collect(Collectors.toSet());
+        if (held.size() != needed) {
+            return null;
+        }
+        List<PoolCore> cores = listPoolCores(hostId).stream().filter(core -> held.contains(core.getCore())).collect(Collectors.toList());
+        return cores.size() == needed ? cores : null;
+    }
+
+    @Override
     public List<PoolCore> allocatePoolCores(VirtualMachine vm, Host host, int vcpus) throws InsufficientServerCapacityException {
         int needed = HostPoolCoreManager.coresForVcpus(vcpus);
         return withHostLock(host.getId(), () -> {
+            List<PoolCore> held = heldPoolCores(host.getId(), vm.getId(), needed);
+            if (held != null) {
+                logger.debug("{} keeps its pool cores {} of {}", vm, held, host);
+                return held;
+            }
             List<PoolCore> cores = choosePoolCores(listFreePoolCores(host.getId(), vm.getId()), needed);
             if (cores == null) {
                 throw new InsufficientServerCapacityException(String.format("%s has fewer than %d free pool cores for %s", host, needed, vm),

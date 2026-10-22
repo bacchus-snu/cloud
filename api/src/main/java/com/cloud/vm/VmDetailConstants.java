@@ -16,6 +16,8 @@
 // under the License.
 package com.cloud.vm;
 
+import java.util.Set;
+
 public interface VmDetailConstants {
     String KEYBOARD = "keyboard";
     String CPU_CORE_PER_SOCKET = "cpu.corespersocket";
@@ -123,6 +125,17 @@ public interface VmDetailConstants {
     String INSTANCE_LEASE_EXPIRY_DATE = "leaseexpirydate";
     String INSTANCE_LEASE_EXPIRY_ACTION = "leaseexpiryaction";
     String INSTANCE_LEASE_EXECUTION = "leaseactionexecution";
+    // the hour of the narrowest expiry warning window already warned for the current lease
+    String INSTANCE_LEASE_EXPIRY_WARNING = "leaseexpirywarning";
+    // set while a stop and start continue the running session (a forced reboot, an HA restart, the restart of a reinstall)
+    String RESTART_IN_PROGRESS = "restartinprogress";
+    /**
+     * Lifecycle state that only its owning manager writes, one key at a time. A save or removal of an Instance's whole
+     * detail set leaves these as they are, so that a copy of the set read earlier can neither drop nor revive them, and
+     * no caller sets or removes them as details.
+     */
+    Set<String> LIFECYCLE_STATE_DETAILS = Set.of(INSTANCE_LEASE_EXPIRY_DATE, INSTANCE_LEASE_EXPIRY_ACTION, INSTANCE_LEASE_EXECUTION,
+            INSTANCE_LEASE_EXPIRY_WARNING, RESTART_IN_PROGRESS);
 
     // External orchestrator related
     String MAC_ADDRESS = "mac_address";

@@ -326,6 +326,9 @@ public class ApiConstants {
     public static final String INSTANCE_LEASE_ENABLED = "instanceleaseenabled";
     public static final String INSTANCE_LEASE_EXPIRY_ACTION = "leaseexpiryaction";
     public static final String INSTANCE_LEASE_EXPIRY_DATE= "leaseexpirydate";
+    public static final String INSTANCE_LEASE_HOURS = "leasehours";
+    public static final String INSTANCE_LEASE_REMAINING_SECONDS = "leaseremainingseconds";
+    public static final String INSTANCE_LEASE_EXPIRY = "expiry";
     public static final String IOPS_READ_RATE = "iopsreadrate";
     public static final String IOPS_READ_RATE_MAX = "iopsreadratemax";
     public static final String IOPS_READ_RATE_MAX_LENGTH = "iopsreadratemaxlength";

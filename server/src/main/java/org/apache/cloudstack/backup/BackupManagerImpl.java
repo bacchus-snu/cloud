@@ -180,6 +180,7 @@ import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.vm.VMInstanceDetailVO;
 import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VirtualMachine;
+import com.cloud.vm.VmDetailConstants;
 import com.cloud.vm.dao.UserVmDao;
 import com.cloud.vm.dao.VMInstanceDao;
 import com.cloud.vm.dao.VMInstanceDetailsDao;
@@ -633,7 +634,10 @@ public class BackupManagerImpl extends ManagerBase implements BackupManager {
         List<VMInstanceDetailVO> vmDetails = vmInstanceDetailsDao.listDetails(vm.getId());
         HashMap<String, String> settings = new HashMap<>();
         for (VMInstanceDetailVO detail : vmDetails) {
-            settings.put(detail.getName(), detail.getValue());
+            // lifecycle state belongs to the running Instance, not to its settings
+            if (!VmDetailConstants.LIFECYCLE_STATE_DETAILS.contains(detail.getName())) {
+                settings.put(detail.getName(), detail.getValue());
+            }
         }
         if (!settings.isEmpty()) {
             Gson gson = new GsonBuilder().disableHtmlEscaping().create();

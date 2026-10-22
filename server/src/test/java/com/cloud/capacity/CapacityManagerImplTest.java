@@ -24,6 +24,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
@@ -74,6 +75,7 @@ import com.cloud.utils.db.TransactionCallback;
 import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.utils.fsm.StateMachine2;
 import com.cloud.vm.UserVmVO;
+import com.cloud.vm.VMInstanceDetailVO;
 import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.VmDetailConstants;
@@ -406,10 +408,6 @@ public class CapacityManagerImplTest {
         CapacityVO cpuCore = capacity(3L, Capacity.CAPACITY_TYPE_CPU_CORE, vms * 4L, 0L, 32L);
         mockCapacityRows(cpu, memory, cpuCore);
         mockClusterRatios("1.0", "1.0");
-        if (newState == VirtualMachine.State.Stopped) {
-            when(userVmDao.findById(VM_ID)).thenReturn(mock(UserVmVO.class));
-        }
-
         try (MockedStatic<Transaction> ignored = mockTransaction()) {
             capacityManager.postStateTransitionEvent(new StateMachine2.Transition<>(oldState, event, newState, null),
                     vm, true, new Pair<>(hostIdAfter == null ? HOST_ID : null, null));
@@ -471,7 +469,6 @@ public class CapacityManagerImplTest {
         mockCapacityRows(HOST_ID, sourceRows[0], sourceRows[1], sourceRows[2]);
         mockCapacityRows(destinationHostId, destinationRows[0], destinationRows[1], destinationRows[2]);
         mockClusterRatios("1.0", "1.0");
-        when(userVmDao.findById(VM_ID)).thenReturn(mock(UserVmVO.class));
 
         try (MockedStatic<Transaction> ignored = mockTransaction()) {
             capacityManager.postStateTransitionEvent(new StateMachine2.Transition<>(VirtualMachine.State.Migrating,
@@ -493,7 +490,6 @@ public class CapacityManagerImplTest {
                 capacity(2L, Capacity.CAPACITY_TYPE_MEMORY, 16 * GIB, 0L, 128 * GIB), capacity(3L, Capacity.CAPACITY_TYPE_CPU_CORE, 8L, 0L, 32L)};
         mockCapacityRows(HOST_ID, rows[0], rows[1], rows[2]);
         mockClusterRatios("1.0", "1.0");
-        when(userVmDao.findById(VM_ID)).thenReturn(mock(UserVmVO.class));
 
         try (MockedStatic<Transaction> ignored = mockTransaction()) {
             capacityManager.postStateTransitionEvent(new StateMachine2.Transition<>(VirtualMachine.State.Migrating,
@@ -515,7 +511,6 @@ public class CapacityManagerImplTest {
                 capacity(2L, Capacity.CAPACITY_TYPE_MEMORY, 16 * GIB, 0L, 128 * GIB), capacity(3L, Capacity.CAPACITY_TYPE_CPU_CORE, 8L, 0L, 32L)};
         mockCapacityRows(HOST_ID, rows[0], rows[1], rows[2]);
         mockClusterRatios("1.0", "1.0");
-        when(userVmDao.findById(VM_ID)).thenReturn(mock(UserVmVO.class));
 
         try (MockedStatic<Transaction> ignored = mockTransaction()) {
             capacityManager.postStateTransitionEvent(new StateMachine2.Transition<>(VirtualMachine.State.Migrating,
@@ -935,5 +930,115 @@ public class CapacityManagerImplTest {
         } finally {
             setDetachOnStop(original);
         }
+    }
+
+    private void markRestart(long vmId) {
+        VMInstanceDetailVO marker = new VMInstanceDetailVO(vmId, VmDetailConstants.RESTART_IN_PROGRESS, "job:7", false);
+        lenient().when(vmInstanceDetailsDao.findDetail(vmId, VmDetailConstants.RESTART_IN_PROGRESS)).thenReturn(marker);
+        lenient().when(vmInstanceDetailsDao.findDetails(VmDetailConstants.RESTART_IN_PROGRESS)).thenReturn(List.of(marker));
+    }
+
+    @Test
+    public void forcedRebootStopKeepsTheCapacityOfTheSessionReserved() {
+        markRestart(VM_ID);
+
+        CapacityVO[] rows = stopCpuOnlyVm(0, VirtualMachine.State.Stopping, VirtualMachine.Event.OperationSucceeded);
+
+        assertRows(rows, 0, 1);
+        verify(hostPoolCoreManager).releasePoolCores(VM_ID);
+    }
+
+    @Test
+    public void recalculationKeepsTheCapacityOfARestartingVmReserved() {
+        ReflectionTestUtils.setField(capacityManager, "_vmCapacityReleaseInterval", 0);
+        ReflectionTestUtils.setField(capacityManager, "clusterValuesCache",
+                new LazyCache<Long, Pair<String, String>>(16, 60, clusterId -> new Pair<>("1.0", "1.0")));
+        HostVO host = mockHost(32, 2000L, 128 * GIB);
+        ServiceOfferingVO cpuOffering = mockOffering(CPU_OFFERING_ID, 4, 2000, 8 * 1024, null);
+        doReturn(cpuOffering).when(capacityManager).getServiceOffering(CPU_OFFERING_ID);
+        VMInstanceVO restarting = mockVm(3L, CPU_OFFERING_ID, null, HOST_ID);
+        VMInstanceVO stopped = mockVm(4L, CPU_OFFERING_ID, null, HOST_ID);
+        markRestart(3L);
+        when(vmInstanceDao.listIdServiceOfferingForUpVmsByHostId(HOST_ID)).thenReturn(new ArrayList<>());
+        when(vmInstanceDao.listIdServiceOfferingForVmsMigratingFromHost(HOST_ID)).thenReturn(new ArrayList<>());
+        when(vmInstanceDao.listByLastHostId(HOST_ID)).thenReturn(List.of(restarting, stopped));
+        CapacityVO cpu = capacity(1L, Capacity.CAPACITY_TYPE_CPU, 0L, 0L, 64000L);
+        CapacityVO memory = capacity(2L, Capacity.CAPACITY_TYPE_MEMORY, 0L, 0L, 128 * GIB);
+        CapacityVO cpuCore = capacity(3L, Capacity.CAPACITY_TYPE_CPU_CORE, 0L, 0L, 32L);
+        when(capacityDao.listByHostIdTypes(eq(HOST_ID), anyList())).thenReturn(List.of(cpu, memory, cpuCore));
+
+        capacityManager.updateCapacityForHost(host);
+
+        assertEquals("only the Instance in a restart keeps its capacity", 8000L, cpu.getReservedCapacity());
+        assertEquals(8 * GIB, memory.getReservedCapacity());
+        assertEquals(4L, cpuCore.getReservedCapacity());
+    }
+
+    @Test
+    public void freedCapacityFlagIsWrittenAloneNotByRewritingTheInstanceDetails() {
+        stopCpuOnlyVm(0, VirtualMachine.State.Stopping, VirtualMachine.Event.OperationSucceeded);
+        verify(vmInstanceDetailsDao).addDetail(VM_ID, VmDetailConstants.MESSAGE_RESERVED_CAPACITY_FREED_FLAG, "false", true);
+
+        ReflectionTestUtils.setField(capacityManager, "clusterValuesCache",
+                new LazyCache<Long, Pair<String, String>>(16, 60, clusterId -> new Pair<>("1.0", "1.0")));
+        HostVO host = mockHost(32, 2000L, 128 * GIB);
+        VMInstanceVO stopped = mockVm(4L, CPU_OFFERING_ID, null, HOST_ID);
+        when(vmInstanceDao.listIdServiceOfferingForUpVmsByHostId(HOST_ID)).thenReturn(new ArrayList<>());
+        when(vmInstanceDao.listIdServiceOfferingForVmsMigratingFromHost(HOST_ID)).thenReturn(new ArrayList<>());
+        when(vmInstanceDao.listByLastHostId(HOST_ID)).thenReturn(List.of(stopped));
+        when(capacityDao.listByHostIdTypes(eq(HOST_ID), anyList())).thenReturn(List.of(capacity(4L, Capacity.CAPACITY_TYPE_CPU, 0L, 0L, 64000L),
+                capacity(5L, Capacity.CAPACITY_TYPE_MEMORY, 0L, 0L, 128 * GIB), capacity(6L, Capacity.CAPACITY_TYPE_CPU_CORE, 0L, 0L, 32L)));
+
+        capacityManager.updateCapacityForHost(host);
+
+        verify(vmInstanceDetailsDao).addDetail(4L, VmDetailConstants.MESSAGE_RESERVED_CAPACITY_FREED_FLAG, "true", true);
+        verify(userVmDao, never()).loadDetails(any());
+        verify(userVmDao, never()).saveDetails(any(UserVmVO.class));
+        verify(userVmDao, never()).saveDetails(any(UserVmVO.class), anyList());
+    }
+
+    @Test
+    public void resourcesOfAStoppedVmAreGivenUpWhenItsRestartEnds() throws Exception {
+        String original = GpuService.GpuDetachOnStop.defaultValue();
+        try {
+            setDetachOnStop("true");
+            HostVO lastHost = mockKvmHost(8, 2000L, 16 * GIB);
+            when(hostDao.findById(HOST_ID)).thenReturn(lastHost);
+            doNothing().when(capacityManager).updateCapacityForHost(lastHost);
+            VMInstanceVO vm = mockVm(VM_ID, CPU_OFFERING_ID, null, HOST_ID);
+
+            capacityManager.releaseResourcesOfStoppedVm(vm);
+
+            verify(hostPoolCoreManager).releasePoolCores(VM_ID);
+            verify(gpuService).releaseGpuDevicesOfStoppedVm(VM_ID);
+            verify(capacityManager).updateCapacityForHost(lastHost);
+
+            setDetachOnStop("false");
+            Mockito.clearInvocations(gpuService);
+            capacityManager.releaseResourcesOfStoppedVm(vm);
+            verify(gpuService, never()).releaseGpuDevicesOfStoppedVm(anyLong());
+        } finally {
+            setDetachOnStop(original);
+        }
+    }
+
+    @Test
+    public void restartingVmIsAdmittedWithTheCoresItHolds() {
+        HostVO host = mockKvmHost(8, 2000L, 64 * GIB);
+        mockCapacityRows(capacity(1L, Capacity.CAPACITY_TYPE_CPU, 0L, 0L, 16000L),
+                capacity(2L, Capacity.CAPACITY_TYPE_MEMORY, 0L, 0L, 64 * GIB),
+                capacity(3L, Capacity.CAPACITY_TYPE_CPU_CORE, 0L, 0L, 8L));
+        mockClusterRatios("1.0", "1.0");
+        List<HostCoreAssignmentVO> rows = useRealPoolCoreManager(4, 2);
+        rows.add(new HostCoreAssignmentVO(HOST_ID, 2, VM_ID));
+        rows.add(new HostCoreAssignmentVO(HOST_ID, 3, VM_ID));
+        ServiceOfferingVO fourVcpus = mockOffering(CPU_OFFERING_ID, 4, 2000, 1024, null);
+
+        assertFalse("another VM finds the host full", capacityManager.checkIfHostHasPoolCores(host, 4));
+        assertFalse(capacityManager.checkIfHostHasCpuCapabilityAndCapacity(host, fourVcpus, false).second());
+        assertTrue("the VM holding two of the cores fits with them", capacityManager.checkIfHostHasPoolCoresFor(host, 4, VM_ID));
+        assertTrue(capacityManager.checkIfHostHasCpuCapabilityAndCapacity(host, fourVcpus, false, VM_ID).second());
+        assertFalse("but not with more than it holds", capacityManager.checkIfHostHasPoolCoresFor(host, 6, VM_ID));
+        assertTrue("a host without pool cores admits by capacity alone", capacityManager.checkIfHostHasPoolCoresFor(mockHost(8, 2000L, 64 * GIB), 4, VM_ID));
     }
 }

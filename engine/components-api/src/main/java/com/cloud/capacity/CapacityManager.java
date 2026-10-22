@@ -228,6 +228,18 @@ public interface CapacityManager {
     boolean checkIfHostHasPoolCores(Host host, int vcpus, int vms);
 
     /**
+     * @return as {@link #checkIfHostHasPoolCores(Host, int)}, with the pool cores the VM holds on the host counted as free
+     */
+    boolean checkIfHostHasPoolCoresFor(Host host, int vcpus, long vmId);
+
+    /**
+     * Gives up the host resources a VM in a state in which it cannot run still holds: its pool cores, its GPU devices
+     * when they are detached on stop, and the capacity reserved for it on its last host. Each release decides by the
+     * VM's state at that moment, so a VM that has started again keeps what its start took.
+     */
+    void releaseResourcesOfStoppedVm(VirtualMachine vm);
+
+    /**
      * Free capacity by the same formula the admission checks use, with the cluster's overprovisioning factors and
      * the reserved capacity counted as taken.
      * @return null when the host has no CPU or memory capacity entry; the free capacity is then unknown and the host
@@ -289,4 +301,10 @@ public interface CapacityManager {
     long getUsedIops(StoragePoolVO pool);
 
     Pair<Boolean, Boolean> checkIfHostHasCpuCapabilityAndCapacity(Host host, ServiceOffering offering, boolean considerReservedCapacity);
+
+    /**
+     * As {@link #checkIfHostHasCpuCapabilityAndCapacity(Host, ServiceOffering, boolean)} for the given VM, whose own pool
+     * cores on the host count as free.
+     */
+    Pair<Boolean, Boolean> checkIfHostHasCpuCapabilityAndCapacity(Host host, ServiceOffering offering, boolean considerReservedCapacity, long vmId);
 }

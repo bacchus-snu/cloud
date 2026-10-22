@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import javax.inject.Inject;
@@ -90,13 +91,11 @@ import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.utils.fsm.StateListener;
 import com.cloud.utils.fsm.StateMachine2;
 import com.cloud.vm.VMInstanceDetailVO;
-import com.cloud.vm.UserVmVO;
 import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.VirtualMachine.Event;
 import com.cloud.vm.VirtualMachine.State;
 import com.cloud.vm.VmDetailConstants;
-import com.cloud.vm.dao.UserVmDao;
 import com.cloud.vm.dao.VMInstanceDetailsDao;
 import com.cloud.vm.dao.VMInstanceDao;
 import com.cloud.vm.snapshot.dao.VMSnapshotDao;
@@ -127,8 +126,6 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
     HypervisorCapabilitiesDao _hypervisorCapabilitiesDao;
     @Inject
     protected VMSnapshotDao _vmSnapshotDao;
-    @Inject
-    protected UserVmDao _userVMDao;
     @Inject
     protected VMInstanceDetailsDao _vmInstanceDetailsDao;
     @Inject
@@ -221,6 +218,44 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
             return false;
         }
         return true;
+    }
+
+    @Override
+    public boolean checkIfHostHasPoolCoresFor(Host host, int vcpus, long vmId) {
+        if (!HostPoolCoreManager.usesPoolCores(host)) {
+            return true;
+        }
+        int needed = HostPoolCoreManager.coresForVcpus(vcpus);
+        int free = hostPoolCoreManager.countFreePoolCores(host.getId(), vmId);
+        if (needed > free) {
+            logger.debug("{} has {} pool cores free for VM {}, fewer than the {} that {} vCPUs need", host, free, vmId, needed, vcpus);
+            return false;
+        }
+        return true;
+    }
+
+    @Override
+    public void releaseResourcesOfStoppedVm(VirtualMachine vm) {
+        try {
+            hostPoolCoreManager.releasePoolCores(vm.getId());
+        } catch (Exception e) {
+            logger.warn("Failed to release the pool cores of {}", vm, e);
+        }
+        if (GpuService.GpuDetachOnStop.valueIn(vm.getDomainId())) {
+            try {
+                gpuService.releaseGpuDevicesOfStoppedVm(vm.getId());
+            } catch (Exception e) {
+                logger.warn("Failed to release the GPU devices of {}", vm, e);
+            }
+        }
+        Host lastHost = vm.getLastHostId() == null ? null : _hostDao.findById(vm.getLastHostId());
+        if (lastHost != null) {
+            updateCapacityForHost(lastHost);
+        }
+    }
+
+    private boolean restartInProgress(long vmId) {
+        return _vmInstanceDetailsDao.findDetail(vmId, VmDetailConstants.RESTART_IN_PROGRESS) != null;
     }
 
     @DB
@@ -808,13 +843,16 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
 
         List<VMInstanceVO> vmsByLastHostId = _vmDao.listByLastHostId(host.getId());
         logger.debug("Found {} VM, not running on {}", vmsByLastHostId.size(), host);
+        // a VM between the stop and the start of a restart within its running session keeps its capacity reserved
+        Set<Long> restarting = _vmInstanceDetailsDao.findDetails(VmDetailConstants.RESTART_IN_PROGRESS).stream()
+                .map(VMInstanceDetailVO::getResourceId).collect(Collectors.toSet());
 
         for (VMInstanceVO vm : vmsByLastHostId) {
             float cpuOvercommitRatio = 1.0f;
             float ramOvercommitRatio = 1.0f;
             long lastModificationTime = Optional.ofNullable(vm.getUpdateTime()).orElse(vm.getCreated()).getTime();
             long secondsSinceLastUpdate = (DateUtil.currentGMTTime().getTime() - lastModificationTime) / 1000;
-            if (secondsSinceLastUpdate < _vmCapacityReleaseInterval) {
+            if (secondsSinceLastUpdate < _vmCapacityReleaseInterval || restarting.contains(vm.getId())) {
                 ServiceOffering so = getServiceOffering(vm.getServiceOfferingId());
                 if (so == null) {
                     so = _offeringsDao.findByIdIncludingRemoved(vm.getServiceOfferingId());
@@ -859,10 +897,7 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
                     _messageBus.publish(_name, "VM_ReservedCapacity_Free", PublishScope.LOCAL, vm);
 
                     if (vm.getType() == VirtualMachine.Type.User) {
-                        UserVmVO userVM = _userVMDao.findById(vm.getId());
-                        _userVMDao.loadDetails(userVM);
-                        userVM.setDetail(VmDetailConstants.MESSAGE_RESERVED_CAPACITY_FREED_FLAG, "true");
-                        _userVMDao.saveDetails(userVM);
+                        _vmInstanceDetailsDao.addDetail(vm.getId(), VmDetailConstants.MESSAGE_RESERVED_CAPACITY_FREED_FLAG, "true", true);
                     }
                 }
             }
@@ -1045,7 +1080,8 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
       logger.debug(String.format("%s state transited from [%s] to [%s] with event [%s]. VM's original host: %s, new host: %s, host before state transition: %s", vm, oldState,
                 newState, event, lastHost, newHost, oldHost));
 
-      boolean reserveOnStop = _vmCapacityReleaseInterval > 0;
+      // the stop within a restart of the running session keeps the VM's capacity for its start
+      boolean reserveOnStop = _vmCapacityReleaseInterval > 0 || (newState == State.Stopped && restartInProgress(vm.getId()));
       boolean reportedStopped = event == Event.AgentReportStopped || event == Event.AgentReportShutdowned || event == Event.FollowAgentPowerOffReport;
 
       if (!HostPoolCoreManager.holdsCores(newState)) {
@@ -1123,11 +1159,8 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
       }
 
       if (newState == State.Stopped && event != Event.RestoringFailed && event != Event.RestoringSuccess && vm.getType() == VirtualMachine.Type.User) {
-          UserVmVO userVM = _userVMDao.findById(vm.getId());
-          _userVMDao.loadDetails(userVM);
-          // free the message sent flag if it exists
-          userVM.setDetail(VmDetailConstants.MESSAGE_RESERVED_CAPACITY_FREED_FLAG, "false");
-          _userVMDao.saveDetails(userVM);
+          // free the message sent flag; written alone, as a save of the whole detail set read here would undo concurrent changes of the others
+          _vmInstanceDetailsDao.addDetail(vm.getId(), VmDetailConstants.MESSAGE_RESERVED_CAPACITY_FREED_FLAG, "false", true);
       }
 
       return true;
@@ -1174,7 +1207,16 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
     }
 
     @Override
+    public Pair<Boolean, Boolean> checkIfHostHasCpuCapabilityAndCapacity(Host host, ServiceOffering offering, boolean considerReservedCapacity, long vmId) {
+        return checkCpuCapabilityAndCapacity(host, offering, considerReservedCapacity, vmId);
+    }
+
+    @Override
     public Pair<Boolean, Boolean> checkIfHostHasCpuCapabilityAndCapacity(Host host, ServiceOffering offering, boolean considerReservedCapacity) {
+        return checkCpuCapabilityAndCapacity(host, offering, considerReservedCapacity, null);
+    }
+
+    private Pair<Boolean, Boolean> checkCpuCapabilityAndCapacity(Host host, ServiceOffering offering, boolean considerReservedCapacity, Long vmId) {
         if (HypervisorType.External.equals(host.getHypervisorType())) {
             logger.debug("Skipping capability and capacity check for the External {}", host);
             return new Pair<>(true, true);
@@ -1192,7 +1234,8 @@ public class CapacityManagerImpl extends ManagerBase implements CapacityManager,
 
         boolean hostHasCpuCapability = checkIfHostHasCpuCapability(host, offering.getCpu(), offering.getSpeed());
         boolean hostHasCapacity = checkIfHostHasCapacity(host, cpu_requested, ram_requested, false, cpuOvercommitRatio, memoryOvercommitRatio,
-                considerReservedCapacity) && checkIfHostHasPoolCores(host, offering.getCpu());
+                considerReservedCapacity) && (vmId == null ? checkIfHostHasPoolCores(host, offering.getCpu())
+                : checkIfHostHasPoolCoresFor(host, offering.getCpu(), vmId));
 
         return new Pair<>(hostHasCpuCapability, hostHasCapacity);
     }

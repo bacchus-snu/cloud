@@ -263,6 +263,11 @@ public class CreateServiceOfferingCmd extends BaseCmd {
             description = "Lease expiry action, valid values are STOP and DESTROY")
     private String leaseExpiryAction;
 
+    @Parameter(name = ApiConstants.INSTANCE_LEASE_HOURS, type = CommandType.INTEGER, since = "4.23.0.100",
+            description = "Hours of lease an Instance of the offering gets at each start and renewal; its expiry action is " +
+                    "leaseexpiryaction, STOP when not given. Not together with leaseduration.")
+    private Integer leaseHours;
+
     @Parameter(name = ApiConstants.VGPU_PROFILE_ID,
             type = CommandType.UUID,
             entityType = VgpuProfileResponse.class,
@@ -542,6 +547,10 @@ public class CreateServiceOfferingCmd extends BaseCmd {
 
     public Integer getLeaseDuration() {
         return leaseDuration;
+    }
+
+    public Integer getLeaseHours() {
+        return leaseHours;
     }
 
     public boolean isPurgeResources() {

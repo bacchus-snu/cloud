@@ -37,15 +37,19 @@ import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
 import org.apache.cloudstack.ha.dao.HAConfigDao;
 import org.apache.cloudstack.managed.context.ManagedContext;
+import org.apache.cloudstack.vm.lease.VMLeaseManager;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnitRunner;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import com.cloud.agent.AgentManager;
 import com.cloud.alert.AlertManager;
@@ -73,6 +77,7 @@ import com.cloud.storage.dao.GuestOSDao;
 import com.cloud.storage.dao.VolumeDao;
 import com.cloud.storage.secondary.SecondaryStorageVmManager;
 import com.cloud.user.AccountManager;
+import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.vm.UserVmManager;
 import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VirtualMachine;
@@ -136,6 +141,9 @@ public class HighAvailabilityManagerImplTest {
     VpcVirtualNetworkApplianceService routerService;
     @Mock
     UserVmManager userVmManager;
+
+    @Mock
+    VMLeaseManager vmLeaseManager;
 
     @Mock
     private HaWorkVO mockWork;
@@ -477,5 +485,92 @@ public class HighAvailabilityManagerImplTest {
         boolean result = highAvailabilityManagerSpy.checkAndCancelWorkIfNeeded(mockWork);
         assertFalse(result);
         Mockito.verify(mockWork, Mockito.never()).setStep(Mockito.any());
+    }
+
+    private VMInstanceVO haVm(boolean haEnabled) {
+        VMInstanceVO vm = Mockito.mock(VMInstanceVO.class);
+        Mockito.lenient().when(vm.getId()).thenReturn(1L);
+        Mockito.lenient().when(vm.getUuid()).thenReturn("ha-vm");
+        Mockito.lenient().when(vm.getDataCenterId()).thenReturn(1L);
+        Mockito.lenient().when(vm.getHostId()).thenReturn(2L);
+        Mockito.lenient().when(vm.getHypervisorType()).thenReturn(HypervisorType.KVM);
+        Mockito.lenient().when(vm.getType()).thenReturn(VirtualMachine.Type.User);
+        Mockito.lenient().when(vm.isHaEnabled()).thenReturn(haEnabled);
+        Mockito.lenient().when(vm.getState()).thenReturn(VirtualMachine.State.Running);
+        Mockito.lenient().when(_instanceDao.findByUuid("ha-vm")).thenReturn(vm);
+        ConfigKey<Boolean> haEnabledKey = Mockito.mock(ConfigKey.class);
+        highAvailabilityManager.VmHaEnabled = haEnabledKey;
+        Mockito.lenient().when(haEnabledKey.valueIn(1L)).thenReturn(true);
+        return vm;
+    }
+
+    @Test
+    public void haRestartKeepsTheSession() throws Exception {
+        VMInstanceVO vm = haVm(true);
+        Mockito.when(vmLeaseManager.beginRestart(1L)).thenReturn("ms:1:2");
+        Mockito.when(_haDao.persist(Mockito.any(HaWorkVO.class))).thenAnswer(i -> {
+            HaWorkVO work = i.getArgument(0);
+            ReflectionTestUtils.setField(work, "id", 9L);
+            return work;
+        });
+
+        highAvailabilityManager.scheduleRestart(vm, false, HighAvailabilityManager.ReasonType.HostDown);
+
+        InOrder inOrder = Mockito.inOrder(vmLeaseManager, _itMgr, _haDao);
+        inOrder.verify(vmLeaseManager).beginRestart(1L);
+        inOrder.verify(_itMgr).advanceStop("ha-vm", true);
+        inOrder.verify(_haDao).persist(Mockito.any(HaWorkVO.class));
+        inOrder.verify(vmLeaseManager).handRestartToHaWork(1L, "ms:1:2", 9L);
+        Mockito.verify(vmLeaseManager, Mockito.never()).endRestart(Mockito.anyLong(), Mockito.anyString());
+    }
+
+    @Test
+    public void restartIsEndedWhenItsSchedulingFailsBeforeTheHandOver() throws Exception {
+        VMInstanceVO vm = haVm(true);
+        Mockito.when(vmLeaseManager.beginRestart(1L)).thenReturn("ms:1:2");
+        Mockito.doThrow(new CloudRuntimeException("the stop failed")).when(_itMgr).advanceStop("ha-vm", true);
+
+        Assert.assertThrows(CloudRuntimeException.class, () -> highAvailabilityManager.scheduleRestart(vm, false,
+                HighAvailabilityManager.ReasonType.HostDown));
+        Mockito.verify(vmLeaseManager).endRestart(1L, "ms:1:2");
+
+        Mockito.clearInvocations(vmLeaseManager);
+        Mockito.doNothing().when(_itMgr).advanceStop("ha-vm", true);
+        Mockito.when(_haDao.persist(Mockito.any(HaWorkVO.class))).thenThrow(new CloudRuntimeException("the work item was not written"));
+
+        Assert.assertThrows(CloudRuntimeException.class, () -> highAvailabilityManager.scheduleRestart(vm, false,
+                HighAvailabilityManager.ReasonType.HostDown));
+        Mockito.verify(vmLeaseManager).endRestart(1L, "ms:1:2");
+        Mockito.verify(vmLeaseManager, Mockito.never()).handRestartToHaWork(Mockito.anyLong(), Mockito.anyString(), Mockito.anyLong());
+    }
+
+    @Test
+    public void stopOfAnInstanceHaDoesNotRestartEndsItsSession() throws Exception {
+        VMInstanceVO vm = haVm(false);
+
+        highAvailabilityManager.scheduleRestart(vm, false, HighAvailabilityManager.ReasonType.HostMaintenance);
+
+        Mockito.verify(_itMgr).advanceStop("ha-vm", true);
+        Mockito.verify(vmLeaseManager, Mockito.never()).beginRestart(Mockito.anyLong());
+    }
+
+    @Test
+    public void finishedHaWorkEndsItsRestart() throws Exception {
+        HaWorkVO done = new HaWorkVO(1L, VirtualMachine.Type.User, WorkType.HA, Step.Scheduled, 2L, VirtualMachine.State.Stopped, 0, 12345678L, null);
+        ReflectionTestUtils.setField(done, "id", 9L);
+        Mockito.doReturn(null).when(highAvailabilityManagerSpy).restart(done);
+
+        processWorkMethod.invoke(highAvailabilityManagerSpy, done);
+
+        assertTrue(done.getStep() == Step.Done);
+        Mockito.verify(vmLeaseManager).endRestart(1L, "ha:9");
+
+        HaWorkVO retried = new HaWorkVO(1L, VirtualMachine.Type.User, WorkType.HA, Step.Scheduled, 2L, VirtualMachine.State.Stopped, 0, 12345678L, null);
+        ReflectionTestUtils.setField(retried, "id", 10L);
+        Mockito.doReturn(12345679L).when(highAvailabilityManagerSpy).restart(retried);
+
+        processWorkMethod.invoke(highAvailabilityManagerSpy, retried);
+
+        Mockito.verify(vmLeaseManager, Mockito.never()).endRestart(1L, "ha:10");
     }
 }

@@ -967,6 +967,7 @@ import TooltipLabel from '@/components/widgets/TooltipLabel'
 import InstanceNicsNetworkSelectListView from '@/components/view/InstanceNicsNetworkSelectListView'
 import DetailsInput from '@/components/widgets/DetailsInput'
 import DeployInstanceBackupSelection from '@views/compute/wizard/DeployInstanceBackupSelection'
+import { SET_LEASE_API } from '@/utils/lease'
 
 export default {
   name: 'Wizard',
@@ -1160,7 +1161,7 @@ export default {
       formModel: {},
       nicToNetworkSelection: [],
       selectedArchitecture: null,
-      isLeaseFeatureEnabled: this.$store.getters.features.instanceleaseenabled,
+      isLeaseFeatureEnabled: this.$store.getters.features.instanceleaseenabled && SET_LEASE_API in this.$store.getters.apis,
       showLeaseOptions: false,
       leaseduration: -1,
       leaseexpiryaction: undefined,

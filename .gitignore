@@ -104,3 +104,6 @@ waf-*
 #.*
 
 !.gitignore
+
+# mdBook output of the user manual
+snucse/docs/*/book/

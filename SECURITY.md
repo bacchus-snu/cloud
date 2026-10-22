@@ -21,14 +21,11 @@ under the License.
 
 ## Reporting a Vulnerability
 
-`apache/cloudstack` follows the [Apache Software Foundation security process](https://www.apache.org/security/). Please report suspected
-vulnerabilities privately to `security@apache.org`; do not open public GitHub issues or pull requests for security reports.
-
-For more details, see https://cloudstack.apache.org/security.html.
+Please report suspected vulnerabilities in SNUCSE Cloud privately to
+<contact@bacchus.snucse.org>; do not open public GitHub issues or pull requests
+for security reports.
 
 ## Threat Model
 
-What the project treats as in scope and out of scope, the security
-properties it provides and disclaims, the adversary model, and how
-findings are triaged are documented in the project-wide threat model:
+Apache CloudStack's threat model, which this code inherits, is in
 [THREAT_MODEL.md](THREAT_MODEL.md).

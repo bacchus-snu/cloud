@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - docs/**
+      - snucse/docs/**
       - .github/workflows/docs.yaml
   workflow_dispatch:
 
@@ -35,7 +35,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - uses: actions/configure-pages@v5
       - name: Build
-        run: mdbook build docs/ko -d "$GITHUB_WORKSPACE/_site"
+        run: mdbook build snucse/docs/ko -d "$GITHUB_WORKSPACE/_site"
       - uses: actions/upload-pages-artifact@v3
 
   deploy:

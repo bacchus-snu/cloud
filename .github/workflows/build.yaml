@@ -37,5 +37,5 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           push: true
-          context: images/${{ steps.tag.outputs.image }}
+          context: snucse/images/${{ steps.tag.outputs.image }}
           tags: ${{ env.REGISTRY }}/${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}

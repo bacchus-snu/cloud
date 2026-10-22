@@ -9,5 +9,5 @@ build-dir = "book"
 
 [output.html]
 site-url = "/"
-git-repository-url = "https://github.com/bacchus-snu/cloudstack"
-edit-url-template = "https://github.com/bacchus-snu/cloudstack/edit/main/docs/ko/{path}"
+git-repository-url = "https://github.com/bacchus-snu/cloud"
+edit-url-template = "https://github.com/bacchus-snu/cloud/edit/main/snucse/docs/ko/{path}"

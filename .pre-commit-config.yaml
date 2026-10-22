@@ -71,7 +71,7 @@ repos:
           - --license-filepath
           - .github/workflows/license-templates/LICENSE.txt
           - --fuzzy-match-generates-todo
-        exclude: ^(CHANGES|ISSUE_TEMPLATE|PULL_REQUEST_TEMPLATE)\.md$|^ui/docs/(full|smoke)-test-plan\.template\.md$|^\.github/workflows/.*\.md$|^\.github/aw/.*\.md$
+        exclude: ^(CHANGES|ISSUE_TEMPLATE|PULL_REQUEST_TEMPLATE)\.md$|^ui/docs/(full|smoke)-test-plan\.template\.md$|^\.github/workflows/.*\.md$|^\.github/aw/.*\.md$|^snucse/
       - id: insert-license
         name: add license for all properties files
         description: automatically adds a licence header to all properties files that don't have a license header
@@ -92,6 +92,7 @@ repos:
           - --license-filepath
           - .github/workflows/license-templates/LICENSE.txt
           - --fuzzy-match-generates-todo
+        exclude: ^snucse/
       - id: insert-license
         name: add license for all SQL files
         files: \.sql$
@@ -120,7 +121,7 @@ repos:
           - --license-filepath
           - .github/workflows/license-templates/LICENSE.txt
           - --fuzzy-match-generates-todo
-        exclude: ^\.github/workflows/.*\.lock\.yml$
+        exclude: ^\.github/workflows/.*\.lock\.yml$|^\.github/workflows/(build|docs)\.yaml$|^snucse/
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:

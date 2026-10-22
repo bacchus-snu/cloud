@@ -77,3 +77,10 @@ Copyright 2014 The Apache Software Foundation
         Inspiration from jQuery color animation plugin by John Resig.
 
         Released under the MIT license by Ole Laursen, October 2009.
+
+
+
+
+  SNUCSE Cloud is based on Apache CloudStack 4.23.0.0. Files of Apache
+  CloudStack in this distribution have been modified by the SNUCSE Cloud
+  maintainers (Bacchus, contact@bacchus.snucse.org).

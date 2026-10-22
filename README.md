@@ -17,178 +17,106 @@
  under the License.
  -->
 
-# Apache CloudStack
+# SNUCSE Cloud
 
-[![Build Status](https://github.com/apache/cloudstack/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/apache/cloudstack/actions/workflows/build.yml)
-[![codecov](https://codecov.io/gh/apache/cloudstack/branch/main/graph/badge.svg)](https://codecov.io/gh/apache/cloudstack)
-[![Docker CloudStack Simulator Status](https://github.com/apache/cloudstack/actions/workflows/docker-cloudstack-simulator.yml/badge.svg?branch=main)](https://github.com/apache/cloudstack/actions/workflows/docker-cloudstack-simulator.yml)
-[![License Check](https://github.com/apache/cloudstack/actions/workflows/rat.yml/badge.svg?branch=main)](https://github.com/apache/cloudstack/actions/workflows/rat.yml)
-[![Linter Status](https://github.com/apache/cloudstack/actions/workflows/linter.yml/badge.svg)](https://github.com/apache/cloudstack/actions/workflows/linter.yml)
-[![Merge Conflict Checker Status](https://github.com/apache/cloudstack/actions/workflows/merge-conflict-checker.yml/badge.svg?branch=main)](https://github.com/apache/cloudstack/actions/workflows/merge-conflict-checker.yml)
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=apache_cloudstack&metric=alert_status)](https://sonarcloud.io/dashboard?id=apache_cloudstack)
-[![Simulator CI](https://github.com/apache/cloudstack/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/apache/cloudstack/actions/workflows/ci.yml)
-[![UI Build](https://github.com/apache/cloudstack/actions/workflows/ui.yml/badge.svg?branch=main)](https://github.com/apache/cloudstack/actions/workflows/ui.yml)
+SNUCSE Cloud (<https://cloud.snucse.org>) provides virtual machines to members
+of the SNU Department of Computer Science and Engineering. It is run by Bacchus
+and is based on Apache CloudStack 4.23.0.0, customized for this cloud; it is not
+a release of, or endorsed by, the Apache Software Foundation. Apache, Apache
+CloudStack and CloudStack are trademarks of the Apache Software Foundation.
 
-[![Good First Issues](https://img.shields.io/badge/good%20first%20issues-94D5DA)](https://github.com/apache/cloudstack/issues?q=is%3Aissue%20state%3Aopen%20label%3Agood-first-issue)
-[![CloudStack Documentation Status](https://app.readthedocs.org/projects/cloudstack-documentation/badge/?version=latest)](https://app.readthedocs.org/projects/cloudstack-documentation/builds/)
-[![CloudStack Website Status](https://img.shields.io/website?url=https%3A%2F%2Fcloudstack.apache.org%2F
-)](https://cloudstack.apache.org/)
+This repository holds the CloudStack source we build from with our changes,
+and everything else the cloud needs that is not part of the cluster manifests
+(see `bacchus-snu/cd-manifests`): the user manual and the container images.
 
-[![Apache CloudStack](tools/logo/apache_cloudstack.png)](https://cloudstack.apache.org/)
+## Layout
 
-<!-- START doctoc generated TOC please keep comment here to allow auto update -->
-<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+```
+api/ server/ engine/ plugins/ ui/ debian/ ...
+                      the CloudStack tree, laid out as upstream; our changes
+                      to CloudStack are made in place
+snucse/docs/<lang>/   user manual (mdBook), published at docs.cloud.snucse.org
+snucse/images/<name>/ container images, ghcr.io/bacchus-snu/cloud/<name>
+.github/workflows/    CI for this repository
+```
 
-- [Who Uses CloudStack?](#who-uses-cloudstack)
-- [Demo](#demo)
-- [Getting Started](#getting-started)
-- [Getting Source Repository](#getting-source-repository)
-- [Documentation](#documentation)
-- [News and Events](#news-and-events)
-- [Getting Involved and Contributing](#getting-involved-and-contributing)
-- [Reporting Security Vulnerabilities](#reporting-security-vulnerabilities)
-- [License](#license)
-- [Notice of Cryptographic Software](#notice-of-cryptographic-software)
-- [Star History](#star-history)
-- [Contributors](#contributors)
+Files of our own live only under `snucse/`; the CloudStack directories hold
+CloudStack code and our patches to it.
 
-<!-- END doctoc generated TOC please keep comment here to allow auto update -->
+## Versions
 
-Apache CloudStack is open source software designed to deploy and manage large
-networks of virtual machines, as a highly available, highly scalable
-Infrastructure as a Service (IaaS) cloud computing platform. CloudStack is used
-by a number of service providers to offer public cloud services, and by many
-companies to provide an on-premises (private) cloud offering, or as part of a
-hybrid cloud solution.
+The code stays on the CloudStack 4.23 line. Its version is numeric, because
+CloudStack compares it with the database version to decide which schema
+upgrades to run.
 
-CloudStack is a turnkey solution that includes the entire "stack" of features
-most organizations want with an IaaS cloud: compute orchestration,
-Network-as-a-Service, user and account management, a full and open native API,
-resource accounting, and a first-class User Interface (UI).
+| What | Form | First |
+| --- | --- | --- |
+| Code (POM) | `4.23.0.<n>`, `n` from 100 | `4.23.0.100` |
+| Debian packages | `<pom>+snucse.<N>` | `4.23.0.100+snucse.1` |
+| Container images | `<pom>-snucse.<N>` | `4.23.0.100-snucse.1` |
+| Git tags | `snucse-<pom>-<N>` | `snucse-4.23.0.100-1` |
 
-CloudStack currently supports the most popular hypervisors:
-VMware vSphere, KVM, XenServer, XenProject and Hyper-V as well as
-OVM and LXC containers.
+`N` counts the releases of one code version. The code version moves only with
+a database schema step: `4.23.0.100` upgrades a 4.23.0.0 database, and once a
+step has run on the production database it is frozen, so the next schema
+change takes a new step and the next version (`4.23.0.101`, ...). Upstream
+uses the fourth component for its security releases; starting at 100 keeps
+ours apart from them.
 
-Users can manage their cloud with an easy to use Web interface, command line
-tools, and/or a full-featured query based API.
+## Building
 
-For more information on Apache CloudStack, please visit the [website](https://cloudstack.apache.org)
+Build and test the CloudStack tree as upstream does ([INSTALL.md](INSTALL.md));
+it needs Java 17 and Maven 3. To run the tests of the modules a change
+touches, for example:
 
-## Who Uses CloudStack?
-
-* There are more than 150 known organizations using Apache CloudStack (or a commercial distribution of CloudStack). Our users include many major service providers running CloudStack to offer public cloud services, product vendors who incorporate or integrate with CloudStack in their own products, organizations who have used CloudStack to build their own private clouds, and systems integrators that offer CloudStack related services.
-
-* See our [case studies](https://cwiki.apache.org/confluence/display/CLOUDSTACK/Case+Studies) highlighting successful deployments of Apache CloudStack.
-
-* See the up-to-date list of current [users](https://cloudstack.apache.org/users.html).
-
-* If you are using CloudStack in your organization and your company is not listed above, please complete our brief adoption [survey](https://cloudstack.apache.org/survey.html). We're happy to keep your company name anonymous if you require.
-
-## Demo
-
-![Screenshot](ui/docs/screenshot-dashboard.png)
-
-See the project user-interface QA website that runs CloudStack against simulator hypervisor:
-https://qa.cloudstack.cloud/simulator/ (admin:password)
-
-## Getting Started
-
-* Download a released [version](https://cloudstack.apache.org/downloads.html)
-* Build from source with the instructions in the [INSTALL.md](INSTALL.md) file.
-
-## Getting Source Repository
-
-Apache CloudStack project uses Git. The official Git repository is at:
-
-    https://gitbox.apache.org/repos/asf/cloudstack.git
-
-And a mirror is hosted on GitHub:
-
-    https://github.com/apache/cloudstack
-
-The GitHub mirror is strictly read only and provides convenience to users and
-developers to explore the code and for the community to accept contributions
-via GitHub pull requests.
+```console
+$ mvn -pl engine/schema -am test -Dtest=DatabaseUpgradeCheckerTest -Dsurefire.failIfNoSpecifiedTests=false
+```
 
 ## Documentation
 
-* [Project Documentation](https://docs.cloudstack.apache.org)
-* [Release notes](https://docs.cloudstack.apache.org/en/latest/releasenotes/index.html)
-* Developer [wiki](https://cwiki.apache.org/confluence/display/CLOUDSTACK/Home)
-* Design [documents](https://cwiki.apache.org/confluence/display/CLOUDSTACK/Design)
-* API [documentation](https://cloudstack.apache.org/api.html)
-* How to [contribute](CONTRIBUTING.md)
+`snucse/docs/ko/` is the Korean user manual. Preview it locally with mdBook:
 
-## News and Events
+```console
+$ mdbook serve snucse/docs/ko
+```
 
-* [Blog](https://blogs.apache.org/cloudstack)
-* [Twitter](https://twitter.com/cloudstack)
-* [Events and meetup](http://cloudstackcollab.org/)
-* [YouTube channel](https://www.youtube.com/ApacheCloudStack)
+Pushing changes under `snucse/docs/` to `main` publishes the book to GitHub
+Pages (`.github/workflows/docs.yaml`), served as <https://docs.cloud.snucse.org>
+(CNAME in `bacchus-snu/infra`, custom domain in this repository's Pages
+settings).
 
-## Getting Involved and Contributing
+The full repository is large. To work on the manual only, use a shallow, sparse
+clone; it fetches the files under `snucse/docs` and the top-level files, and
+nothing else:
 
-Interested in helping out with Apache CloudStack? Great! We welcome
-participation from anybody willing to work [The Apache Way](https://theapacheway.com) and make a
-contribution. Note that you do not have to be a developer in order to contribute
-to Apache CloudStack. We need folks to help with documentation, translation,
-promotion etc. See our contribution [page](https://cloudstack.apache.org/contribute.html).
+```console
+$ git clone --depth 1 --filter=blob:none --sparse https://github.com/bacchus-snu/cloud.git
+$ cd cloud
+$ git sparse-checkout set snucse/docs
+```
 
-If you are a frequent contributors, you can request to be added as collaborators
-(see https://cwiki.apache.org/confluence/display/INFRA/Git+-+.asf.yaml+features#Git.asf.yamlfeatures-AssigningexternalcollaboratorswiththetriageroleonGitHub)
-to our GitHub repos. This allows you to use project GitHub with ability to report
-issue with tags, and be assigned to issues and PRs. This is done via the .asf.yaml
-file in this repo.
-You may do so by sharing your GitHub users ID or raise a GitHub issue.
+Leave out `--depth 1` if you need `git log` or `git blame` on the manual.
 
-If you're interested in learning more or participating in the Apache CloudStack
-project, the mailing lists are the best way to do that. While the project has
-several communications channels, the [mailing lists](https://cloudstack.apache.org/mailing-lists.html) are the most active and the
-official channels for making decisions about the project itself.
+`snucse/` was imported with its history from the former
+`bacchus-snu/cloudstack` repository, so `git log --follow` on its files reaches
+back past the import.
 
-Mailing lists:
-- [Development Mailing List](mailto:dev-subscribe@cloudstack.apache.org)
-- [Users Mailing List](mailto:users-subscribe@cloudstack.apache.org)
-- [Commits Mailing List](mailto:commits-subscribe@cloudstack.apache.org)
-- [Issues Mailing List](mailto:issues-subscribe@cloudstack.apache.org)
-- [Marketing Mailing List](mailto:marketing-subscribe@cloudstack.apache.org)
+## Contributing
 
-Report and/or check bugs on [GitHub](https://github.com/apache/cloudstack/issues) and check our
-developer [page](https://cloudstack.apache.org/developers.html) for contributing code.
-
-## Reporting Security Vulnerabilities
-
-If you've found an issue that you believe is a security vulnerability in a
-released version of CloudStack, please report it to `security@apache.org` with
-details about the vulnerability, how it might be exploited, and any additional
-information that might be useful.
-
-For more details, please visit our security [page](https://cloudstack.apache.org/security.html).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues privately, as
+[SECURITY.md](SECURITY.md) describes.
 
 ## License
 
-Licensed to the Apache Software Foundation (ASF) under one
-or more contributor license agreements.  See the NOTICE file
-distributed with this work for additional information
-regarding copyright ownership.  The ASF licenses this file
-to you under the Apache License, Version 2.0 (the
-"License"); you may not use this file except in compliance
-with the License.  You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0; see [LICENSE](LICENSE) and
+[NOTICE](NOTICE).
 
-  http://www.apache.org/licenses/LICENSE-2.0
+## Notice of Cryptographic Software (from Apache CloudStack)
 
-Unless required by applicable law or agreed to in writing,
-software distributed under the License is distributed on an
-"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-KIND, either express or implied.  See the License for the
-specific language governing permissions and limitations
-under the License.
-
-Please see the [LICENSE](LICENSE) file included in the root directory
-of the source tree for extended license details.
-
-## Notice of Cryptographic Software
+The notice below is Apache CloudStack's; its export classification statement is
+the Apache Software Foundation's about its own distribution, not about builds
+from this repository.
 
 This distribution includes cryptographic software. The country in which you currently
 reside may have restrictions on the import, possession, use, and/or re-export to another
@@ -212,11 +140,3 @@ The following provides more details on the included cryptographic software:
 * CloudStack makes use of the Bouncy Castle general-purpose encryption library.
 * CloudStack can optionally interact with and control OpenSwan-based VPNs.
 * CloudStack has a dependency on and makes use of JSch - a java SSH2 implementation.
-
-## Star History
-
-[![Apache CloudStack Star History](https://star-history.dera.page/svg?repos=apache/cloudstack&type=Date)](https://star-history.dera.page/#apache/cloudstack&Date)
-
-## Contributors
-
-[![Apache CloudStack Contributors](https://contrib.rocks/image?repo=apache/cloudstack&anon=0&max=500)](https://github.com/apache/cloudstack/graphs/contributors)

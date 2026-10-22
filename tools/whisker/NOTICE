@@ -695,3 +695,10 @@
         
         This product includes software Copyright University of Southampton IT
         Innovation Centre, 2006 (http://www.it-innovation.soton.ac.uk).
+
+
+
+
+  SNUCSE Cloud is based on Apache CloudStack 4.23.0.0. Files of Apache
+  CloudStack in this distribution have been modified by the SNUCSE Cloud
+  maintainers (Bacchus, contact@bacchus.snucse.org).

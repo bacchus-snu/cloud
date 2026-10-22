@@ -52,9 +52,7 @@
   the 4.20.x line) should be triaged against the model as it stood at *N*'s
   release tag, not against HEAD.
 - **Reporting:** vulnerabilities that fall under §8 (claimed properties)
-  should be reported per the project's published policy
-  (`security@apache.org` per `README.md` and
-  `https://cloudstack.apache.org/security.html`); reports that fall under
+  should be reported per this repository's `SECURITY.md`; reports that fall under
   §3 (out of scope), §9 (properties not provided), or §11a (known
   non-findings) will be closed by CloudStack triagers citing this document.
 - **Provenance legend** —
@@ -1131,7 +1129,7 @@ landing page. The de facto security-policy artifacts are scattered:
 
 | Source | Claim | Lands in |
 | --- | --- | --- |
-| `README.md` "Reporting Security Vulnerabilities" | report to `security@apache.org`; canonical page at `cloudstack.apache.org/security.html` | §1 reporting cross-reference |
+| `SECURITY.md` | report to the address it gives | §1 reporting cross-reference |
 | `README.md` "Notice of Cryptographic Software" | JaSypt, Bouncy Castle, JSch, OpenSwan, MySQL native encryption | §5 cryptography assumption, §8 P8 |
 | `agent/conf/agent.properties` (`host`, `port`, `ssl.handshake.timeout`, …) | agent ↔ management server transport on `:8250` | §2 component table, §4 B5 |
 | `server/src/main/java/com/cloud/api/ApiServer.java` `verifyRequest` (lines ~980–1156) | HMAC-SHA1 signature + `expires` enforcement (`enforce.post.requests.and.timestamps`) + constant-time compare | §8 P1, §8 P3, §5a "enforce.post.requests.and.timestamps" row, §11a "SHA1 / constant-time" entries |

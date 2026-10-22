@@ -1059,6 +1059,7 @@
                             <exclude>.metadata/**</exclude>
                             <exclude>.git/**</exclude>
                             <exclude>.github/linters/codespell.txt</exclude>
+                            <exclude>.github/workflows/*.yaml</exclude>
                             <exclude>.gitignore</exclude>
                             <exclude>.markdownlintignore</exclude>
                             <exclude>CHANGES.md</exclude>
@@ -1086,6 +1087,7 @@
                             <exclude>services/secondary-storage/conf/agent.properties</exclude>
                             <exclude>services/secondary-storage/conf/uefi.properties</exclude>
                             <exclude>services/secondary-storage/conf/environment.properties</exclude>
+                            <exclude>snucse/**</exclude>
                             <exclude>systemvm/agent/conf/agent.properties</exclude>
                             <exclude>systemvm/agent/conf/uefi.properties</exclude>
                             <exclude>systemvm/agent/conf/environment.properties</exclude>

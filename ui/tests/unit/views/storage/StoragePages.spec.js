@@ -26,6 +26,7 @@ import AutogenView from '@/views/AutogenView'
 import storage from '@/config/section/storage'
 import { visibleColumns } from '@/utils/uiConfig'
 import minimalUser from '../../../mockData/MinimalUserApis.mock.json'
+import deployment from '../../../mockData/DeploymentConfig.mock.json'
 
 jest.mock('@/api', () => ({ getAPI: jest.fn(), postAPI: jest.fn(), callAPI: jest.fn(), getBaseUrl: jest.fn(() => '') }))
 jest.mock('@/store', () => ({
@@ -45,11 +46,12 @@ jest.mock('@/store', () => ({
   watch: jest.fn()
 }))
 jest.mock('@/vue-app', () => ({
-  vueProps: { $localStorage: { set: jest.fn(), get: jest.fn(() => null) }, $config: require('../../../../public/config.json') }
+  vueProps: { $localStorage: { set: jest.fn(), get: jest.fn(() => null) }, $config: { ...require('../../../../public/config.json'), ...require('../../../mockData/DeploymentConfig.mock.json') } }
 }))
 
 const uiRoot = path.resolve(__dirname, '../../../..')
-const shippedConfig = JSON.parse(fs.readFileSync(path.join(uiRoot, 'public/config.json'), 'utf8'))
+// the fork's default config with the deployment's data, which the fixture mirrors
+const deployedConfig = { ...JSON.parse(fs.readFileSync(path.join(uiRoot, 'public/config.json'), 'utf8')), ...deployment }
 const apis = Object.fromEntries(minimalUser.apis.map(name => [name, { params: [], response: [] }]))
 
 const volume = { id: 'v-1', name: 'data', type: 'DATADISK', state: 'Ready', size: 21474836480, zoneid: 'z-1', zonename: 'zone', account: 'student', domainid: 'd-1' }
@@ -109,7 +111,7 @@ const openPage = async (child, path) => {
     router,
     i18n: common.createMockI18n('en', {}),
     store: vuexStore(),
-    mocks: { $config: shippedConfig, $notifyError: jest.fn(), $message: { success: jest.fn(), error: jest.fn(), info: jest.fn() } }
+    mocks: { $config: deployedConfig, $notifyError: jest.fn(), $message: { success: jest.fn(), error: jest.fn(), info: jest.fn() } }
   })
   mounted.push(wrapper)
   await flushPromises()
@@ -149,7 +151,7 @@ describe('volume and snapshot pages of the minimal user role', () => {
   it('the volume list shows the reduced columns of the hidden block', async () => {
     const wrapper = await openPage(storage.children.find(c => c.name === 'volume'), '/volume')
     expect(wrapper.vm.columnKeys).toEqual(['name', 'state', 'size', 'type', 'vmname'])
-    expect(shippedConfig.hidden.User.columns).toEqual(['volume.vmstate', 'volume.zonename'])
+    expect(deployedConfig.hidden.User.columns).toEqual(['volume.vmstate', 'volume.zonename'])
   })
 })
 

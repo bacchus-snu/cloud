@@ -79,7 +79,7 @@
 import { getAPI, postAPI } from '@/api'
 import Breadcrumb from '@/components/widgets/Breadcrumb'
 import eventBus from '@/config/eventBus'
-import { CHANGED_EVENT, fetchGpuTypes, renewalOf, requestsAllowed } from '@/utils/resourceLimitRequest'
+import { CHANGED_EVENT, quotaGpuTypes, renewalOf, requestsAllowed } from '@/utils/resourceLimitRequest'
 import EffectiveQuota from '@/views/resourcerequest/EffectiveQuota'
 import RequestForm from '@/views/resourcerequest/RequestForm'
 import RequestTable from '@/views/resourcerequest/RequestTable'
@@ -97,8 +97,6 @@ export default {
       loading: false,
       requests: [],
       limits: [],
-      gpuTypes: null,
-      gpuTypesUnavailable: false,
       showForm: false,
       formKey: 0,
       prefill: null
@@ -107,6 +105,12 @@ export default {
   computed: {
     allowed () {
       return requestsAllowed(this.$store.getters.features)
+    },
+    gpuTypes () {
+      return quotaGpuTypes(this.$store.getters.features)
+    },
+    gpuTypesUnavailable () {
+      return this.gpuTypes === null
     },
     hasPending () {
       return this.requests.some(request => request.state === 'Pending')
@@ -133,11 +137,9 @@ export default {
         return
       }
       this.loading = true
-      const [requests, limits, gpuTypes] = await Promise.all([this.listRequests(), this.listLimits(), this.listGpuTypes()])
+      const [requests, limits] = await Promise.all([this.listRequests(), this.listLimits()])
       this.requests = requests
       this.limits = limits
-      this.gpuTypes = gpuTypes
-      this.gpuTypesUnavailable = gpuTypes === null
       this.loading = false
       this.openRenewalFromRoute()
     },
@@ -158,15 +160,6 @@ export default {
       }).catch(error => {
         this.$notifyError(error)
         return []
-      })
-    },
-    listGpuTypes () {
-      if (!('listServiceOfferings' in this.$store.getters.apis)) {
-        return Promise.resolve(null)
-      }
-      return fetchGpuTypes(getAPI).catch(error => {
-        this.$notifyError(error)
-        return null
       })
     },
     actionsFor (record) {

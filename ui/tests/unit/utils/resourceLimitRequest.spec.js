@@ -22,10 +22,9 @@ import {
   daysLeft,
   effectiveQuota,
   expiryPolicy,
-  fetchGpuTypes,
-  gpuTypesOf,
   isCoveredByLaterGrants,
   outsideExpiryWindow,
+  quotaGpuTypes,
   renewalOf,
   requestParams,
   requestsAllowed,
@@ -42,27 +41,17 @@ describe('utils/resourceLimitRequest', () => {
   })
 
   describe('GPU types', () => {
-    it('are the one-GPU offerings with exactly one host tag, once each', () => {
-      expect(gpuTypesOf(mockData.offerings)).toEqual(['a100-40g', 'a6000'])
-      expect(gpuTypesOf([
-        { gpucount: 1, hosttags: 'a100-40g,cpu' },
-        { gpucount: 1 },
-        { gpucount: 2, hosttags: 'h100' },
-        { gpucount: 1, hosttags: ' h100 ' }
-      ])).toEqual(['h100'])
-      expect(gpuTypesOf(undefined)).toEqual([])
+    it('are the sorted names the server lists in the capabilities, once each', () => {
+      expect(quotaGpuTypes(mockData.features)).toEqual(['a100-40g', 'a6000'])
+      expect(quotaGpuTypes({ quotagputypes: ['h100', 'a6000', 'h100'] })).toEqual(['a6000', 'h100'])
+      expect(quotaGpuTypes({ quotagputypes: [] })).toEqual([])
     })
-  })
 
-  describe('GPU types fetched', () => {
-    it('are asked of the GPU offerings, and a failure is left to the caller', async () => {
-      const getAPI = jest.fn().mockResolvedValue({ listserviceofferingsresponse: { serviceoffering: mockData.offerings } })
-      await expect(fetchGpuTypes(getAPI)).resolves.toEqual(['a100-40g', 'a6000'])
-      expect(getAPI).toHaveBeenCalledWith('listServiceOfferings', { gpuenabled: true, listall: true })
-
-      await expect(fetchGpuTypes(jest.fn().mockResolvedValue({ listserviceofferingsresponse: {} }))).resolves.toEqual([])
-      const failure = new Error('denied')
-      await expect(fetchGpuTypes(jest.fn().mockRejectedValue(failure))).rejects.toBe(failure)
+    it('are unknown where the server does not say, and are never derived from offerings', () => {
+      expect(quotaGpuTypes({})).toBeNull()
+      expect(quotaGpuTypes(undefined)).toBeNull()
+      expect(quotaGpuTypes({ quotagputypes: 'a100-40g' })).toBeNull()
+      expect(quotaGpuTypes({ quotagputypes: null })).toBeNull()
     })
   })
 

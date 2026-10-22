@@ -65,7 +65,9 @@ export default {
     }
   },
   created () {
-    this.fetchData()
+    if ('listAndSwitchSamlAccount' in this.$store.getters.apis) {
+      this.fetchData()
+    }
   },
   methods: {
     fetchData () {
@@ -110,7 +112,7 @@ export default {
           this.$message.success(`Switched to "${account.accountName} (${account.domainPath})"`)
           this.$router.go()
         })
-      }).else(error => {
+      }).catch(error => {
         console.log('error refreshing with new user context: ' + error)
       })
     }

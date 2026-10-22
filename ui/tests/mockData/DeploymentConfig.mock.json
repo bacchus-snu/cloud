@@ -1,0 +1,86 @@
+{
+  "docHelpMappings": {
+    "adminguide/virtual_machines.html": "instance.html",
+    "adminguide/storage.html": "instance.html",
+    "adminguide/": "https://docs.cloudstack.apache.org/en/4.23.0.0/adminguide/",
+    "installguide/": "https://docs.cloudstack.apache.org/en/4.23.0.0/installguide/",
+    "conceptsandterminology/": "https://docs.cloudstack.apache.org/en/4.23.0.0/conceptsandterminology/",
+    "plugins/": "https://docs.cloudstack.apache.org/en/4.23.0.0/plugins/"
+  },
+  "hidden": {
+    "User": {
+      "sidebar": [
+        "template",
+        "snapshotpolicy",
+        "event",
+        "account",
+        "zones",
+        "computeoffering",
+        "diskoffering",
+        "apidocs"
+      ],
+      "header": [],
+      "dashboard": [
+        "project",
+        "template",
+        "templates",
+        "snapshot",
+        "backup",
+        "backupstorage",
+        "bucket",
+        "objectstorage",
+        "ip",
+        "network",
+        "vpc"
+      ],
+      "deploy": [
+        "imagetype.snapshotid",
+        "dynamicscalingenabled",
+        "keyboard"
+      ],
+      "actions": [
+        "vm.createSnapshot"
+      ],
+      "details": [
+        "vm.isdynamicallyscalable",
+        "vm.haenable",
+        "vm.hypervisor",
+        "vm.arch",
+        "vm.boottype",
+        "vm.bootmode",
+        "vm.account",
+        "vm.domain",
+        "vm.userdataid",
+        "vm.userdataname",
+        "vm.userdataparams",
+        "vm.userdatadetails",
+        "vm.userdatapolicy",
+        "vm.hostcontrolstate",
+        "vm.securitygroup"
+      ],
+      "columns": [
+        "volume.vmstate",
+        "volume.zonename"
+      ],
+      "languages": [
+        "hi",
+        "te",
+        "ja_JP",
+        "zh_CN",
+        "ar",
+        "ca",
+        "de_DE",
+        "es",
+        "fr_FR",
+        "it_IT",
+        "hu",
+        "nl_NL",
+        "nb_NO",
+        "pl",
+        "pt_BR",
+        "ru_RU",
+        "el_GR"
+      ]
+    }
+  }
+}

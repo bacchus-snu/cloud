@@ -99,7 +99,7 @@
 </template>
 
 <script>
-import { gpuTypeOf } from '@/utils/limits'
+import { exceedsGpuQuota } from '@/utils/limits'
 import { showCpuSpeed, showGpuSlots } from '@/utils/uiConfig'
 
 export default {
@@ -424,12 +424,7 @@ export default {
     },
     // only quota disables a GPU offering: the slots left are shown, never used to refuse a choice
     overGpuQuota (item) {
-      const type = gpuTypeOf(item, this.gpuQuota)
-      if (!type) {
-        return false
-      }
-      const remaining = this.gpuQuota[type]
-      return remaining !== null && remaining !== undefined && Number(item.gpucount) > remaining
+      return exceedsGpuQuota(item, this.gpuQuota)
     },
     getRemainingLeaseText (leaseDuration) {
       if (leaseDuration > 0) {

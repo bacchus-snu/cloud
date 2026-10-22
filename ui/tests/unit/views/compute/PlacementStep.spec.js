@@ -50,10 +50,11 @@ const answer = (verdicts) => (command) => {
 
 const newDeploy = { templateid: 't-1', serviceofferingid: 'o-cpu', zoneid: 'z-1', rootdisksize: 20, 'details[0].cpuNumber': 4, 'details[0].memory': 4096 }
 
-const mountStep = (props) => common.createFactory(PlacementStep, {
+const mountStep = (props, config = {}) => common.createFactory(PlacementStep, {
   store: store(),
   i18n: common.createMockI18n('en', { en }),
-  props: { zoneid: 'z-1', capacityOfferingId: 'o-cpu', ...props }
+  props: { zoneid: 'z-1', capacityOfferingId: 'o-cpu', ...props },
+  mocks: { $config: config }
 })
 
 const calls = (command) => getAPI.mock.calls.filter(call => call[0] === command).map(call => call[1])
@@ -103,6 +104,24 @@ describe('PlacementStep', () => {
     const quota = mountStep({ request: newDeploy })
     await flushPromises()
     expect(quota.find('.placement-verdict').text()).toContain(en['message.placement.reason.quota'])
+  })
+
+  it('shows the free GPU slots of the instance\'s host only while showGpuSlots is not false', async () => {
+    getAPI.mockImplementation(answer([{ verdict: 'anyhost' }]))
+    const request = { virtualmachineid: 'vm-1', serviceofferingid: 'o-cpu' }
+    const slots = en['message.placement.capacity.gpuslots'].replace('{n}', '2')
+
+    for (const config of [{}, { showGpuSlots: true }]) {
+      const shown = mountStep({ request, virtualmachineid: 'vm-1' }, config)
+      await flushPromises()
+      expect(shown.find('.placement-thishost').text()).toContain(slots)
+    }
+
+    const hidden = mountStep({ request, virtualmachineid: 'vm-1' }, { showGpuSlots: false })
+    await flushPromises()
+    expect(hidden.find('.placement-thishost').text()).toContain('8 vCPU')
+    expect(hidden.find('.placement-thishost').text()).not.toContain(slots)
+    expect(hidden.find('.placement-thishost').findAll('li')).toHaveLength(1)
   })
 
   it('recomputes 500 ms after the inputs change, once', async () => {

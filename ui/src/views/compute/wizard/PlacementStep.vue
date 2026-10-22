@@ -31,7 +31,7 @@
       </ul>
       <ul v-if="thisHost" class="placement-thishost">
         <li>{{ $t('message.placement.capacity.thishost', { vcpu: thisHost.freevcpu, memory: gib(thisHost.freememory), disk: thisHost.freedisk }) }}</li>
-        <li v-if="thisHost.gpuslotsavailable !== undefined">{{ $t('message.placement.capacity.gpuslots', { n: thisHost.gpuslotsavailable }) }}</li>
+        <li v-if="showSlots && thisHost.gpuslotsavailable !== undefined">{{ $t('message.placement.capacity.gpuslots', { n: thisHost.gpuslotsavailable }) }}</li>
       </ul>
       <p class="placement-hint">{{ $t('message.placement.hint') }}</p>
     </a-spin>
@@ -40,6 +40,7 @@
 
 <script>
 import { checkPlacement, listPlacementCapacity, placementKind, reasonText, etaText } from '@/utils/placement'
+import { showGpuSlots } from '@/utils/uiConfig'
 
 const DEBOUNCE_MS = 500
 
@@ -123,6 +124,9 @@ export default {
     },
     showMaxima () {
       return !!this.capacityOfferingId
+    },
+    showSlots () {
+      return showGpuSlots(this.$config)
     },
     thisHost () {
       return this.capacity && this.capacity.thishost

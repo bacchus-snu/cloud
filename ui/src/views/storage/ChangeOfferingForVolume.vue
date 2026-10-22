@@ -81,7 +81,7 @@
           :placeholder="this.$t('label.maxiops')"/>
       </a-form-item>
     </span>
-    <a-form-item name="autoMigrate" ref="autoMigrate" :label="$t('label.automigrate.volume')">
+    <a-form-item v-if="canAutoMigrate" name="autoMigrate" ref="autoMigrate" :label="$t('label.automigrate.volume')">
       <template #label>
         <tooltip-label :title="$t('label.automigrate.volume')" :tooltip="apiParams.automigrate.description"/>
       </template>
@@ -112,6 +112,7 @@
 import { ref, reactive, toRaw } from 'vue'
 import { getAPI, postAPI } from '@/api'
 import { mixinForm } from '@/utils/mixin'
+import { automigrateAllowed } from '@/utils/placement'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
 
 export default {
@@ -137,6 +138,11 @@ export default {
       customDiskOffering: false,
       loading: false,
       isCustomizedDiskIOps: false
+    }
+  },
+  computed: {
+    canAutoMigrate () {
+      return automigrateAllowed(this.$store.getters.features)
     }
   },
   beforeCreate () {

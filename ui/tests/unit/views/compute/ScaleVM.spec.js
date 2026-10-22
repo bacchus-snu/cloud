@@ -101,11 +101,11 @@ const answer = (command, params = {}) => {
   }
 }
 
-const open = async ({ resource = vm, config = shippedConfig } = {}) => {
+const open = async ({ resource = vm, config = shippedConfig, features = {} } = {}) => {
   const apis = { scaleVirtualMachine: { params: [{ name: 'automigrate', description: '' }] } }
   ;['listServiceOfferings', 'listCapabilities', 'listResourceLimits', 'listAccounts', 'listDiskOfferings', 'listTemplates', 'checkPlacement', 'listPlacementCapacity']
     .forEach(name => { apis[name] = { params: [] } })
-  const store = common.createMockStore({ user: { apis, info: { roletype: 'User', domainid: 'd-1', account: 'student', accountid: 'acc-1' }, features: {} } })
+  const store = common.createMockStore({ user: { apis, info: { roletype: 'User', domainid: 'd-1', account: 'student', accountid: 'acc-1' }, features } })
   const wrapper = common.createFactory(ScaleVM, {
     store,
     i18n: common.createMockI18n('en', {}),
@@ -268,6 +268,28 @@ describe('ScaleVM', () => {
     await wrapper.vm.handleSubmit()
     await flushPromises()
     expect(scaled()[0]['details[0].rootdisksize']).toBe(30)
+  })
+
+  it('offers the automatic migration only to a caller the server lets use it', async () => {
+    const hasSwitch = (wrapper) => wrapper.text().includes('label.automigrate.volume')
+
+    expect(hasSwitch(await open())).toBe(false)
+    expect(hasSwitch(await open({ features: { automigrateallowed: false } }))).toBe(false)
+
+    const allowed = await open({ features: { automigrateallowed: true } })
+    expect(hasSwitch(allowed)).toBe(true)
+    await choose(allowed, 'o-cpu')
+    allowed.vm.autoMigrate = true
+    await allowed.vm.handleSubmit()
+    await flushPromises()
+    expect(scaled()[0].automigrate).toBe(true)
+
+    postAPI.mockClear()
+    const refused = await open()
+    await choose(refused, 'o-cpu')
+    await refused.vm.handleSubmit()
+    await flushPromises()
+    expect(scaled()[0].automigrate).toBe(false)
   })
 
   it('CPU speed is never shown with the default config', async () => {

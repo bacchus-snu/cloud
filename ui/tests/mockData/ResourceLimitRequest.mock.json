@@ -4,8 +4,7 @@
     "listResourceLimitRequests": {},
     "createResourceLimitRequest": {},
     "cancelResourceLimitRequest": {},
-    "listResourceLimits": {},
-    "listServiceOfferings": {}
+    "listResourceLimits": {}
   },
   "approverApis": {
     "listResourceLimitRequests": {},
@@ -13,22 +12,16 @@
     "cancelResourceLimitRequest": {},
     "approveResourceLimitRequest": {},
     "rejectResourceLimitRequest": {},
-    "revokeResourceLimitRequest": {},
-    "listServiceOfferings": {}
+    "revokeResourceLimitRequest": {}
   },
   "features": {
     "resourcelimitrequestallowed": true,
     "resourcerequestexpiryrequired": true,
     "resourcerequestexpirydefaultdays": 30,
     "resourcerequestexpirymaxdays": 90,
-    "resourcerequestexpirytimezone": "Asia/Seoul"
+    "resourcerequestexpirytimezone": "Asia/Seoul",
+    "quotagputypes": ["a100-40g", "a6000"]
   },
-  "offerings": [
-    { "id": "o1", "name": "a100-40g-1", "gpucount": 1, "hosttags": "a100-40g", "vgpuprofileid": "p1" },
-    { "id": "o2", "name": "a100-40g-2", "gpucount": 2, "hosttags": "a100-40g", "vgpuprofileid": "p1" },
-    { "id": "o3", "name": "a6000-1", "gpucount": 1, "hosttags": "a6000", "vgpuprofileid": "p2" },
-    { "id": "o4", "name": "a100-40g-1-b", "gpucount": 1, "hosttags": "a100-40g", "vgpuprofileid": "p1" }
-  ],
   "limits": [
     { "resourcetype": "0", "resourcetypename": "user_vm", "max": 8 },
     { "resourcetype": "8", "resourcetypename": "cpu", "max": 18 },

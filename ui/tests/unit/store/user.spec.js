@@ -19,6 +19,7 @@ import Cookies from 'js-cookie'
 
 import { vueProps } from '@/vue-app'
 import { axios } from '@/utils/request'
+import * as api from '@/api'
 import { sessionKey } from '@/api'
 import user from '@/store/modules/user'
 
@@ -74,5 +75,60 @@ describe('store/modules/user Logout', () => {
     expect(Cookies.get('sessionkey')).toBeUndefined()
     const validLogin = sessionKey() || Cookies.get('userid') || Cookies.get('userid', { path: '/client' })
     expect(validLogin).toBeFalsy()
+  })
+
+  it('Login makes the key it stores the one the page runs with, so that no other change of the key is mistaken for it', async () => {
+    const adopt = jest.spyOn(api, 'adoptSessionKey')
+    axios.mockImplementation((request) => request.data && request.data.get('command') === 'login'
+      ? Promise.resolve({ loginresponse: { sessionkey: 'own-new-login', account: 'student', userid: 'u-1', username: 'student', firstname: 'A', lastname: 'B' } })
+      : Promise.resolve({}))
+
+    await user.actions.Login({ commit: jest.fn() }, { username: 'student', password: 'secret', domain: '/' })
+
+    expect(storage.get('Access-Token')).toBe('own-new-login')
+    expect(adopt).toHaveBeenCalledWith('own-new-login')
+    expect(storage.get('SESSION_USER')).toBe('u-1')
+    axios.mockImplementation(() => Promise.resolve({}))
+  })
+
+  describe('the preferences of the user a password login replaces', () => {
+    const loginAs = async (userid) => {
+      axios.mockImplementation((request) => request.data && request.data.get('command') === 'login'
+        ? Promise.resolve({ loginresponse: { sessionkey: 'own-new-login', account: 'student', userid, username: 'student', firstname: 'A', lastname: 'B' } })
+        : Promise.resolve({}))
+      const commit = jest.fn()
+      await user.actions.Login({ commit }, { username: 'student', password: 'secret', domain: '/' })
+      axios.mockImplementation(() => Promise.resolve({}))
+      const committed = (name) => (commit.mock.calls.find(call => call[0] === name) || [])[1]
+      return { darkMode: committed('SET_DARK_MODE'), browserTimezone: committed('SET_USE_BROWSER_TIMEZONE'), columns: committed('SET_CUSTOM_COLUMNS') }
+    }
+    const earlier = (userid) => {
+      storage.set('DARK_MODE', true)
+      storage.set('USE_BROWSER_TIMEZONE', true)
+      storage.set('CUSTOM_COLUMNS', { vm: ['name'] })
+      storage.set('TIMEZONE_OFFSET', 9)
+      if (userid) {
+        storage.set('SESSION_USER', userid)
+      }
+    }
+
+    it('stay with the same user', async () => {
+      earlier('u-1')
+      expect(await loginAs('u-1')).toEqual({ darkMode: true, browserTimezone: true, columns: { vm: ['name'] } })
+      expect(storage.get('SESSION_USER')).toBe('u-1')
+    })
+
+    it('go with another user, who is then the one remembered', async () => {
+      earlier('u-1')
+      expect(await loginAs('u-2')).toEqual({ darkMode: false, browserTimezone: false, columns: {} })
+      expect(['DARK_MODE', 'USE_BROWSER_TIMEZONE', 'CUSTOM_COLUMNS', 'TIMEZONE_OFFSET'].filter(key => storage.has(key))).toEqual([])
+      expect(storage.get('SESSION_USER')).toBe('u-2')
+    })
+
+    it('go when the earlier user is not known', async () => {
+      earlier(undefined)
+      expect(await loginAs('u-1')).toEqual({ darkMode: false, browserTimezone: false, columns: {} })
+      expect(storage.get('SESSION_USER')).toBe('u-1')
+    })
   })
 })

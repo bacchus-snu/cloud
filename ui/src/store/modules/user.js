@@ -22,7 +22,7 @@ import notification from 'ant-design-vue/es/notification'
 import { vueProps } from '@/vue-app'
 import router from '@/router'
 import store from '@/store'
-import { login, logout, getAPI, forgetServerOpenedSession } from '@/api'
+import { login, logout, getAPI, forgetServerOpenedSession, adoptSessionKey, startSessionOfUser } from '@/api'
 import { i18n } from '@/locales'
 
 import {
@@ -204,6 +204,8 @@ const user = {
           Cookies.set('userid', result.userid, { expires: 1 })
           Cookies.set('username', result.username, { expires: 1 })
           vueProps.$localStorage.set(ACCESS_TOKEN, result.sessionkey, 24 * 60 * 60 * 1000)
+          adoptSessionKey(result.sessionkey)
+          startSessionOfUser(result.userid)
           commit('SET_TOKEN', result.sessionkey)
           commit('SET_TIMEZONE_OFFSET', result.timezoneoffset)
 

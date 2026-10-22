@@ -51,6 +51,10 @@ const answer = (command, params = {}) => {
         : { listtemplatesresponse: { count: 0 } }
     case 'listDiskOfferings':
       return { listdiskofferingsresponse: { count: 0 } }
+    case 'listVolumes':
+      return state.rootGiB === undefined
+        ? { listvolumesresponse: {} }
+        : { listvolumesresponse: { count: 1, volume: [{ id: 'vol-root', type: 'ROOT', virtualmachineid: params.virtualmachineid, size: state.rootGiB * GiB }] } }
     case 'listOsCategories':
       return { listoscategoriesresponse: { oscategory: [{ id: 'c-1', name: 'Linux' }] } }
     default:
@@ -82,7 +86,7 @@ const sizeInput = (wrapper) => wrapper.findAllComponents({ name: 'DiskSizeSelect
 describe('ReinstallVm root disk size', () => {
   beforeEach(() => {
     jest.clearAllMocks()
-    state = { capabilities: { rootdisksizemin: 10, rootdisksizedefault: 20 }, remaining: 77, currentGiB: 5 }
+    state = { capabilities: { rootdisksizemin: 10, rootdisksizedefault: 20 }, remaining: 77, currentGiB: 5, rootGiB: 50 }
     getAPI.mockImplementation((command, params) => command in global.allowedApis
       ? Promise.resolve(answer(command, params))
       : Promise.reject(Object.assign(new Error(command + ' is not available'), { response: { status: 432, headers: {} } })))
@@ -96,7 +100,40 @@ describe('ReinstallVm root disk size', () => {
     const input = sizeInput(wrapper)
     expect(input.props('minDiskSize')).toBe(10)
     expect(input.props('initialDiskSize')).toBe(20)
-    expect(input.props('maxDiskSize')).toBe(77)
+    expect(input.props('maxDiskSize')).toBe(77 + 50)
+  })
+
+  it('lets the new root take the quota that is left and the root it replaces, as the server counts the change', async () => {
+    state.remaining = 0
+    state.rootGiB = 50
+    const wrapper = await open()
+    await wrapper.setData({ overrideDiskSize: true })
+    await flushPromises()
+    expect(getAPI).toHaveBeenCalledWith('listVolumes', expect.objectContaining({ virtualmachineid: 'vm-1', type: 'ROOT' }))
+    expect(sizeInput(wrapper).props('maxDiskSize')).toBe(50)
+
+    state.remaining = 10
+    state.rootGiB = 20
+    const other = await open()
+    await other.setData({ overrideDiskSize: true })
+    await flushPromises()
+    expect(sizeInput(other).props('maxDiskSize')).toBe(30)
+  })
+
+  it('leaves the size unbounded above while the root it replaces is unknown', async () => {
+    state.rootGiB = undefined
+    const unreadable = await open()
+    await unreadable.setData({ overrideDiskSize: true })
+    await flushPromises()
+    expect(sizeInput(unreadable).props('maxDiskSize')).toBeNull()
+
+    state.rootGiB = 50
+    getAPI.mockClear()
+    const denied = await open(['listVolumes'])
+    await denied.setData({ overrideDiskSize: true })
+    await flushPromises()
+    expect(getAPI.mock.calls.map(call => call[0])).not.toContain('listVolumes')
+    expect(sizeInput(denied).props('maxDiskSize')).toBeNull()
   })
 
   it('labels the switch with what it does: it changes the size of the OS disk', async () => {
@@ -140,7 +177,7 @@ describe('ReinstallVm root disk size', () => {
   it('calls only commands the student role keeps', async () => {
     await open()
     expect(getAPI.mock.calls.map(call => call[0]).filter(command => !minimalUser.apis.includes(command))).toEqual([])
-    expect(getAPI.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining(['listCapabilities', 'listAccounts', 'listResourceLimits']))
+    expect(getAPI.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining(['listCapabilities', 'listAccounts', 'listResourceLimits', 'listVolumes']))
   })
 
   it('does not call the quota lists when the role lacks them, and then bounds nothing above', async () => {

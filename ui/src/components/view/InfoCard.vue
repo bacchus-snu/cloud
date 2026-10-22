@@ -512,9 +512,10 @@
                     <span v-if="!isStatic && eth.networkname && eth.networkid">
                       &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
                       <apartment-outlined/>
-                      <router-link :to="{ path: '/guestnetwork/' + eth.networkid      }">
+                      <router-link v-if="'listNetworks' in $store.getters.apis" :to="{ path: '/guestnetwork/' + eth.networkid }">
                         {{ eth.networkname }}
                       </router-link>
+                      <span v-else>{{ eth.networkname }}</span>
                     </span>
                   </div>
                 </div>

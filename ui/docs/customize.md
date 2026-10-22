@@ -63,6 +63,7 @@ What a caller may do is decided by the server: menus, tabs, actions, wizard step
 when the caller's API list (`listApis`) holds their APIs. The `hidden` block covers what an API list cannot express; it
 hides entries for a role type (`Admin`, `ResourceAdmin`, `DomainAdmin`, `User`) and never removes a route, so a hidden
 page still opens from a link.
+The default `public/config.json` carries none of these lists; a deployment's own `config.json` supplies them.
 ```json
 {
   "hidden": {

@@ -194,6 +194,7 @@ export default {
       templateKey: 0,
       capabilities: {},
       quota: null,
+      rootSizeGiB: null,
       currentTemplate: null,
       dataPreFill: {
         templateid: this.resource.templateid,
@@ -210,7 +211,8 @@ export default {
   },
   computed: {
     // The new root is bounded as the root of a new instance is: the operator's floor, raised to the size of the template
-    // it is made from (the chosen one, else the one it has), and the remaining storage quota above.
+    // it is made from (the chosen one, else the one it has), and the remaining storage quota above, to which the root it
+    // replaces is added back, since the server counts only the change.
     templateSizeGiB () {
       let template = this.currentTemplate
       if (this.templateid) {
@@ -227,7 +229,8 @@ export default {
       return Math.max(this.rootDiskMin, Number(this.capabilities.rootdisksizedefault) || 0)
     },
     maxStorage () {
-      return remainingStorage(this.quota)
+      const remaining = remainingStorage(this.quota)
+      return remaining === null || this.rootSizeGiB === null ? null : remaining + this.rootSizeGiB
     },
     isNormalAndDomainUser () {
       return ['DomainAdmin', 'User'].includes(this.$store.getters.userInfo.roletype)
@@ -253,6 +256,12 @@ export default {
       loadQuota(this.resource, this.$store.getters.userInfo, this.$store.getters.apis).then(quota => {
         this.quota = quota
       })
+      if ('listVolumes' in this.$store.getters.apis) {
+        getAPI('listVolumes', { virtualmachineid: this.resource.id, type: 'ROOT', listall: true }).then(response => {
+          const root = response?.listvolumesresponse?.volume?.[0]
+          this.rootSizeGiB = root && root.size ? Math.floor(Number(root.size) / (1024 * 1024 * 1024)) : null
+        }).catch(() => {})
+      }
       getAPI('listTemplates', {
         id: this.resource.templateid,
         templatefilter: this.isNormalAndDomainUser ? 'executable' : 'all',

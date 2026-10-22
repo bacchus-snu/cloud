@@ -24,6 +24,7 @@ import { getAPI, postAPI } from '@/api'
 import DeployVM from '@/views/compute/DeployVM'
 import OsBasedImageSelection from '@/views/compute/wizard/OsBasedImageSelection'
 import minimalUser from '../../../mockData/MinimalUserApis.mock.json'
+import deployment from '../../../mockData/DeploymentConfig.mock.json'
 
 jest.mock('@/api', () => ({ getAPI: jest.fn(), postAPI: jest.fn(), callAPI: jest.fn() }))
 jest.mock('@/store', () => ({
@@ -32,7 +33,8 @@ jest.mock('@/store', () => ({
 jest.mock('@/vue-app', () => ({ vueProps: { $localStorage: { set: jest.fn(), get: jest.fn(() => null) }, $config: {} } }))
 
 const uiRoot = path.resolve(__dirname, '../../../..')
-const shippedConfig = JSON.parse(fs.readFileSync(path.join(uiRoot, 'public/config.json'), 'utf8'))
+// the fork's default config with the deployment's data, which the fixture mirrors
+const deployedConfig = { ...JSON.parse(fs.readFileSync(path.join(uiRoot, 'public/config.json'), 'utf8')), ...deployment }
 
 const zone = { id: 'z-1', name: 'zone', networktype: 'Advanced', securitygroupsenabled: true, allocationstate: 'Enabled' }
 const sgNetwork = { id: 'n-1', name: 'guest', service: [{ name: 'SecurityGroup' }] }
@@ -53,7 +55,7 @@ const wizardParts = ['OwnershipSelection', 'InfoCard', 'DeployButtons', 'Resourc
   'OsBasedImageSelection', 'DiskSizeSelection', 'MultiDiskSelection', 'DiskOfferingSelection', 'ComputeOfferingSelection', 'ComputeSelection',
   'SecurityGroupSelection', 'InstanceNicsNetworkSelectListView', 'DetailsInput', 'DeployInstanceBackupSelection']
 
-const mountWizard = async (apis, config = shippedConfig) => {
+const mountWizard = async (apis, config = deployedConfig) => {
   const store = common.createMockStore({
     app: { device: 'desktop' },
     user: { apis, info: { roletype: 'User', domainid: 'd-1', account: 'student' }, features: {}, zones: [zone] }
@@ -173,9 +175,9 @@ describe('deploy wizard API guards', () => {
       return wrapper.findAll('.ant-radio-button-wrapper input').map(input => input.element.value)
     }
 
-    expect(typesFor(minimalUser.apis, shippedConfig)).toEqual(['templateid', 'volumeid'])
+    expect(typesFor(minimalUser.apis, deployedConfig)).toEqual(['templateid', 'volumeid'])
     // a list the role cannot call removes its type; the snapshot type is the config's to hide
-    expect(typesFor([...minimalUser.apis, 'listIsos'], { ...shippedConfig, hidden: {} })).toEqual(['templateid', 'isoid', 'volumeid', 'snapshotid'])
-    expect(typesFor(minimalUser.apis.filter(api => api !== 'listVolumes'), shippedConfig)).toEqual(['templateid'])
+    expect(typesFor([...minimalUser.apis, 'listIsos'], { ...deployedConfig, hidden: {} })).toEqual(['templateid', 'isoid', 'volumeid', 'snapshotid'])
+    expect(typesFor(minimalUser.apis.filter(api => api !== 'listVolumes'), deployedConfig)).toEqual(['templateid'])
   })
 })

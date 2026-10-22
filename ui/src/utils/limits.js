@@ -16,14 +16,14 @@
 // under the License.
 
 import { getAPI } from '@/api'
+import { CPU_LIMIT_TAG, gpuTypeOf, hostTagsOf } from '@/utils/gpuType'
+
+export { CPU_LIMIT_TAG, gpuTypeOf }
 
 // the resource types of the tagged limit rows the wizards read
 export const LIMIT_CPU = 'cpu'
 export const LIMIT_MEMORY = 'memory'
 export const LIMIT_GPU = 'gpu'
-
-// the tag every CPU-only offering and every host carries
-export const CPU_LIMIT_TAG = 'cpu'
 
 const TYPE_ORDINALS = { cpu: 8, memory: 9, gpu: 16 }
 const UNLIMITED = -1
@@ -65,20 +65,28 @@ export function gpuRemaining (quota) {
   return remaining
 }
 
-const hostTagsOf = (offering) => String((offering && offering.hosttags) || '').split(',').map(tag => tag.trim()).filter(tag => tag)
+/**
+ * Whether the GPUs of an offering exceed what is left of the quota on any of its host tags that has a GPU limit row: the
+ * server reserves them on every limit tag the offering carries, whatever the order of the tags, and the CPU-only tag's row
+ * is zero. Tags without a row, unlimited tags and offerings without GPUs never exceed it.
+ */
+export function exceedsGpuQuota (offering, remaining) {
+  if (!remaining || !offering || !(Number(offering.gpucount) > 0)) {
+    return false
+  }
+  return hostTagsOf(offering).some(tag => {
+    if (!Object.prototype.hasOwnProperty.call(remaining, tag)) {
+      return false
+    }
+    const left = remaining[tag]
+    return left !== null && left !== undefined && Number(offering.gpucount) > left
+  })
+}
 
 /** The limit tags of an offering: its host tags, or the CPU-only tag when it names none. */
 export function limitTagsOf (offering) {
   const tags = hostTagsOf(offering)
   return tags.length > 0 ? tags : [CPU_LIMIT_TAG]
-}
-
-/** The GPU type of an offering: the host tag that has a GPU limit row; null for an offering without a GPU or without such a tag. */
-export function gpuTypeOf (offering, remaining) {
-  if (!offering || !(Number(offering.gpucount) > 0)) {
-    return null
-  }
-  return hostTagsOf(offering).find(tag => remaining && Object.prototype.hasOwnProperty.call(remaining, tag)) || null
 }
 
 const rowsOf = (json, response, row) => (json && json[response] && json[response][row]) || []

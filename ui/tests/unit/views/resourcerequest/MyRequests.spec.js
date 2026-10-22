@@ -45,8 +45,6 @@ const answers = (requests, failing = []) => (command) => {
       return Promise.resolve({ listresourcelimitrequestsresponse: { count: requests.length, resourcelimitrequest: requests } })
     case 'listResourceLimits':
       return Promise.resolve({ listresourcelimitsresponse: { count: mockData.limits.length, resourcelimit: mockData.limits } })
-    case 'listServiceOfferings':
-      return Promise.resolve({ listserviceofferingsresponse: { count: mockData.offerings.length, serviceoffering: mockData.offerings } })
   }
   return Promise.reject(new Error('unexpected ' + command))
 }
@@ -225,12 +223,29 @@ describe('Views > Resource requests > MyRequests.vue', () => {
     wrapper.unmount()
   })
 
-  it('says that the GPU types could not be loaded, reports why, and does not pretend to know the CPU quota', async () => {
-    const notifyError = jest.fn()
-    const wrapper = await mountPage([mockData.approved], {}, { $notifyError: notifyError }, mockData.features, ['listServiceOfferings'])
+  it('takes the GPU types from the server\'s capabilities and asks for no offerings', async () => {
+    const wrapper = await mountPage([mockData.approved])
 
-    expect(notifyError).toHaveBeenCalledTimes(1)
-    expect(notifyError.mock.calls[0][0].message).toBe('listServiceOfferings failed')
+    expect(getAPI.mock.calls.map(call => call[0])).not.toContain('listServiceOfferings')
+    expect(wrapper.find('.ant-alert-warning').exists()).toBe(false)
+    await buttonLabelled(wrapper, 'New request').trigger('click')
+    await flushPromises()
+    expect(wrapper.findComponent(RequestForm).props('gpuTypes')).toEqual(['a100-40g', 'a6000'])
+    expect(Object.keys(wrapper.findComponent(RequestForm).vm.form.gpu)).toEqual(['a100-40g', 'a6000'])
+
+    wrapper.unmount()
+    const other = await mountPage([mockData.approved], {}, {}, { ...mockData.features, quotagputypes: ['h100'] })
+    await buttonLabelled(other, 'New request').trigger('click')
+    await flushPromises()
+    expect(Object.keys(other.findComponent(RequestForm).vm.form.gpu)).toEqual(['h100'])
+    other.unmount()
+  })
+
+  it('says that the GPU types are unknown where the server lists none, offers no GPU inputs, and does not pretend to know the CPU quota', async () => {
+    const features = { ...mockData.features }
+    delete features.quotagputypes
+    const wrapper = await mountPage([mockData.approved], {}, {}, features)
+
     expect(wrapper.find('.ant-alert-warning').text()).toContain('GPU types could not be loaded')
     expect(wrapper.find('.effective-quota [data-quota="cpu"] .quota-value').text()).toBe('\u2014')
 

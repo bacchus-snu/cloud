@@ -33,6 +33,11 @@ export function fetchCapabilities (domainid) {
   return getAPI('listCapabilities', domainid ? { domainid } : {}).then(json => json.listcapabilitiesresponse.capability || {})
 }
 
+/** Whether the server says the caller may ask for the automatic migration of a volume. */
+export function automigrateAllowed (features) {
+  return !!features && features.automigrateallowed === true
+}
+
 const DEFAULT_VCPU_STEP = 2
 
 /** The multiple an Instance's vCPU count must be; the operator's setting, 2 when the server does not say. */

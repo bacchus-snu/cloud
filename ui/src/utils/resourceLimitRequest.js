@@ -39,26 +39,13 @@ export function formatGib (mib) {
   return String(Number(memoryGibOf(mib).toFixed(2)))
 }
 
-/** The GPU types the server sizes: the offerings of one GPU that carry exactly one host tag. */
-export function gpuTypesOf (offerings) {
-  const types = new Set()
-  for (const offering of offerings || []) {
-    if (Number(offering.gpucount) !== 1) {
-      continue
-    }
-    const tags = String(offering.hosttags || '').split(',').map(tag => tag.trim()).filter(tag => tag)
-    if (tags.length === 1) {
-      types.add(tags[0])
-    }
-  }
-  return [...types].sort()
-}
-
-/** The GPU types the server sizes, asked of the GPU offerings; a failed request is left to the caller. */
-export function fetchGpuTypes (getAPI) {
-  return getAPI('listServiceOfferings', { gpuenabled: true, listall: true }).then(json => {
-    return gpuTypesOf(json.listserviceofferingsresponse.serviceoffering)
-  })
+/**
+ * The GPU types a request can name, as the server lists them in the capabilities (the types its quota service sizes);
+ * null where it lists none, so that nothing is offered and nothing is guessed from the offerings.
+ */
+export function quotaGpuTypes (features) {
+  const types = features && features.quotagputypes
+  return Array.isArray(types) ? [...new Set(types.map(String))].sort() : null
 }
 
 export function positiveGpus (gpu) {

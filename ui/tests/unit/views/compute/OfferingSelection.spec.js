@@ -109,6 +109,23 @@ describe('ComputeOfferingSelection', () => {
     expect(wrapper.emitted('select-compute-item')[0]).toEqual(['a100-40g-1'])
   })
 
+  it('disables a GPU offering when any host tag of it that has a limit row is short, whatever the order of its tags', async () => {
+    const items = [
+      gpuOffering('t', 1, 'T'),
+      gpuOffering('t-class', 1, 'T,T-class'),
+      gpuOffering('t-cpu', 1, 'T,cpu'),
+      gpuOffering('cpu-t', 1, 'cpu,T'),
+      gpuOffering('a-b', 1, 'A,B'),
+      gpuOffering('b-a', 1, 'B,A'),
+      gpuOffering('a-t-2', 2, 'A,T')
+    ]
+    const wrapper = mountOfferings({ computeItems: items, gpuQuota: { T: 1, A: 2, B: 0, cpu: 0 } })
+    await flushPromises()
+    const disabled = Object.fromEntries(items.map(item => [item.id, rowOf(wrapper, item.id).disabled]))
+    expect(disabled).toEqual({ t: false, 't-class': false, 't-cpu': true, 'cpu-t': true, 'a-b': true, 'b-a': true, 'a-t-2': true })
+    expect(rowOf(wrapper, 'cpu-t').disabledReason).toBe('quota')
+  })
+
   it('does not preselect a GPU offering that is over its type quota', async () => {
     const items = [gpuOffering('a100-40g-1', 1, 'a100-40g'), cpuOffering]
     const wrapper = mountOfferings({ computeItems: items, gpuQuota: { 'a100-40g': 0 }, loading: true, preFillContent: {} })

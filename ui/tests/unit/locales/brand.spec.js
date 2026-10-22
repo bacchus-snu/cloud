@@ -71,7 +71,7 @@ describe('locales > the product name is a parameter', () => {
       expect(ko[key]).toContain('{product}')
     })
     expect(Object.values(en).filter(value => typeof value === 'string' && value.includes('{product}')).length).toBe(31)
-    expect(Object.values(ko).filter(value => typeof value === 'string' && value.includes('{product}')).length).toBe(18)
+    expect(Object.values(ko).filter(value => typeof value === 'string' && value.includes('{product}')).length).toBe(19)
   })
 
   it('the strings of the removed version notice and links are gone, and nothing in the client asks for them', () => {

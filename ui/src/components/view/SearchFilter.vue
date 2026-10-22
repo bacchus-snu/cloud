@@ -333,7 +333,7 @@ export default {
     },
     getResourceNameById (apiName, responseKey1, responseKey2, id, field) {
       return new Promise((resolve) => {
-        if (!this.$isValidUuid(id)) {
+        if (!this.$isValidUuid(id) || !(apiName in this.$store.getters.apis)) {
           return resolve('')
         }
         getAPI(apiName, { listAll: true, id: id }).then(json => {

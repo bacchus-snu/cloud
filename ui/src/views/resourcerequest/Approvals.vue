@@ -84,7 +84,7 @@
 <script>
 import { getAPI } from '@/api'
 import Breadcrumb from '@/components/widgets/Breadcrumb'
-import { STATES, fetchGpuTypes } from '@/utils/resourceLimitRequest'
+import { STATES, quotaGpuTypes } from '@/utils/resourceLimitRequest'
 import ApproveRequestModal from '@/views/resourcerequest/ApproveRequestModal'
 import DecisionModal from '@/views/resourcerequest/DecisionModal'
 import RequestTable from '@/views/resourcerequest/RequestTable'
@@ -106,7 +106,6 @@ export default {
       total: 0,
       page: 1,
       pageSize: this.$store.getters.defaultListViewPageSize || 20,
-      gpuTypes: [],
       approving: null,
       deciding: null,
       decision: 'reject',
@@ -116,6 +115,9 @@ export default {
     }
   },
   computed: {
+    gpuTypes () {
+      return quotaGpuTypes(this.$store.getters.features) || []
+    },
     pagination () {
       return {
         current: this.page,
@@ -128,7 +130,6 @@ export default {
   },
   created () {
     this.fetchData()
-    this.loadGpuTypes()
   },
   methods: {
     fetchData () {
@@ -145,16 +146,6 @@ export default {
         this.$notifyError(error)
       }).finally(() => {
         this.loading = false
-      })
-    },
-    loadGpuTypes () {
-      if (!('listServiceOfferings' in this.$store.getters.apis)) {
-        return Promise.resolve()
-      }
-      return fetchGpuTypes(getAPI).then(types => {
-        this.gpuTypes = types
-      }).catch(error => {
-        this.$notifyError(error)
       })
     },
     fetchHistory () {

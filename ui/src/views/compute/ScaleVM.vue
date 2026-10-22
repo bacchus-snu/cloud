@@ -70,7 +70,7 @@
       :virtualmachineid="resource.id"
       :capacityOfferingId="capacityOfferingId" />
 
-    <a-form-item :label="$t('label.automigrate.volume')">
+    <a-form-item v-if="canAutoMigrate" :label="$t('label.automigrate.volume')">
       <template #label>
         <tooltip-label :title="$t('label.automigrate.volume')" :tooltip="apiParams.automigrate.description"/>
       </template>
@@ -93,7 +93,7 @@ import ComputeSelection from '@views/compute/wizard/ComputeSelection'
 import DiskSizeSelection from '@views/compute/wizard/DiskSizeSelection'
 import PlacementStep from '@views/compute/wizard/PlacementStep'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
-import { fetchCapabilities, vcpuMinimum, vcpuStep } from '@/utils/placement'
+import { automigrateAllowed, fetchCapabilities, vcpuMinimum, vcpuStep } from '@/utils/placement'
 import { gpuRemaining, gpuTypeOf, limitTagsOf, loadQuota, remainingLimit } from '@/utils/limits'
 
 export default {
@@ -136,6 +136,9 @@ export default {
     }
   },
   computed: {
+    canAutoMigrate () {
+      return automigrateAllowed(this.$store.getters.features)
+    },
     cpuStep () {
       return vcpuStep(this.capabilities)
     },

@@ -21,6 +21,7 @@ import { createStore } from 'vuex'
 import { flushPromises } from '@vue/test-utils'
 
 import common from '../../../common'
+import deployment from '../../../mockData/DeploymentConfig.mock.json'
 import globalStore from '@/store'
 import { vueProps } from '@/vue-app'
 import TranslationMenu from '@/components/header/TranslationMenu'
@@ -33,6 +34,8 @@ jest.mock('@/vue-app', () => ({ vueProps: { $localStorage: { set: jest.fn(), get
 
 const uiRoot = path.resolve(__dirname, '../../../..')
 const shippedConfig = JSON.parse(fs.readFileSync(path.join(uiRoot, 'public/config.json'), 'utf8'))
+// the fork's default config with the deployment's data, which the fixture mirrors
+const deployedConfig = { ...shippedConfig, ...deployment }
 const i18n = common.createMockI18n('en', {})
 const store = (roletype = 'User') => common.createMockStore({
   user: { apis: {}, info: { roletype, firstname: 'Ann', lastname: 'Kim', id: 'u-1', accountid: 'a-1' }, features: {} }
@@ -40,7 +43,7 @@ const store = (roletype = 'User') => common.createMockStore({
 
 describe('header choices come from the config', () => {
   it('the language menu offers en and ko_KR to the user role type and every language to the others', () => {
-    const offered = (roletype, config = shippedConfig) => common.createFactory(TranslationMenu, {
+    const offered = (roletype, config = deployedConfig) => common.createFactory(TranslationMenu, {
       i18n, store: store(roletype), mocks: { $config: config }
     }).vm.languages.map(language => language.key)
     expect(offered('User')).toEqual(['en', 'ko_KR'])
@@ -60,7 +63,7 @@ describe('header choices come from the config', () => {
     })
     const moduleGetters = globalStore.getters
     globalStore.getters = signedIn.getters
-    vueProps.$config = { ...shippedConfig, defaultLanguage: 'ko_KR' }
+    vueProps.$config = { ...deployedConfig, defaultLanguage: 'ko_KR' }
     window.localStorage.clear()
     try {
       const menu = common.createFactory(TranslationMenu, { i18n, store: signedIn, mocks: { $config: vueProps.$config } })
@@ -88,6 +91,7 @@ describe('header choices come from the config', () => {
   it('the default config carries no deployment data; the theme stays the operator\'s; the user menu follows the hidden header list', () => {
     expect(shippedConfig.docBase).toBe('http://docs.cloudstack.apache.org/en/latest')
     expect(shippedConfig.docHelpMappings).toEqual({})
+    expect('hidden' in shippedConfig).toBe(false)
     // every address it names is upstream's, and it names no mailbox
     const text = JSON.stringify(shippedConfig)
     const hosts = (text.match(/https?:\/\/[^/'"\\\s]+/g) || []).map(url => new URL(url).hostname)

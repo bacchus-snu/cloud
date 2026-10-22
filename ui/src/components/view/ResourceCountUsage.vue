@@ -119,10 +119,10 @@ export default {
     }
   },
   computed: {
-    // with the remaining storage quota reported, volumes and snapshots count against one storage quota
+    // with the remaining storage quota reported for one combined quota, volumes and snapshots count against it
     shownUsage () {
       let list = this.usageList
-      if (this.resource && 'remainingstoragequota' in this.resource) {
+      if (this.resource && 'remainingstoragequota' in this.resource && this.resource.storagequotacombined === true) {
         list = list.filter(item => item !== 'secondarystorage').map(item => item === 'primarystorage' ? 'storage' : item)
       }
       return list.filter(item => !this.$isHidden('dashboard', item))

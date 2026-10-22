@@ -531,9 +531,9 @@ export default {
         .slice()
         .sort((a, b) => String(a.tag).localeCompare(String(b.tag)))
     },
-    // volumes and snapshots count against one storage quota whose remainder the server reports
+    // volumes and snapshots count against one storage quota whose remainder the server reports, when the server says they do
     storageRows () {
-      if ('remainingstoragequota' in this.entity) {
+      if ('remainingstoragequota' in this.entity && this.entity.storagequotacombined === true) {
         return ['volume', 'snapshot', 'template', 'storage', 'backup', 'backupstorage', 'bucket', 'objectstorage']
       }
       return ['volume', 'snapshot', 'template', 'primarystorage', 'secondarystorage', 'backup', 'backupstorage', 'bucket', 'objectstorage']

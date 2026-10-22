@@ -17,6 +17,10 @@
 import { shallowRef, defineAsyncComponent } from 'vue'
 import store from '@/store'
 import { getFilteredExternalDetails } from '@/utils/extension'
+import { showCpuSpeed } from '@/utils/uiConfig'
+
+// the CPU clock is shown on the offering pages only where the deployment's config asks for it
+const withoutCpuSpeed = (fields) => showCpuSpeed() ? fields : fields.filter(field => field !== 'cpuspeed')
 
 export default {
   name: 'offering',
@@ -30,7 +34,7 @@ export default {
       docHelp: 'adminguide/service_offerings.html#compute-and-disk-service-offerings',
       icon: 'cloud-outlined',
       permission: ['listServiceOfferings'],
-      searchFilters: ['name', 'gpuenabled', 'zoneid', 'domainid', 'cpunumber', 'cpuspeed', 'memory'],
+      searchFilters: () => withoutCpuSpeed(['name', 'gpuenabled', 'zoneid', 'domainid', 'cpunumber', 'cpuspeed', 'memory']),
       params: () => {
         var params = {}
         if (['Admin', 'DomainAdmin'].includes(store.getters.userInfo.roletype)) {
@@ -39,7 +43,7 @@ export default {
         return params
       },
       filters: ['active', 'inactive'],
-      columns: ['name', 'displaytext', 'state', 'cpunumber', 'cpuspeed', 'memory', 'gpu', 'domain', 'zone', 'order'],
+      columns: () => withoutCpuSpeed(['name', 'displaytext', 'state', 'cpunumber', 'cpuspeed', 'memory', 'gpu', 'domain', 'zone', 'order']),
       details: () => {
         var fields = ['name', 'id', 'displaytext', 'offerha', 'provisioningtype', 'storagetype', 'iscustomized', 'iscustomizediops', 'limitcpuuse', 'cpunumber', 'cpuspeed', 'memory', 'hosttags', 'tags', 'storageaccessgroups', 'storagetags', 'domain', 'zone', 'created', 'dynamicscalingenabled', 'diskofferingstrictness', 'encryptroot', 'purgeresources', 'leaseduration', 'gpucardid', 'gpucardname', 'vgpuprofileid', 'vgpuprofilename', 'gpucount', 'gpudisplay', 'leaseexpiryaction', 'externaldetails']
         if (store.getters.apis.createServiceOffering &&
@@ -57,7 +61,7 @@ export default {
             fields.push(field)
           }
         }
-        return fields
+        return withoutCpuSpeed(fields)
       },
       resourceType: 'ServiceOffering',
       tabs: [
@@ -160,11 +164,11 @@ export default {
       icon: 'setting-outlined',
       docHelp: 'adminguide/service_offerings.html#system-service-offerings',
       permission: ['listServiceOfferings', 'listInfrastructure'],
-      searchFilters: ['name', 'zoneid', 'domainid', 'cpunumber', 'cpuspeed', 'memory'],
+      searchFilters: () => withoutCpuSpeed(['name', 'zoneid', 'domainid', 'cpunumber', 'cpuspeed', 'memory']),
       params: { issystem: 'true', isrecursive: 'true' },
-      columns: ['name', 'state', 'systemvmtype', 'cpunumber', 'cpuspeed', 'memory', 'storagetype', 'offerha', 'order'],
+      columns: () => withoutCpuSpeed(['name', 'state', 'systemvmtype', 'cpunumber', 'cpuspeed', 'memory', 'storagetype', 'offerha', 'order']),
       filters: ['active', 'inactive'],
-      details: ['name', 'id', 'displaytext', 'systemvmtype', 'provisioningtype', 'storagetype', 'iscustomized', 'limitcpuuse', 'cpunumber', 'cpuspeed', 'memory', 'storagetags', 'hosttags', 'tags', 'domain', 'zone', 'created', 'dynamicscalingenabled', 'diskofferingstrictness'],
+      details: () => withoutCpuSpeed(['name', 'id', 'displaytext', 'systemvmtype', 'provisioningtype', 'storagetype', 'iscustomized', 'limitcpuuse', 'cpunumber', 'cpuspeed', 'memory', 'storagetags', 'hosttags', 'tags', 'domain', 'zone', 'created', 'dynamicscalingenabled', 'diskofferingstrictness']),
       resourceType: 'ServiceOffering',
       tabs: [
         {

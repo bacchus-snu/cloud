@@ -29,6 +29,7 @@ import InstanceTab from '@/views/compute/InstanceTab'
 import compute from '@/config/section/compute'
 import storage from '@/config/section/storage'
 import minimalUser from '../../../mockData/MinimalUserApis.mock.json'
+import deployment from '../../../mockData/DeploymentConfig.mock.json'
 
 // one answer that fits every list the page asks for: nothing listed
 const mockEmptyAnswer = { listresourceiconresponse: { icon: [] }, listaccountsresponse: { account: [] }, listtagsresponse: { tag: [] } }
@@ -37,7 +38,8 @@ jest.mock('@/store', () => ({ getters: { features: {}, apis: {}, userInfo: {}, z
 jest.mock('@/vue-app', () => ({ vueProps: { $localStorage: { set: jest.fn(), get: jest.fn(() => null) }, $config: {} } }))
 
 const uiRoot = path.resolve(__dirname, '../../../..')
-const shippedConfig = JSON.parse(fs.readFileSync(path.join(uiRoot, 'public/config.json'), 'utf8'))
+// the fork's default config with the deployment's data, which the fixture mirrors
+const deployedConfig = { ...JSON.parse(fs.readFileSync(path.join(uiRoot, 'public/config.json'), 'utf8')), ...deployment }
 const apiMap = (names) => Object.fromEntries(names.map(name => [name, { params: [] }]))
 const i18n = common.createMockI18n('en', {})
 const storeWith = (apis, roletype = 'User', features = {}) =>
@@ -83,7 +85,7 @@ const mountInstanceTab = async (apis) => {
     i18n,
     store: storeWith(apis),
     props: { resource: gpuVm, loading: false },
-    mocks: { $config: shippedConfig, parentFetchData: jest.fn() },
+    mocks: { $config: deployedConfig, parentFetchData: jest.fn() },
     provide: { parentFetchData: jest.fn() },
     stubs: Object.fromEntries(stubs.map(name => [name, true]))
   })
@@ -106,7 +108,7 @@ describe('instance page for the minimal user role', () => {
       { name: 'events', api: 'listEvents', show: () => true, component: Plain }
     ]
     const mountView = (apis) => common.createFactory(ResourceView, {
-      router, i18n, store: storeWith(apis), props: { resource: { id: 'v-1' }, loading: false, tabs }, mocks: { $config: shippedConfig }
+      router, i18n, store: storeWith(apis), props: { resource: { id: 'v-1' }, loading: false, tabs }, mocks: { $config: deployedConfig }
     })
     const without = mountView(apiMap(['listEvents']))
     expect(tabKeys(without)).toEqual(['label.details', 'label.events'])
@@ -141,11 +143,27 @@ describe('instance page for the minimal user role', () => {
     // the card names the GPU without a link to the device pages a user cannot open
     const router = await vmRouter()
     const card = common.createFactory(InfoCard, {
-      router, i18n, store: storeWith(apiMap(minimalUser.apis)), props: { resource: gpuVm, loading: false }, mocks: { $config: shippedConfig }
+      router, i18n, store: storeWith(apiMap(minimalUser.apis)), props: { resource: gpuVm, loading: false }, mocks: { $config: deployedConfig }
     })
     expect(card.text()).toContain('2 x')
     expect(card.text()).toContain('A100-SXM4-40GB')
     expect(card.html()).not.toContain('/gpucard/')
+  })
+
+  it('the card names the network of an interface with a link only for a role that has the network pages', async () => {
+    const router = await vmRouter()
+    const withNic = { ...gpuVm, nic: [{ id: 'nic-1', ipaddress: '10.0.0.5', networkid: 'net-1', networkname: 'guest-net', isdefault: true }] }
+    const cardFor = (apis) => common.createFactory(InfoCard, {
+      router, i18n, store: storeWith(apiMap(apis)), props: { resource: withNic, loading: false }, mocks: { $config: deployedConfig }
+    })
+
+    const student = cardFor(minimalUser.apis)
+    expect(student.text()).toContain('guest-net')
+    expect(student.html()).not.toContain('/guestnetwork/')
+
+    const member = cardFor([...minimalUser.apis, 'listNetworks'])
+    expect(member.text()).toContain('guest-net')
+    expect(member.html()).toContain('/guestnetwork/net-1')
   })
 
   it('instance Details show no CPU speed with the default showCpuSpeed false, and show it only when the flag is true', async () => {
@@ -153,13 +171,13 @@ describe('instance page for the minimal user role', () => {
     const cardWith = (config) => common.createFactory(InfoCard, {
       router, i18n, store: storeWith(apiMap(minimalUser.apis)), props: { resource: gpuVm, loading: false }, mocks: { $config: config }
     })
-    expect(shippedConfig.showCpuSpeed).toBe(false)
-    const plain = cardWith(shippedConfig)
+    expect(deployedConfig.showCpuSpeed).toBe(false)
+    const plain = cardWith(deployedConfig)
     expect(plain.text()).toContain('32')
     expect(plain.text()).not.toMatch(/GHz|MHz/)
-    const absent = cardWith({ ...shippedConfig, showCpuSpeed: undefined })
+    const absent = cardWith({ ...deployedConfig, showCpuSpeed: undefined })
     expect(absent.text()).not.toMatch(/GHz|MHz/)
-    const speed = cardWith({ ...shippedConfig, showCpuSpeed: true })
+    const speed = cardWith({ ...deployedConfig, showCpuSpeed: true })
     expect(speed.text()).toContain('2.45 GHz')
 
     const details = compute.children.find(child => child.name === 'vm').details()
@@ -177,7 +195,7 @@ describe('instance page for the minimal user role', () => {
       mocks: { $config: config }
     }).vm.visibleActions.map(action => action.api)
 
-    const shipped = actionApis(shippedConfig)
+    const shipped = actionApis(deployedConfig)
     expect(shipped).not.toContain('createSnapshot')
     expect(shipped).toEqual(['updateVirtualMachine', 'stopVirtualMachine', 'renewVirtualMachineLease', 'rebootVirtualMachine',
       'restoreVirtualMachine', 'scaleVirtualMachine', 'destroyVirtualMachine'])
@@ -185,7 +203,7 @@ describe('instance page for the minimal user role', () => {
       'migrateVirtualMachine', 'resetUserDataForVirtualMachine', 'resetSSHKeyForVirtualMachine', 'expungeVirtualMachine']) {
       expect(shipped).not.toContain(absent)
     }
-    expect(actionApis({ ...shippedConfig, hidden: {} })).toContain('createSnapshot')
+    expect(actionApis({ ...deployedConfig, hidden: {} })).toContain('createSnapshot')
 
     const fields = (config) => DetailsTab.methods.fetchDetails.call({
       $route: { meta: { name: 'vm', details: compute.children.find(child => child.name === 'vm').details } },
@@ -193,8 +211,8 @@ describe('instance page for the minimal user role', () => {
       detailsTitles: {},
       projectname: null
     })
-    expect(fields(shippedConfig)).not.toContain('hypervisor')
-    expect(fields(shippedConfig)).toEqual(expect.arrayContaining(['name', 'state', 'serviceofferingname', 'gpucardname', 'gpucount']))
+    expect(fields(deployedConfig)).not.toContain('hypervisor')
+    expect(fields(deployedConfig)).toEqual(expect.arrayContaining(['name', 'state', 'serviceofferingname', 'gpucardname', 'gpucount']))
     expect(fields({ hidden: {} })).toContain('hypervisor')
   })
 

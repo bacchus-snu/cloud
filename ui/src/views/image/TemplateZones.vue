@@ -219,7 +219,7 @@
               <exclamation-circle-outlined style="color: red; fontSize: 30px; display: inline-flex" />
               <span
                 style="padding-left: 5px"
-                v-html="`<b>${selectedRowKeys.length} ` + $t('label.items.selected') + `. </b>`" />
+                v-html="`<b>` + $t('label.items.selected.count', { count: selectedRowKeys.length }) + `. </b>`" />
               <span v-html="$t(message.confirmMessage)" />
             </template>
           </a-alert>

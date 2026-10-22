@@ -583,6 +583,10 @@ export default {
       const zoneId = this.form.zoneid || (this.createVolumeFromVM && this.resource?.zoneid)
       if (!zoneId) return
       if (zoneId === this.kmsKeysZoneId) return
+      if (!('listKMSKeys' in this.$store.getters.apis)) {
+        this.kmsKeys = null
+        return
+      }
       this.kmsKeysZoneId = zoneId
       this.loadingKmsKeys = true
       this.kmsKeys = []

@@ -375,7 +375,9 @@ export default {
       })
       if (this.resourceType === 'Volume') {
         this.fetchZoneData()
-        this.fetchStoragePoolData()
+        if ('listStoragePools' in this.$store.getters.apis) {
+          this.fetchStoragePoolData()
+        }
       }
     },
     fetchZoneData () {

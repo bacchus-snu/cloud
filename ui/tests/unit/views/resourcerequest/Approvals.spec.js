@@ -43,14 +43,10 @@ const listed = (requests) => Promise.resolve({
   listresourcelimitrequestsresponse: { count: requests.length, resourcelimitrequest: requests }
 })
 
-const answers = (queue, history, offeringsFail) => (command, params) => {
+const answers = (queue, history) => (command, params) => {
   switch (command) {
     case 'listResourceLimitRequests':
       return params.account ? listed(history) : listed(queue.filter(request => !params.state || request.state === params.state))
-    case 'listServiceOfferings':
-      return offeringsFail
-        ? Promise.reject(new Error('listServiceOfferings is not allowed'))
-        : Promise.resolve({ listserviceofferingsresponse: { serviceoffering: mockData.offerings } })
   }
   return Promise.reject(new Error('unexpected ' + command))
 }
@@ -59,11 +55,11 @@ const approver = { accountid: 'acc-me' }
 const own = { ...mockData.pending, id: 'r-own', account: 'carol', accountid: approver.accountid }
 
 const mountPage = async (queue = [mockData.pending, mockData.approved, mockData.rejected], history = [mockData.approved, mockData.rejected],
-  { mocks = {}, offeringsFail = false } = {}) => {
-  getAPI.mockImplementation(answers(queue, history, offeringsFail))
+  { mocks = {}, features = mockData.features } = {}) => {
+  getAPI.mockImplementation(answers(queue, history))
   postAPI.mockResolvedValue({})
   const store = common.createMockStore({
-    user: { apis: mockData.approverApis, features: mockData.features, info: approver, timezoneoffset: 0, usebrowsertimezone: false }
+    user: { apis: mockData.approverApis, features, info: approver, timezoneoffset: 0, usebrowsertimezone: false }
   })
   const i18n = common.createMockI18n('en', { en: messages })
   const router = common.createMockRouter()
@@ -217,13 +213,29 @@ describe('Views > Resource requests > Approvals.vue', () => {
     wrapper.unmount()
   })
 
-  it('reports that the GPU types could not be loaded instead of dropping them silently', async () => {
-    const notifyError = jest.fn()
-    const wrapper = await mountPage(undefined, undefined, { mocks: { $notifyError: notifyError }, offeringsFail: true })
+  it('takes the GPU types for the approval from the server\'s capabilities and asks for no offerings', async () => {
+    const wrapper = await mountPage()
 
-    expect(notifyError).toHaveBeenCalledTimes(1)
-    expect(notifyError.mock.calls[0][0].message).toBe('listServiceOfferings is not allowed')
-    expect(wrapper.findAll('.approval-list tbody tr.ant-table-row')).toHaveLength(1)
+    expect(getAPI.mock.calls.map(call => call[0])).not.toContain('listServiceOfferings')
+    await buttonLabelled(wrapper, 'Approve').trigger('click')
+    await flushPromises()
+    const modal = wrapper.findComponent(ApproveRequestModal)
+    expect(modal.props('gpuTypes')).toEqual(['a100-40g', 'a6000'])
+    expect(Object.keys(modal.vm.form.gpu)).toEqual(['a100-40g', 'a6000'])
+    wrapper.unmount()
+  })
+
+  it('offers only the GPU types the request names where the server lists none', async () => {
+    const features = { ...mockData.features }
+    delete features.quotagputypes
+    const wrapper = await mountPage(undefined, undefined, { features })
+
+    expect(getAPI.mock.calls.map(call => call[0])).not.toContain('listServiceOfferings')
+    await buttonLabelled(wrapper, 'Approve').trigger('click')
+    await flushPromises()
+    const modal = wrapper.findComponent(ApproveRequestModal)
+    expect(modal.props('gpuTypes')).toEqual([])
+    expect(Object.keys(modal.vm.form.gpu)).toEqual(['a100-40g'])
     wrapper.unmount()
   })
 })

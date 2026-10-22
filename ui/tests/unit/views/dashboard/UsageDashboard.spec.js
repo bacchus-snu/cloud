@@ -25,6 +25,7 @@ import UsageDashboard from '@/views/dashboard/UsageDashboard'
 import ResourceCountUsage from '@/components/view/ResourceCountUsage'
 import accountSection from '@/config/section/account'
 import minimalUser from '../../../mockData/MinimalUserApis.mock.json'
+import deployment from '../../../mockData/DeploymentConfig.mock.json'
 
 jest.mock('@/api', () => ({ getAPI: jest.fn(), postAPI: jest.fn(), callAPI: jest.fn() }))
 jest.mock('@/store', () => ({
@@ -34,7 +35,8 @@ jest.mock('@/store', () => ({
 jest.mock('@/vue-app', () => ({ vueProps: { $localStorage: { set: jest.fn(), get: jest.fn(() => null) }, $config: {} } }))
 
 const uiRoot = path.resolve(__dirname, '../../../..')
-const shippedConfig = JSON.parse(fs.readFileSync(path.join(uiRoot, 'public/config.json'), 'utf8'))
+// the fork's default config with the deployment's data, which the fixture mirrors
+const deployedConfig = { ...JSON.parse(fs.readFileSync(path.join(uiRoot, 'public/config.json'), 'utf8')), ...deployment }
 const en = JSON.parse(fs.readFileSync(path.join(uiRoot, 'public/locales/en.json'), 'utf8'))
 const ko = JSON.parse(fs.readFileSync(path.join(uiRoot, 'public/locales/ko_KR.json'), 'utf8'))
 
@@ -62,6 +64,7 @@ const account = {
   ...usage('primarystorage', 10, '100', '90'),
   ...usage('secondarystorage', 5, 'Unlimited', 'Unlimited'),
   remainingstoragequota: 85,
+  storagequotacombined: true,
   taggedresources: [
     { resourcetype: 16, resourcetypename: 'gpu', tag: 'a100-40g', limit: 2, total: 2, available: 0 },
     { resourcetype: 16, resourcetypename: 'gpu', tag: 'a6000', limit: 4, total: 0, available: 4 },
@@ -90,7 +93,10 @@ const answer = (command, params) => {
   return Promise.resolve({})
 }
 
-const mountDashboard = async ({ apis = minimalUser.apis, config = shippedConfig, features = {}, locale = 'en' } = {}) => {
+const mountDashboard = async ({ apis = minimalUser.apis, config = deployedConfig, features = {}, locale = 'en', owner } = {}) => {
+  getAPI.mockImplementation((command, params) => owner && command === 'listAccounts'
+    ? Promise.resolve({ listaccountsresponse: { account: [owner] } })
+    : answer(command, params))
   const i18n = common.createMockI18n(locale, { en, ko_KR: ko })
   const store = common.createMockStore({
     user: { apis: apiMap(apis), info: { roletype: 'User', accountid: 'a-1' }, features: { instanceleaseenabled: true, resourcelimitrequestallowed: true, ...features } }
@@ -151,6 +157,25 @@ describe('dashboard of the minimal user role', () => {
     expect(text).not.toContain(en['label.secondary.storage'])
   })
 
+  it('the dashboard shows primary and secondary storage apart when the server says they are not one quota', async () => {
+    const apart = await mountDashboard({ owner: { ...account, storagequotacombined: false } })
+    expect(apart.find('.dashboard-storage-quota').exists()).toBe(false)
+    const storage = apart.find('.dashboard-storage').text()
+    expect(storage).toContain(en['label.primary.storage'])
+    expect(storage).toContain(en['label.secondary.storage'])
+    expect(storage).not.toContain(en['label.storage.quota'])
+    expect(storage).not.toContain(en['message.storage.quota.combined'])
+    expect(storage).toContain('90')
+
+    const withoutTheField = await mountDashboard({ owner: { ...account, storagequotacombined: undefined } })
+    expect(withoutTheField.find('.dashboard-storage-quota').exists()).toBe(false)
+    expect(withoutTheField.find('.dashboard-storage').text()).toContain(en['label.primary.storage'])
+
+    const combined = await mountDashboard()
+    expect(combined.find('.dashboard-storage-quota').exists()).toBe(true)
+    expect(combined.find('.dashboard-storage').text()).not.toContain(en['label.primary.storage'])
+  })
+
   it('the dashboard asks for the remaining storage quota of the caller\'s account only, and calls only what the role allows', async () => {
     const wrapper = await mountDashboard()
     expect(getAPI).toHaveBeenCalledWith('listAccounts', { id: 'a-1', details: 'all,storagequota' })
@@ -178,10 +203,10 @@ describe('dashboard of the minimal user role', () => {
     expect(getAPI).toHaveBeenCalledWith('listServiceOfferings', expect.objectContaining({ gpuenabled: true }))
 
     getAPI.mockClear()
-    const hidden = await mountDashboard({ config: { ...shippedConfig, showGpuSlots: false } })
+    const hidden = await mountDashboard({ config: { ...deployedConfig, showGpuSlots: false } })
     expect(hidden.findAll('.dashboard-gpu-slot')).toHaveLength(0)
     expect(getAPI).not.toHaveBeenCalledWith('listServiceOfferings', expect.objectContaining({ gpuenabled: true }))
-    expect(shippedConfig.showGpuSlots).toBe(true)
+    expect(deployedConfig.showGpuSlots).toBe(true)
   })
 
   it('dashboard lists GPU leases with their remaining time and renews through the lease API', async () => {
@@ -227,7 +252,7 @@ describe('dashboard of the minimal user role', () => {
       props: { resource: account },
       mocks: { $config: config }
     })
-    const page = limits(shippedConfig)
+    const page = limits(deployedConfig)
     for (const key of ['label.projectlimit', 'label.networklimit', 'label.templatelimit', 'label.bucketlimit', 'label.primarystoragelimit',
       'label.secondarystoragelimit']) {
       expect(page.text()).not.toContain(en[key] || key)
@@ -237,11 +262,39 @@ describe('dashboard of the minimal user role', () => {
     expect(page.find('.storage-quota').text()).not.toContain('100')
     expect(page.vm.taggedUsage.gpu.map(row => row.tag)).toEqual(['a100-40g', 'a6000'])
     // without the block every row of the account is listed
-    expect(limits({ ...shippedConfig, hidden: {} }).vm.shownUsage).toEqual(expect.arrayContaining(['project', 'network', 'template', 'bucket', 'storage']))
+    expect(limits({ ...deployedConfig, hidden: {} }).vm.shownUsage).toEqual(expect.arrayContaining(['project', 'network', 'template', 'bucket', 'storage']))
+  })
+
+  it('the limits page shows primary and secondary storage apart when the server says they are not one quota', async () => {
+    const router = common.createMockRouter([{ name: 'account', path: '/account/:id', meta: { name: 'account' }, component: {} }])
+    router.push('/account/a-1')
+    await router.isReady()
+    const limits = (resource) => common.createFactory(ResourceCountUsage, {
+      router,
+      i18n: common.createMockI18n('en', { en }),
+      store: common.createMockStore({ user: { apis: {}, info: { roletype: 'User' }, features: {} } }),
+      props: { resource },
+      mocks: { $config: { ...deployedConfig, hidden: {} } }
+    })
+
+    const apart = limits({ ...account, storagequotacombined: false })
+    expect(apart.vm.shownUsage).toEqual(expect.arrayContaining(['primarystorage', 'secondarystorage']))
+    expect(apart.vm.shownUsage).not.toContain('storage')
+    expect(apart.find('.storage-quota').exists()).toBe(false)
+    expect(apart.text()).toContain(en['label.primarystoragelimit'])
+    expect(apart.text()).toContain(en['label.secondarystoragelimit'])
+
+    const combined = limits(account)
+    expect(combined.vm.shownUsage).toContain('storage')
+    expect(combined.vm.shownUsage).not.toEqual(expect.arrayContaining(['primarystorage']))
+    expect(combined.find('.storage-quota').text()).toContain(en['message.storage.quota.combined'])
+
+    const unknown = limits({ ...account, storagequotacombined: undefined })
+    expect(unknown.vm.shownUsage).toEqual(expect.arrayContaining(['primarystorage', 'secondarystorage']))
   })
 
   it('the default help card is off and carries no link; a deployment\'s config.json brings its own', () => {
-    expect(shippedConfig.userCard.enabled).toBe(false)
-    expect(shippedConfig.userCard.links).toEqual([])
+    expect(deployedConfig.userCard.enabled).toBe(false)
+    expect(deployedConfig.userCard.links).toEqual([])
   })
 })

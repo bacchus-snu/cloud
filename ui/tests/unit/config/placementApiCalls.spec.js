@@ -33,7 +33,7 @@ const views = {
   'views/storage/AttachVolume.vue': ['attachVolume', 'listVirtualMachines'],
   'views/compute/DestroyVM.vue': ['destroyVirtualMachine', 'listVolumes'],
   'views/compute/ScaleVM.vue': ['listDiskOfferings', 'listServiceOfferings', 'listTemplates', 'scaleVirtualMachine'],
-  'views/compute/ReinstallVm.vue': ['listDiskOfferings', 'listOsCategories', 'listTemplates', 'restoreVirtualMachine']
+  'views/compute/ReinstallVm.vue': ['listDiskOfferings', 'listOsCategories', 'listTemplates', 'listVolumes', 'restoreVirtualMachine']
 }
 
 // the pod, cluster and host lists of the start dialog are asked only for the Admin role type, as before

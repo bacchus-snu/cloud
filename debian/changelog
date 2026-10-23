@@ -1,3 +1,11 @@
+cloudstack (4.23.0.100+snucse.5) unstable; urgency=low
+
+  * Volume copies between hosts complete: the transfer units run their
+    arguments as given
+  * The agent package needs systemd 254 or later
+
+ -- SNUCSE Cloud maintainers <contact@bacchus.snucse.org>  Fri, 23 Oct 2026 14:00:54 -0400
+
 cloudstack (4.23.0.100+snucse.4) unstable; urgency=low
 
   * The UI asks and shows memory in GiB, in steps of a tenth

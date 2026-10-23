@@ -71,6 +71,7 @@
   "allowSettingTheme": false,
   "displayProjectFieldOnLogin": false,
   "foldPasswordLogin": true,
+  "foldedLoginProviders": [],
   "imageSelectionInterface": "modern",
   "showUserCategoryForModernImageSelection": true,
   "showAllCategoryForModernImageSelection": false,

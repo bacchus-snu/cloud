@@ -34,9 +34,9 @@
         <div class="oidc-refusal" v-html="oidcRefusal"></div>
       </template>
     </a-alert>
-    <div v-if="oidcProviders.length > 0" class="oidc-providers">
+    <div v-if="listedProviders.length > 0" class="oidc-providers">
       <a-button
-        v-for="(provider, index) in oidcProviders"
+        v-for="(provider, index) in listedProviders"
         :key="provider.name"
         :type="index === 0 ? 'primary' : 'default'"
         size="large"
@@ -49,6 +49,16 @@
       <a-button type="link" size="small" @click="passwordFormOpen = !passwordFormOpen">{{ $t('label.login.password.form') }}</a-button>
     </div>
     <div v-if="showPasswordForm" class="password-login" v-ctrl-enter="handleSubmit">
+      <div v-if="foldedProviders.length > 0" class="folded-providers">
+        <a-button
+          v-for="provider in foldedProviders"
+          :key="provider.name"
+          size="large"
+          block
+          class="oidc-login-button"
+          :href="oidcLoginUrl(provider)"
+        >{{ $t('label.login.with.provider', { provider: provider.label }) }}</a-button>
+      </div>
       <a-tabs
         class="tab-center"
         :key="$i18n.locale"
@@ -243,14 +253,22 @@ export default {
     }
   },
   computed: {
+    // the deployment's foldedLoginProviders are offered only with the password form, inside the administrator section
+    listedProviders () {
+      return this.oidcProviders.filter(provider => !this.isFolded(provider.name))
+    },
+    foldedProviders () {
+      return this.oidcProviders.filter(provider => this.isFolded(provider.name))
+    },
     passwordFolded () {
-      return this.oidcProviders.length > 0 && this.$config.foldPasswordLogin !== false
+      return this.listedProviders.length > 0 && this.$config.foldPasswordLogin !== false
     },
     showPasswordForm () {
       return !this.passwordFolded || this.passwordFormOpen
     },
     endSessionProviders () {
-      return this.oidcProviders.filter(provider => provider.endsessionurl && provider.endsessionlabel)
+      return (this.showPasswordForm ? this.oidcProviders : this.listedProviders)
+        .filter(provider => provider.endsessionurl && provider.endsessionlabel)
     },
     oidcErrorMessage () {
       if (!this.oidcError) {
@@ -328,6 +346,9 @@ export default {
         return
       }
       this.oidcError = { code, provider: url.searchParams.get('provider') }
+      if (this.isFolded(this.oidcError.provider)) {
+        this.passwordFormOpen = true
+      }
       url.searchParams.delete('oidcerror')
       url.searchParams.delete('provider')
       window.history.replaceState(window.history.state, '', url.toString())
@@ -359,6 +380,9 @@ export default {
           this.forgotPasswordEnabled = false
         }
       })
+    },
+    isFolded (name) {
+      return (this.$config.foldedLoginProviders || []).includes(name)
     },
     oidcLoginUrl (provider) {
       const apiBase = this.$config.multipleServer ? (this.server.apiHost || '') + this.server.apiBase : this.$config.apiBase
@@ -510,7 +534,7 @@ export default {
     margin-bottom: 16px;
   }
 
-  .oidc-providers {
+  .oidc-providers, .folded-providers {
     display: flex;
     flex-direction: column;
     gap: 12px;

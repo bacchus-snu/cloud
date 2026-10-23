@@ -137,6 +137,42 @@ describe('Views > auth > Login.vue', () => {
     wrapper.unmount()
   })
 
+  it('offers a folded provider only inside the administrator section', async () => {
+    const wrapper = await mountLogin({ providers: [students, members], config: { foldedLoginProviders: ['members'] } })
+
+    expect(wrapper.findAll('.oidc-providers .oidc-login-button').map(button => button.text())).toEqual(['Log in with Student ID'])
+    expect(wrapper.findAll('.oidc-end-session a').map(link => link.text())).toEqual(['Log out of Student ID'])
+    expect(wrapper.text()).not.toContain('Members')
+
+    await wrapper.find('.password-login-toggle button').trigger('click')
+    expect(wrapper.findAll('.password-login .folded-providers .oidc-login-button').map(button => [button.text(), button.attributes('href')]))
+      .toEqual([['Log in with Members', '/client/api?command=oidcLogin&provider=members']])
+    expect(wrapper.findAll('.oidc-end-session a').map(link => link.text())).toEqual(['Log out of Student ID', 'Log out of Members'])
+    expect(usernameField(wrapper).exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('opens the administrator section for the outcome of a folded provider', async () => {
+    const wrapper = await mountLogin({
+      providers: [students, members],
+      config: { foldedLoginProviders: ['members'] },
+      search: '?oidcerror=notadmitted&provider=members'
+    })
+
+    expect(wrapper.find('.oidc-error').exists()).toBe(true)
+    expect(wrapper.findAll('.password-login .folded-providers .oidc-login-button').map(button => button.text())).toEqual(['Log in with Members'])
+    wrapper.unmount()
+  })
+
+  it('shows folded providers at once when no other provider is offered', async () => {
+    const wrapper = await mountLogin({ providers: [members], config: { foldedLoginProviders: ['members'] } })
+
+    expect(wrapper.find('.password-login-toggle').exists()).toBe(false)
+    expect(wrapper.findAll('.password-login .folded-providers .oidc-login-button').map(button => button.text())).toEqual(['Log in with Members'])
+    expect(usernameField(wrapper).exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('keeps the password form open when the option says so or no provider is offered', async () => {
     const unfolded = await mountLogin({ providers: [students], config: { foldPasswordLogin: false } })
     expect(unfolded.find('.password-login-toggle').exists()).toBe(false)

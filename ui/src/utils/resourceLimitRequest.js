@@ -15,28 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
+import { formatGib, memoryGibOf, memoryMibOf } from '@/utils/memory'
+
+export { formatGib, memoryGibOf, memoryMibOf }
+
 export const APPROVE_API = 'approveResourceLimitRequest'
 export const CHANGED_EVENT = 'resource-limit-request-changed'
 export const STATES = ['Pending', 'Approved', 'Rejected', 'Cancelled', 'Expired', 'Revoked']
 
-const MIB_PER_GIB = 1024
 const DAY_MS = 24 * 60 * 60 * 1000
 
 /** Whether the server says the caller's limits come from grants, so that the caller may request them. */
 export function requestsAllowed (features) {
   return !!features && features.resourcelimitrequestallowed === true
-}
-
-export function memoryMibOf (gib) {
-  return Math.round(Number(gib || 0) * MIB_PER_GIB)
-}
-
-export function memoryGibOf (mib) {
-  return Number(mib || 0) / MIB_PER_GIB
-}
-
-export function formatGib (mib) {
-  return String(Number(memoryGibOf(mib).toFixed(2)))
 }
 
 /**

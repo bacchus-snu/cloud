@@ -100,6 +100,7 @@
 
 <script>
 import { exceedsGpuQuota } from '@/utils/limits'
+import { formatGib, tenthsOfGib } from '@/utils/memory'
 import { showCpuSpeed, showGpuSlots } from '@/utils/uiConfig'
 
 export default {
@@ -251,7 +252,7 @@ export default {
         var maxMemory = item.memory
         var cpuNumberValue = (item.cpunumber !== null && item.cpunumber !== undefined && item.cpunumber > 0) ? item.cpunumber + '' : ''
         var cpuSpeedValue = (item.cpuspeed !== null && item.cpuspeed !== undefined && item.cpuspeed > 0) ? item.cpuspeed + '' : ''
-        var ramValue = (item.memory !== null && item.memory !== undefined && item.memory > 0) ? item.memory + '' : ''
+        var ramValue = (item.memory !== null && item.memory !== undefined && item.memory > 0) ? formatGib(item.memory) : ''
         if (item.iscustomized === true) {
           if ('serviceofferingdetails' in item &&
             'mincpunumber' in item.serviceofferingdetails &&
@@ -263,7 +264,7 @@ export default {
             'minmemory' in item.serviceofferingdetails &&
             'maxmemory' in item.serviceofferingdetails) {
             maxMemory = item.serviceofferingdetails.maxmemory
-            ramValue = item.serviceofferingdetails.minmemory + '-' + item.serviceofferingdetails.maxmemory
+            ramValue = tenthsOfGib(item.serviceofferingdetails.minmemory, Math.ceil) + '-' + tenthsOfGib(item.serviceofferingdetails.maxmemory, Math.floor)
           }
         }
         var disabled = false
@@ -312,7 +313,7 @@ export default {
           name: item.name,
           cpu: cpuNumberValue.length > 0 ? `${cpuNumberValue} CPU` : '',
           cpuspeed: cpuSpeedValue,
-          ram: ramValue.length > 0 ? `${ramValue} MB` : '',
+          ram: ramValue.length > 0 ? `${ramValue} GiB` : '',
           disabled: disabled,
           disabledReason: disabledReason,
           leaseduration: item.leaseduration,

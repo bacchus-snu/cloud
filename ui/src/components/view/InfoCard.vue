@@ -294,7 +294,7 @@
                   :icon="['fa-solid', 'fa-memory']"
                   class="anticon"
                   :style="[$store.getters.darkMode ? { color: 'rgba(255, 255, 255, 0.65)' } : { color: '#888' }]" />
-                {{ resource.memory + ' ' + $t('label.mb.memory') }}
+                {{ formatGib(resource.memory) + ' ' + $t('label.gib.memory') }}
               </div>
               <div>
                 <span v-if="resource.memorykbs && resource.memoryintfreekbs">
@@ -1027,6 +1027,7 @@
 
 <script>
 import { getAPI, postAPI } from '@/api'
+import { formatGib } from '@/utils/memory'
 import { createPathBasedOnVmType } from '@/utils/plugins'
 import { validateLinksAsync } from '@/utils/links'
 import Console from '@/components/widgets/Console'
@@ -1190,6 +1191,7 @@ export default {
   },
   methods: {
     createPathBasedOnVmType: createPathBasedOnVmType,
+    formatGib,
     isHourLease,
     remainingLeaseDaysText,
     updateResourceAdditionalData () {

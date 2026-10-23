@@ -150,6 +150,15 @@ describe('instance page for the minimal user role', () => {
     expect(card.html()).not.toContain('/gpucard/')
   })
 
+  it('the card shows the memory in GiB', async () => {
+    const router = await vmRouter()
+    const card = common.createFactory(InfoCard, {
+      router, i18n, store: storeWith(apiMap(minimalUser.apis)), props: { resource: gpuVm, loading: false }, mocks: { $config: deployedConfig }
+    })
+    expect(card.text()).toContain('256 label.gib.memory')
+    expect(card.text()).not.toContain('262144')
+  })
+
   it('the card names the network of an interface with a link only for a role that has the network pages', async () => {
     const router = await vmRouter()
     const withNic = { ...gpuVm, nic: [{ id: 'nic-1', ipaddress: '10.0.0.5', networkid: 'net-1', networkname: 'guest-net', isdefault: true }] }

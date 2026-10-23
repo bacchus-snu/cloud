@@ -59,22 +59,25 @@
         </a-col>
         <a-col :md="colContraned" :lg="colContraned" v-if="isCustomized">
           <a-form-item
-            :label="$t('label.memory.mb')"
+            :label="$t('label.memory.gib')"
             :validate-status="errors.memory.status"
             :help="errors.memory.message">
             <a-row :gutter="12">
               <a-col :md="10" :lg="10" v-show="isConstrained && maxMemory && !isNaN(maxMemory)">
                 <a-slider
-                  :min="minMemory"
-                  :max="maxMemory"
-                  v-model:value="memoryInputValue"
-                  @change="($event) => updateComputeMemory($event)"
+                  :min="minMemoryGib"
+                  :max="maxMemoryGib"
+                  :step="0.1"
+                  v-model:value="memoryGibInputValue"
+                  @change="($event) => updateComputeMemoryGib($event)"
                 />
               </a-col>
               <a-col :md="4" :lg="4">
                 <a-input-number
-                  v-model:value="memoryInputValue"
-                  @change="($event) => updateComputeMemory($event)"
+                  :step="0.1"
+                  :precision="1"
+                  v-model:value="memoryGibInputValue"
+                  @change="($event) => updateComputeMemoryGib($event)"
                 />
               </a-col>
             </a-row>
@@ -98,6 +101,7 @@
 </template>
 
 <script>
+import { memoryMibOf, tenthsOfGib } from '@/utils/memory'
 import { showCpuSpeed } from '@/utils/uiConfig'
 
 export default {
@@ -198,6 +202,21 @@ export default {
     cpuSpeedShown () {
       return showCpuSpeed(this.$config)
     },
+    // memory is asked in GiB to a tenth; the bounds and the emitted value stay MiB
+    memoryGibInputValue: {
+      get () {
+        return tenthsOfGib(this.memoryInputValue)
+      },
+      set (gib) {
+        this.memoryInputValue = memoryMibOf(gib)
+      }
+    },
+    minMemoryGib () {
+      return tenthsOfGib(this.minMemory, Math.ceil)
+    },
+    maxMemoryGib () {
+      return tenthsOfGib(this.maxMemory, Math.floor)
+    },
     colContraned () {
       if (this.isConstrained && this.maxCpu && !isNaN(this.maxCpu)) {
         return 12
@@ -253,6 +272,9 @@ export default {
     updateComputeCpuSpeed (value) {
       this.$emit('update-compute-cpuspeed', this.cpuSpeedInputDecorator, value)
     },
+    updateComputeMemoryGib (gib) {
+      this.updateComputeMemory(gib === null || gib === undefined ? gib : memoryMibOf(gib))
+    },
     updateComputeMemory (value) {
       if (!value) this.memoryInputValue = 0
       if (!this.validateInput('memory', value)) {
@@ -302,8 +324,9 @@ export default {
       }
 
       if (!this.checkValidRange(value, min, max)) {
+        const [from, to] = input === 'memory' ? [this.minMemoryGib, this.maxMemoryGib] : [min, max]
         this.errors[input].status = 'error'
-        this.errors[input].message = `${this.$t('message.please.enter.value')} ${this.$t('label.from')} ${min} ${this.$t('label.to')} ${max})`
+        this.errors[input].message = `${this.$t('message.please.enter.value')} ${this.$t('label.from')} ${from} ${this.$t('label.to')} ${to})`
         return false
       }
 

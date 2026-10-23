@@ -49,6 +49,21 @@ const keys = (wrapper) => wrapper.vm.columns.map(column => column.key)
 const rowOf = (wrapper, id) => wrapper.vm.tableSource.find(row => row.key === id)
 
 describe('ComputeOfferingSelection', () => {
+  it('shows memory in GiB: a fixed size, and a customized range to the tenth the wizard asks in', async () => {
+    const customized = {
+      id: 'o-free',
+      name: 'cpu',
+      iscustomized: true,
+      cpuspeed: 2400,
+      hosttags: 'cpu',
+      serviceofferingdetails: { mincpunumber: '2', maxcpunumber: '4096', minmemory: '32', maxmemory: '67108864' }
+    }
+    const wrapper = mountOfferings({ computeItems: [customized, gpuOffering('a100-40g-1', 1, 'a100-40g')] })
+    await flushPromises()
+    expect(rowOf(wrapper, 'o-free').ram).toBe('0.1-65536 GiB')
+    expect(rowOf(wrapper, 'a100-40g-1').ram).toBe('96 GiB')
+  })
+
   it('shows available/total slots for GPU offerings', async () => {
     const items = [cpuOffering, gpuOffering('a100-40g-1', 1, 'a100-40g', { gpuslotsavailable: 3, gpuslotstotal: 8 })]
     const wrapper = mountOfferings({ computeItems: items }, { showGpuSlots: true })
@@ -235,6 +250,26 @@ describe('ComputeSelection bounds', () => {
     expect(free.vm.errors.cpu.status).toBe('error')
     free.vm.updateComputeMemory(24576)
     expect(free.vm.errors.memory.status).toBe('')
+  })
+
+  it('asks memory in GiB, in tenths, and passes MiB on', async () => {
+    const wrapper = mountCompute({ initialMemoryValue: 4096 })
+    await flushPromises()
+    expect(wrapper.html()).toContain('label.memory.gib')
+    const memoryInput = wrapper.findAllComponents({ name: 'AInputNumber' })[1]
+    expect(memoryInput.props('value')).toBe(4)
+    expect(memoryInput.props('step')).toBe(0.1)
+    expect(memoryInput.props('precision')).toBe(1)
+    const memorySlider = wrapper.findAllComponents({ name: 'ASlider' })[1]
+    expect([memorySlider.props('min'), memorySlider.props('max'), memorySlider.props('step')]).toEqual([0.1, 24, 0.1])
+
+    wrapper.vm.updateComputeMemoryGib(2.5)
+    wrapper.vm.updateComputeMemoryGib(0.1)
+    expect(wrapper.emitted('update-compute-memory').slice(-2)).toEqual([['memory', 2560], ['memory', 102]])
+    wrapper.vm.updateComputeMemoryGib(30)
+    expect(wrapper.vm.errors.memory.status).toBe('error')
+    expect(wrapper.vm.errors.memory.message).toContain(' 24)')
+    expect(wrapper.vm.errors.memory.message).not.toContain('24576')
   })
 
   it('says so when the remaining quota is below the minimum', async () => {

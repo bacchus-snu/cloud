@@ -245,13 +245,36 @@ public class ResourceLimitRequestVO implements ControlledEntity, Identity, Inter
         return approvedExpiry;
     }
 
+    // A change reaches the database only through a setter: the DAO records the setter calls on the entities it
+    // produces, so approve() and decide() go through setters.
     public void approve(long cpu, long memoryMib, long storageGib, Map<String, Long> gpus, Date expiry) {
-        this.approvedCpu = cpu;
-        this.approvedMemoryMib = memoryMib;
-        this.approvedStorageGib = storageGib;
-        this.approvedGpus = toJson(gpus);
-        this.approvedExpiry = expiry;
-        this.state = State.Approved;
+        setApprovedCpu(cpu);
+        setApprovedMemoryMib(memoryMib);
+        setApprovedStorageGib(storageGib);
+        setApprovedGpus(toJson(gpus));
+        setApprovedExpiry(expiry);
+        setState(State.Approved);
+    }
+
+    protected void setApprovedCpu(Long approvedCpu) {
+        this.approvedCpu = approvedCpu;
+    }
+
+    protected void setApprovedMemoryMib(Long approvedMemoryMib) {
+        this.approvedMemoryMib = approvedMemoryMib;
+    }
+
+    protected void setApprovedStorageGib(Long approvedStorageGib) {
+        this.approvedStorageGib = approvedStorageGib;
+    }
+
+    /** @param approvedGpus the approved GPUs as stored, JSON of counts per GPU type tag */
+    protected void setApprovedGpus(String approvedGpus) {
+        this.approvedGpus = approvedGpus;
+    }
+
+    protected void setApprovedExpiry(Date approvedExpiry) {
+        this.approvedExpiry = approvedExpiry;
     }
 
     public Long getApproverId() {
@@ -263,8 +286,20 @@ public class ResourceLimitRequestVO implements ControlledEntity, Identity, Inter
     }
 
     public void decide(Long approverId, Date decidedAt, String comment) {
+        setApproverId(approverId);
+        setDecidedAt(decidedAt);
+        setComment(comment);
+    }
+
+    protected void setApproverId(Long approverId) {
         this.approverId = approverId;
+    }
+
+    protected void setDecidedAt(Date decidedAt) {
         this.decidedAt = decidedAt;
+    }
+
+    protected void setComment(String comment) {
         this.comment = comment;
     }
 

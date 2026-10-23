@@ -1,3 +1,11 @@
+cloudstack (4.23.0.100+snucse.4) unstable; urgency=low
+
+  * The UI asks and shows memory in GiB, in steps of a tenth
+  * The UI configuration can offer OpenID providers only inside the
+    folded administrator login (foldedLoginProviders)
+
+ -- SNUCSE Cloud maintainers <contact@bacchus.snucse.org>  Fri, 23 Oct 2026 12:12:39 -0400
+
 cloudstack (4.23.0.100+snucse.3) unstable; urgency=low
 
   * Approving a resource limit request grants it; approvals, rejections

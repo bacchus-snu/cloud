@@ -119,7 +119,7 @@ public class LibvirtStartVolumeExportCommandWrapperTest {
         assertEquals(10809, answer.getPort());
         List<String> start = runner.find("systemd-run");
         assertEquals(Arrays.asList("systemd-run", "--unit=cloudstack-volume-export-" + NAME, "--slice=volumetransfer.slice", "--collect",
-                "--service-type=exec", "--property=RuntimeMaxSec=11100", "--",
+                "--service-type=exec", "--expand-environment=no", "--property=RuntimeMaxSec=11100", "--",
                 "qemu-nbd", "--read-only", "--persistent", "--format=raw", "--export-name=" + NAME,
                 "--object", "tls-creds-x509,id=tls0,endpoint=server,dir=" + tlsDir + ",verify-peer=on",
                 "--object", "{\"qom-type\":\"authz-simple\",\"id\":\"authz0\",\"identity\":\"" + DN + "\"}",

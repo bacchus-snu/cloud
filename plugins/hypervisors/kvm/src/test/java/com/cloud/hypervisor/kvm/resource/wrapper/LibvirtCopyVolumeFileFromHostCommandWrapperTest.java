@@ -202,7 +202,7 @@ public class LibvirtCopyVolumeFileFromHostCommandWrapperTest {
         assertTrue(answer.getDetails(), answer.getResult());
         List<String> pull = runner.find("systemd-run");
         assertEquals(Arrays.asList("systemd-run", "--unit=" + UNIT, "--slice=volumetransfer.slice", "--collect", "--service-type=exec",
-                "--property=RuntimeMaxSec=11400", "--",
+                "--expand-environment=no", "--property=RuntimeMaxSec=11400", "--",
                 "sh", "-c", VolumeFileTransfer.PULL_SCRIPT, "sh", part().toString(), String.valueOf(DATA.length), result().toString(),
                 "qemu-img", "convert", "-p", "-t", "none", "-O", "raw",
                 "--object", "tls-creds-x509,id=tls0,endpoint=client,dir=" + tlsDir,
@@ -424,6 +424,17 @@ public class LibvirtCopyVolumeFileFromHostCommandWrapperTest {
     }
 
     @Test
+    public void pullThatRecordsAnUnreadableOutcomeIsReportedWithWhatItRecorded() throws IOException {
+        start(DATA.length);
+        Files.write(result(), (" " + DATA.length + "\n").getBytes(StandardCharsets.UTF_8));
+
+        CheckVolumeFileTransferAnswer checked = check(CheckVolumeFileTransferCommand.Kind.PULL);
+        assertEquals(CheckVolumeFileTransferAnswer.State.FAILED, checked.getState());
+        assertTrue(checked.getDetails(), checked.getDetails().contains("[" + DATA.length + "]"));
+        assertFalse("the unit did end", checked.getDetails().contains("without completing"));
+    }
+
+    @Test
     public void finishRefusedWhileThePullRuns() {
         start(DATA.length);
         unitState = "active";
@@ -501,7 +512,7 @@ public class LibvirtCopyVolumeFileFromHostCommandWrapperTest {
 
         assertTrue(started.getDetails(), started.getResult());
         assertEquals(Arrays.asList("systemd-run", "--unit=cloudstack-volume-hash-" + NAME, "--slice=volumetransfer.slice", "--collect",
-                "--service-type=exec", "--property=RuntimeMaxSec=11400", "--",
+                "--service-type=exec", "--expand-environment=no", "--property=RuntimeMaxSec=11400", "--",
                 "sh", "-c", VolumeFileTransfer.HASH_SCRIPT, "sh", file().toString(), stateDir.resolve("cloudstack-volume-hash-" + NAME + ".result").toString()),
                 runner.find("systemd-run"));
         CheckVolumeFileTransferAnswer hashed = check(CheckVolumeFileTransferCommand.Kind.HASH);

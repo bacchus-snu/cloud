@@ -152,6 +152,23 @@ public class VolumeFileTransferTest {
     }
 
     @Test
+    public void transferUnitsRunTheirArgumentsAsGiven() {
+        List<String> command = VolumeFileTransfer.unitCommand("cloudstack-volume-hash-f00dcafe", 60, "sh", "-c", VolumeFileTransfer.HASH_SCRIPT, "sh");
+        assertTrue("the service manager would replace the scripts' ${...} by its own environment",
+                command.subList(0, command.indexOf("--")).contains("--expand-environment=no"));
+        assertEquals(Arrays.asList("sh", "-c", VolumeFileTransfer.HASH_SCRIPT, "sh"), command.subList(command.indexOf("--") + 1, command.size()));
+    }
+
+    @Test
+    public void agentPackageNeedsAServiceManagerThatRunsArgumentsAsGiven() throws Exception {
+        List<String> control = Files.readAllLines(Path.of("../../../debian/control"));
+        int agent = control.indexOf("Package: cloudstack-agent");
+        String depends = control.stream().skip(agent).filter(line -> line.startsWith("Depends:")).findFirst().orElse("");
+        assertTrue(depends, Arrays.asList(depends.substring("Depends:".length()).split(",")).stream().map(String::trim)
+                .anyMatch("systemd (>= 254)"::equals));
+    }
+
+    @Test
     public void agentPackageShipsTheTransferSliceAsATopLevelLowWeightSlice() throws Exception {
         assertFalse("a name without a dash places the slice at the top level", VolumeFileTransfer.TRANSFER_SLICE.replace(".slice", "").contains("-"));
         Path slice = Path.of("../../../packaging/systemd", VolumeFileTransfer.TRANSFER_SLICE);

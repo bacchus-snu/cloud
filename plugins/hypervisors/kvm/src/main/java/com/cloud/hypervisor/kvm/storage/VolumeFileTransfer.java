@@ -476,11 +476,12 @@ public class VolumeFileTransfer {
 
     /**
      * The command that starts the given program as a transient unit of the given name in the transfer slice, ended after
-     * {@code lifetimeSeconds}; it returns once the program runs.
+     * {@code lifetimeSeconds}; it returns once the program runs. The program gets its arguments as given: the service
+     * manager would otherwise replace every "${...}" in them, a shell script's own included.
      */
     static List<String> unitCommand(String unit, int lifetimeSeconds, String... program) {
         List<String> command = new ArrayList<>(Arrays.asList("systemd-run", "--unit=" + unit, "--slice=" + TRANSFER_SLICE, "--collect",
-                "--service-type=exec", "--property=RuntimeMaxSec=" + lifetimeSeconds, "--"));
+                "--service-type=exec", "--expand-environment=no", "--property=RuntimeMaxSec=" + lifetimeSeconds, "--"));
         command.addAll(Arrays.asList(program));
         return command;
     }
@@ -605,7 +606,11 @@ public class VolumeFileTransfer {
         if (recorded != null) {
             return recorded;
         }
-        return new Outcome(CheckVolumeFileTransferAnswer.State.FAILED, null, 0, String.format("%s ended without completing: %s", unit, tail(unitLog(unit))));
+        Path result = stateFile(unit, RESULT_SUFFIX);
+        String reason = Files.isRegularFile(result)
+                ? String.format("%s recorded [%s], not a SHA-256 and a length", unit, new String(Files.readAllBytes(result), StandardCharsets.UTF_8).trim())
+                : String.format("%s ended without completing", unit);
+        return new Outcome(CheckVolumeFileTransferAnswer.State.FAILED, null, 0, String.format("%s: %s", reason, tail(unitLog(unit))));
     }
 
     /**

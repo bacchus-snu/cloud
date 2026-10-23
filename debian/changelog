@@ -1,3 +1,10 @@
+cloudstack (4.23.0.100+snucse.3) unstable; urgency=low
+
+  * Approving a resource limit request grants it; approvals, rejections
+    and revocations keep their approver, time and comment
+
+ -- SNUCSE Cloud maintainers <contact@bacchus.snucse.org>  Fri, 23 Oct 2026 03:45:09 -0400
+
 cloudstack (4.23.0.100+snucse.2) unstable; urgency=low
 
   * OpenID providers keep refusal pages, secrets and their other text

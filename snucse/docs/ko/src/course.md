@@ -4,24 +4,22 @@
 
 ## 준비: 쿼터 신청
 
-1. 인스턴스를 만들고 관리할 사람 **한 명**(조교 또는 연구실 관리자)이 본인 계정으로 수업(또는 연구실) 이름, 인원, 필요한 자원(인스턴스 수, vCPU, 메모리, 디스크, GPU)과 기간을 적어 <contact@bacchus.snucse.org>로 [쿼터](quota.md)를 신청합니다. SNUCSE Cloud는 팀·프로젝트 단위 계정을 제공하지 않으므로 쿼터는 이 사람의 계정에 들어갑니다.
-2. 쿼터가 들어오면 인스턴스를 만듭니다. 실습 서버 한 대에 학생별 계정을 만들어도 되고, 학생마다 인스턴스를 하나씩 만들어도 됩니다. 관리를 나눌 사람(다른 조교)이 있으면 그 사람에게는 sudo를 준 게스트 계정을 열어 주면 됩니다. 인스턴스를 만들고 지우는 것은 소유자만 할 수 있습니다.
+1. 인스턴스를 만들고 관리할 사람 **한 명**(조교 또는 연구실 관리자)이 본인 계정의 **쿼터 신청 → 내 신청**에서 [쿼터](quota.md#쿼터-신청)를 신청합니다. 필요한 vCPU, 메모리, 스토리지, GPU와 만료일(예: 학기 말)을 적고, 이유 칸에 수업(또는 연구실) 이름과 인원, 쓰는 기간을 적어 주세요. SNUCSE Cloud는 팀·프로젝트 단위 계정을 제공하지 않으므로 쿼터는 이 사람의 계정에 들어갑니다.
+2. 쿼터가 승인되면 인스턴스를 만듭니다. 실습 서버 한 대에 학생별 계정을 만들어도 되고, 학생마다 인스턴스를 하나씩 만들어도 됩니다. 관리를 나눌 사람(다른 조교)이 있으면 그 사람에게는 sudo를 준 게스트 계정을 열어 주면 됩니다. 인스턴스를 만들고 지우는 것은 소유자만 할 수 있습니다.
+3. GPU 인스턴스에는 [사용 기한](instance.md#gpu-인스턴스의-사용-기한)이 있어서, 소유자가 하루에 한 번쯤 **기한 갱신**을 눌러야 계속 켜져 있습니다. 게스트는 갱신할 수 없습니다.
 
 ## 학생 등록
 
 1. 학생들에게 **cloud.snucse.org에 한 번 로그인**하라고 안내하고 SNUCSE ID 유저명을 모읍니다. 로그인 전에는 계정이 없어서 아래 태그가 효력이 없습니다. SNUCSE ID가 없는 외부 참여자는 [이용 대상](account.md)을 참고하세요.
 2. 인스턴스 안에서 계정을 만듭니다. 사람마다 하나씩(`sudo adduser hong`) 또는 공용 계정 하나(`sudo adduser student`). sudo를 줄지, 홈 디스크를 어떻게 나눌지는 관리자가 정합니다.
-3. CloudStack UI에서 **Compute → Instances**에서 인스턴스를 열고, 왼쪽 정보 카드를 맨 아래로 내리면 **Tags**가 있습니다. **New tag**를 누르면 키와 값 칸이 나옵니다. 키는 `ssh.account.<계정 이름>`, 값은 그 계정으로 들어올 SNUCSE ID 유저명을 쉼표로(공백 없이) 나열하고 체크 표시를 누릅니다.
+3. 웹 UI의 **컴퓨트 → 인스턴스**에서 인스턴스를 열고, 왼쪽 정보 카드를 맨 아래로 내리면 **태그**가 있습니다. **새 태그**를 누르면 키와 값 칸이 나옵니다. 키는 `ssh.account.<계정 이름>`, 값은 그 계정으로 들어올 SNUCSE ID 유저명을 쉼표로(공백 없이) 나열하고 체크 표시를 누릅니다.
 
-   ![Tags에서 New tag를 눌러 키와 값을 넣는 모습](images/tag-form.png)
-
-   | Key | Value | 뜻 |
+   | 키 | 값 | 뜻 |
    | --- | --- | --- |
    | `ssh.account.yun` | `yun` | yun은 자기 계정으로 |
    | `ssh.account.student` | `hong,kim,lee` | 세 명이 공용 계정 `student`로 |
-   | `ssh.account.student.1` | `park,choi` | 같은 계정, 이어서 두 명 더 |
 
-   값 한 칸에는 255자까지만 들어가므로(대략 SNUCSE ID 12~28개), 한 계정에 더 많은 사람을 넣으려면 같은 계정 이름 뒤에 `.1`, `.2`, … 번호를 붙인 키를 추가해 이어서 적습니다. 같은 키를 두 번 만들 수는 없습니다. 이름이 수십 명을 넘으면 아래 [CLI로 한 번에 등록하기](#cli로-한-번에-등록하기)를 쓰세요.
+   값 한 칸에는 8192자까지 들어가므로 한 계정에 SNUCSE ID 수백 개를 적을 수 있습니다. 같은 키를 두 번 만들 수는 없습니다. 이름이 수십 명을 넘으면 아래 [CLI로 한 번에 등록하기](#cli로-한-번에-등록하기)를 쓰세요.
 4. 학생에게 접속 문자열을 알려 줍니다. 처음 접속 때 브라우저 로그인이 한 번 필요합니다([접속하기](access.md)).
 
    ```console
@@ -36,11 +34,11 @@
 
 ### API 키 만들기
 
-오른쪽 위의 본인 이름 → **Profile** → **API Key Pairs** 탭 → **Register API key pair**. 이름만 적고 OK를 누르면 표에 API key와 Secret key가 나타납니다. 둘 다 비밀번호처럼 다루세요. 이 키로는 본인 계정의 자원을 API로 다룰 수 있습니다.
+오른쪽 위의 본인 이름 → **정보** → **API 키 쌍** 탭 → **API 키 쌍 등록**. 이름만 적고 **확인**을 누르면 표에 API 키와 비밀 키가 나타납니다. 둘 다 비밀번호처럼 다루세요. 이 키로는 본인 계정의 자원을 API로 다룰 수 있습니다.
 
-![API Key Pairs 탭](images/api-keys.png)
+![API 키 쌍 탭](images/api-keys.png)
 
-![Register API key pair 대화상자](images/api-key-dialog.png)
+![API 키 쌍 등록 대화상자](images/api-key-dialog.png)
 
 ### cmk 설정
 
@@ -52,7 +50,9 @@ $ cmk set secretkey <Secret key>
 $ cmk sync
 ```
 
-cmk는 API를 POST로 보냅니다. cmk 대신 직접 만든 스크립트로 인스턴스를 만들거나 고칠 때(`deployVirtualMachine`, `updateVirtualMachine`, `resetUserDataForVirtualMachine`)도 POST로 보내세요. 모든 템플릿에 붙는 초기 설정 스크립트(user data)가 GET 요청의 한도(4 KB)를 넘어 GET으로는 `User data is too long for http GET request` 오류가 납니다.
+cmk는 API를 POST로 보냅니다. cmk 대신 직접 만든 스크립트로 인스턴스를 만들거나 고칠 때(`deployVirtualMachine`, `updateVirtualMachine`)도 POST로 보내세요. 모든 템플릿에 붙는 초기 설정 스크립트(user data)가 GET 요청의 한도(4 KB)를 넘어 GET으로는 `User data is too long for http GET request` 오류가 납니다. 만든 뒤 user data를 바꿀 때는 `updateVirtualMachine`의 `userdata` 값으로 보냅니다(인스턴스 편집 창의 user data 칸도 같은 명령을 씁니다).
+
+바꾼 user data가 언제 적용되는지는 [사용자 데이터](instance.md#사용자-데이터)를 보세요.
 
 인스턴스 ID를 찾습니다.
 
@@ -68,27 +68,16 @@ $ cmk list virtualmachines filter=id,name
 $ cmk create tags resourceids=<인스턴스 ID> resourcetype=UserVm \
     'tags[0].key=ssh.account.student' 'tags[0].value=kim,lee,park'
 $ cmk delete tags resourceids=<인스턴스 ID> resourcetype=UserVm \
-    'tags[0].key=ssh.account.student' 'tags[1].key=ssh.account.student.1'
+    'tags[0].key=ssh.account.student'
 ```
 
-SNUCSE ID를 한 줄에 하나씩 적은 파일(`ids.txt`)이 있으면, 아래 스크립트(bash)가 255자 단위로 `ssh.account.student`, `ssh.account.student.1`, `.2`…로 나눠 한 번에 넣습니다. 300명이면 태그 16개 정도가 됩니다.
+SNUCSE ID를 한 줄에 하나씩 적은 파일(`ids.txt`)이 있으면, 아래 스크립트(bash)가 쉼표로 이어 태그 하나로 넣습니다.
 
 ```bash
 #!/bin/bash
-set -f   # 대괄호가 파일 이름 패턴으로 풀리지 않게
 VM=<인스턴스 ID>; ACCOUNT=student
-n=0; args=""; chunk=""
-while read -r id; do
-  [ -z "$id" ] && continue
-  if [ $(( ${#chunk} + ${#id} + 1 )) -gt 255 ]; then
-    key=$ACCOUNT; [ $n -gt 0 ] && key="$ACCOUNT.$n"
-    args="$args tags[$n].key=ssh.account.$key tags[$n].value=$chunk"; n=$((n+1)); chunk=""
-  fi
-  chunk="${chunk:+$chunk,}$id"
-done < ids.txt
-key=$ACCOUNT; [ $n -gt 0 ] && key="$ACCOUNT.$n"
-args="$args tags[$n].key=ssh.account.$key tags[$n].value=$chunk"
-cmk create tags resourceids=$VM resourcetype=UserVm $args
+ids=$(grep -v '^$' ids.txt | paste -sd, -)
+cmk create tags resourceids=$VM resourcetype=UserVm "tags[0].key=ssh.account.$ACCOUNT" "tags[0].value=$ids"
 ```
 
 이미 같은 키가 있으면 오류가 나므로, 명단을 바꿀 때는 먼저 `cmk delete tags`로 지우고 다시 넣습니다. 태그가 반영되면 1분 안에 접속이 열립니다.
@@ -96,5 +85,5 @@ cmk create tags resourceids=$VM resourcetype=UserVm $args
 ## 학기가 끝나면
 
 - 태그를 지우면 1분 안에 접속이 끊기고 막힙니다. 인스턴스 안 계정과 파일은 남습니다.
-- 인스턴스를 지우면 쿼터가 돌아옵니다. 필요한 데이터는 미리 받아 두세요.
-- 다음 학기에도 쓰려면 쿼터 기간 연장을 신청하세요.
+- 인스턴스를 지우면 vCPU·메모리·GPU 쿼터가 돌아옵니다. 데이터 디스크와 남긴 루트 디스크는 볼륨으로 남아 스토리지 쿼터를 차지하니, 필요 없는 볼륨은 지워야 쿼터가 돌아옵니다([인스턴스 삭제와 루트 디스크](instance.md#인스턴스-삭제와-루트-디스크)). 필요한 데이터는 미리 받아 두세요.
+- 다음 학기에도 쓰려면 만료일 전에 그 승인의 **갱신 신청**을 하세요([만료와 갱신](quota.md#만료와-갱신)).

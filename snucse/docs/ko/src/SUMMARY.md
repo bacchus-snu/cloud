@@ -9,11 +9,12 @@
 
 # 사용 방법
 
-- [인스턴스 만들기](instance.md)
+- [인스턴스 만들기와 관리](instance.md)
 - [인스턴스에 접속하기](access.md)
 - [수업·연구실에서 쓰기](course.md)
 - [네트워크](network.md)
 - [GPU](gpu.md)
+- [데이터 꺼내기](rescue.md)
 
 ---
 

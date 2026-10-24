@@ -27,13 +27,16 @@ import com.cloud.storage.Storage.StoragePoolType;
 import com.cloud.storage.VolumeDetailVO;
 import com.cloud.storage.dao.VolumeDetailsDao;
 import com.cloud.vm.VirtualMachine;
+import org.apache.cloudstack.engine.subsystem.api.storage.ClusterScope;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataObject;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
 import org.apache.cloudstack.engine.subsystem.api.storage.EndPoint;
+import org.apache.cloudstack.engine.subsystem.api.storage.HostScope;
 import org.apache.cloudstack.engine.subsystem.api.storage.Scope;
 import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotInfo;
 import org.apache.cloudstack.engine.subsystem.api.storage.StorageAction;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeInfo;
+import org.apache.cloudstack.engine.subsystem.api.storage.ZoneScope;
 import org.apache.cloudstack.storage.RemoteHostEndPoint;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
@@ -42,6 +45,7 @@ import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
@@ -49,8 +53,12 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnitRunner;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mockStatic;
+
+import java.util.Arrays;
 
 @RunWith(MockitoJUnitRunner.class)
 public class DefaultEndPointSelectorTest {
@@ -548,6 +556,45 @@ public class DefaultEndPointSelectorTest {
 
         assertNotNull(result);
         Mockito.verify(defaultEndPointSelectorSpy, Mockito.times(1)).findEndPointForImageMove(srcStoreMock, datastoreMock, false);
+    }
+
+    @Test
+    public void aLocalPoolIsServedByItsHostWhileAllocationIsDisabled() {
+        String query = defaultEndPointSelectorSpy.primaryStorageHostsQuery(new HostScope(HOST_ID, 2L, 3L));
+
+        assertTrue(query, query.contains("h.resource_state in ('Enabled', 'Disabled')"));
+        assertFalse("a host in a maintenance state serves no pool", query.contains("Maintenance"));
+        assertFalse(query, query.contains("allocation_state"));
+    }
+
+    @Test
+    public void aSharedPoolIsServedOnlyByHostsOpenForAllocation() {
+        for (Scope scope : Arrays.asList(new ClusterScope(2L, 4L, 3L), new ZoneScope(3L), null)) {
+            String query = defaultEndPointSelectorSpy.primaryStorageHostsQuery(scope);
+
+            assertTrue(query, query.contains("h.resource_state = 'Enabled'"));
+            assertTrue(query, query.contains("c.allocation_state = 'Enabled'"));
+        }
+    }
+
+    @Test
+    public void deletingAVolumeOnALocalPoolLooksForTheHostOfThePool() {
+        HostScope scope = new HostScope(HOST_ID, 2L, 3L);
+        Mockito.when(volumeInfoMock.getDataStore()).thenReturn(datastoreMock);
+        Mockito.when(volumeInfoMock.getHypervisorType()).thenReturn(Hypervisor.HypervisorType.KVM);
+        Mockito.when(datastoreMock.getRole()).thenReturn(DataStoreRole.Primary);
+        Mockito.when(datastoreMock.getScope()).thenReturn(scope);
+        Mockito.when(datastoreMock.getId()).thenReturn(STORE_ID);
+        Mockito.when(_storagePoolDao.findById(STORE_ID)).thenReturn(storagePoolVOMock);
+        Mockito.when(storagePoolVOMock.getPoolType()).thenReturn(StoragePoolType.Filesystem);
+        Mockito.doReturn(endPointMock).when(defaultEndPointSelectorSpy).findEndPointInScope(Mockito.any(), Mockito.anyString(), Mockito.anyLong(),
+                Mockito.anyBoolean());
+
+        assertEquals(endPointMock, defaultEndPointSelectorSpy.select(volumeInfoMock, StorageAction.DELETEVOLUME));
+
+        ArgumentCaptor<String> query = ArgumentCaptor.forClass(String.class);
+        Mockito.verify(defaultEndPointSelectorSpy).findEndPointInScope(Mockito.eq(scope), query.capture(), Mockito.eq(STORE_ID), Mockito.eq(false));
+        assertTrue(query.getValue(), query.getValue().contains("h.resource_state in ('Enabled', 'Disabled')"));
     }
 
 }

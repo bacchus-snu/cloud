@@ -88,16 +88,26 @@ public class DefaultEndPointSelector implements EndPointSelector {
     private ClvmPoolManager clvmPoolManager;
 
     private static final String VOL_ENCRYPT_COLUMN_NAME = "volume_encryption_support";
-    private final String findOneHostOnPrimaryStorage = "select t.id from "
-                            + "(select h.id, cd.value, hd.value as " + VOL_ENCRYPT_COLUMN_NAME + " "
-                            + "from host h join storage_pool_host_ref s on h.id = s.host_id  "
-                            + "join cluster c on c.id=h.cluster_id and c.allocation_state = 'Enabled'"
-                            + "left join cluster_details cd on c.id=cd.cluster_id and cd.name='" + CapacityManager.StorageOperationsExcludeCluster.key() + "' "
-                            + "left join host_details hd on h.id=hd.host_id and hd.name='" + HOST_VOLUME_ENCRYPTION + "' "
-                            + "where h.status = 'Up' and h.type = 'Routing' and h.resource_state = 'Enabled' and s.pool_id = ? ";
+    private final String findOneHostOnPrimaryStorage = findHostsOnPrimaryStorage(" and c.allocation_state = 'Enabled'", "= 'Enabled'");
+    // A host-scoped pool is reachable only through its own host, which serves it while allocation on the host or its cluster is disabled.
+    private final String findTheHostOfLocalPrimaryStorage = findHostsOnPrimaryStorage("", "in ('Enabled', 'Disabled')");
+
+    private static String findHostsOnPrimaryStorage(String clusterCondition, String resourceStates) {
+        return "select t.id from "
+                + "(select h.id, cd.value, hd.value as " + VOL_ENCRYPT_COLUMN_NAME + " "
+                + "from host h join storage_pool_host_ref s on h.id = s.host_id  "
+                + "join cluster c on c.id=h.cluster_id" + clusterCondition + " "
+                + "left join cluster_details cd on c.id=cd.cluster_id and cd.name='" + CapacityManager.StorageOperationsExcludeCluster.key() + "' "
+                + "left join host_details hd on h.id=hd.host_id and hd.name='" + HOST_VOLUME_ENCRYPTION + "' "
+                + "where h.status = 'Up' and h.type = 'Routing' and h.resource_state " + resourceStates + " and s.pool_id = ? ";
+    }
 
     private String findOneHypervisorHostInScopeByType = "select h.id from host h where h.status = 'Up' and h.hypervisor_type = ? ";
     private String findOneHypervisorHostInScope = "select h.id from host h where h.status = 'Up' and h.hypervisor_type is not null ";
+
+    protected String primaryStorageHostsQuery(Scope scope) {
+        return scope != null && scope.getScopeType() == ScopeType.HOST ? findTheHostOfLocalPrimaryStorage : findOneHostOnPrimaryStorage;
+    }
 
     protected boolean moveBetweenPrimaryImage(DataStore srcStore, DataStore destStore) {
         DataStoreRole srcRole = srcStore.getRole();
@@ -265,7 +275,7 @@ public class DefaultEndPointSelector implements EndPointSelector {
                 poolId = destStore.getId();
             }
         }
-        return findEndPointInScope(selectedScope, findOneHostOnPrimaryStorage, poolId, volumeEncryptionSupportRequired);
+        return findEndPointInScope(selectedScope, primaryStorageHostsQuery(selectedScope), poolId, volumeEncryptionSupportRequired);
     }
 
     @Override
@@ -370,7 +380,7 @@ public class DefaultEndPointSelector implements EndPointSelector {
     }
 
     protected EndPoint findEndpointForPrimaryStorage(DataStore store) {
-        return findEndPointInScope(store.getScope(), findOneHostOnPrimaryStorage, store.getId());
+        return findEndPointInScope(store.getScope(), primaryStorageHostsQuery(store.getScope()), store.getId());
     }
 
     protected EndPoint findEndpointForImageStorage(DataStore store) {
@@ -507,7 +517,7 @@ public class DefaultEndPointSelector implements EndPointSelector {
 
         // Default behavior for non-CLVM or when no destination host is set
         if (store.getRole() == DataStoreRole.Primary) {
-            return findEndPointInScope(store.getScope(), findOneHostOnPrimaryStorage, store.getId(), encryptionSupportRequired);
+            return findEndPointInScope(store.getScope(), primaryStorageHostsQuery(store.getScope()), store.getId(), encryptionSupportRequired);
         }
         throw new CloudRuntimeException(String.format("Storage role %s doesn't support encryption", store.getRole()));
     }
@@ -716,7 +726,7 @@ public class DefaultEndPointSelector implements EndPointSelector {
 
     @Override
     public EndPoint select(Scope scope, Long storeId) {
-        return findEndPointInScope(scope, findOneHostOnPrimaryStorage, storeId);
+        return findEndPointInScope(scope, primaryStorageHostsQuery(scope), storeId);
     }
 
     @Override

@@ -19,6 +19,7 @@
   <div>
     <announcement-banner />
     <resource-limit-expiry-banner />
+    <instance-access-modal />
     <a-affix v-if="this.$store.getters.maintenanceInitiated" >
       <a-alert :message="$t('message.maintenance.initiated')" type="error" banner :showIcon="false" class="maintenanceHeader" />
     </a-affix>
@@ -135,6 +136,7 @@ import Drawer from '@/components/widgets/Drawer'
 import Setting from '@/components/view/Setting.vue'
 import AnnouncementBanner from '@/components/header/AnnouncementBanner.vue'
 import ResourceLimitExpiryBanner from '@/components/header/ResourceLimitExpiryBanner.vue'
+import InstanceAccessModal from '@/components/page/InstanceAccessModal.vue'
 
 export default {
   name: 'GlobalLayout',
@@ -145,7 +147,8 @@ export default {
     Drawer,
     Setting,
     AnnouncementBanner,
-    ResourceLimitExpiryBanner
+    ResourceLimitExpiryBanner,
+    InstanceAccessModal
   },
   mixins: [mixin, mixinDevice],
   data () {

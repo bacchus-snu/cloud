@@ -899,8 +899,8 @@
 </template>
 
 <script>
-import { ref, reactive, toRaw, nextTick, h } from 'vue'
-import { Button, message } from 'ant-design-vue'
+import { ref, reactive, toRaw, nextTick } from 'vue'
+import { message } from 'ant-design-vue'
 import { getAPI, postAPI } from '@/api'
 import { isAdmin } from '@/role'
 import _ from 'lodash'
@@ -934,6 +934,7 @@ import DeployInstanceBackupSelection from '@views/compute/wizard/DeployInstanceB
 import PlacementStep from '@views/compute/wizard/PlacementStep'
 import PlacementMoveModal from '@views/compute/wizard/PlacementMoveModal'
 import { SET_LEASE_API } from '@/utils/lease'
+import { accessNotice } from '@/utils/instanceAccess'
 import { checkPlacement, fetchCapabilities, isMoveRequired, placementAction, vcpuMinimum, vcpuStep } from '@/utils/placement'
 import { gpuRemaining, limitTagsOf, loadQuota, remainingLimit, remainingStorage } from '@/utils/limits'
 
@@ -2689,7 +2690,6 @@ export default {
     postDeploy (deployVmData, values, approval) {
       const title = this.$t('label.launch.vm')
       const description = values.name || ''
-      const password = this.$t('label.password')
       const data = approval ? { ...deployVmData, migratevolumes: true, placementtoken: approval.placementtoken } : deployVmData
       let reasking = false
       this.loading.deploy = true
@@ -2702,23 +2702,7 @@ export default {
             description,
             successMethod: result => {
               const vm = result.jobresult.virtualmachine
-              const name = vm.displayname || vm.name || vm.id
-              if (vm.password) {
-                this.$notification.success({
-                  message: password + ` ${this.$t('label.for')} ` + name,
-                  description: vm.password,
-                  btn: () => h(
-                    Button,
-                    {
-                      type: 'primary',
-                      size: 'small',
-                      onClick: () => this.copyToClipboard(vm.password)
-                    },
-                    () => [this.$t('label.copy.password')]
-                  ),
-                  duration: 0
-                })
-              }
+              this.announceInstanceAccess(vm)
               this.performPostDeployBackupActions(vm)
               eventBus.emit('vm-refresh-data')
             },
@@ -3644,13 +3628,11 @@ export default {
       }
       return networks
     },
-    copyToClipboard (txt) {
-      const parent = this
-      this.$copyText(txt, document.body, function (err) {
-        if (!err) {
-          parent.$message.success(parent.$t('label.copied.clipboard'))
-        }
-      })
+    announceInstanceAccess (vm) {
+      const notice = accessNotice(this.$config?.instanceAccess, store.getters.userInfo?.username, vm)
+      if (notice) {
+        eventBus.emit('instance-access', notice)
+      }
     },
     onToggleLeaseData () {
       if (this.showLeaseOptions === false) {

@@ -24,6 +24,7 @@ import { getAPI, postAPI, getBaseUrl } from '@/api'
 import { getLatestKubernetesIsoParams } from '@/utils/acsrepo'
 import kubernetesIcon from '@/assets/icons/kubernetes.svg?inline'
 import { escapeHtml } from '@/utils/util'
+import { i18n } from '@/locales'
 
 const attachedIsoCount = (record) => (record.isos && record.isos.length) || (record.isoid ? 1 : 0)
 // Server pre-computes the effective cap (cluster-scoped vm.iso.max.count clamped to the
@@ -404,7 +405,12 @@ export default {
           show: (record) => { return record.hypervisor !== 'External' && ['Stopped'].includes(record.state) && record.passwordenabled },
           response: (result) => {
             return {
-              message: result.virtualmachine && result.virtualmachine.password ? `The password of VM <b>${escapeHtml(result.virtualmachine.displayname)}</b> is <b>${result.virtualmachine.password}</b>` : null,
+              message: result.virtualmachine && result.virtualmachine.password
+                ? i18n.global.t('message.instance.password.reset', {
+                  name: `<b>${escapeHtml(result.virtualmachine.displayname)}</b>`,
+                  password: `<b>${escapeHtml(result.virtualmachine.password)}</b>`
+                })
+                : null,
               copybuttontext: result.virtualmachine.password ? 'label.copy.password' : null,
               copytext: result.virtualmachine.password ? result.virtualmachine.password : null
             }

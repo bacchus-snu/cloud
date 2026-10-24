@@ -776,9 +776,9 @@
 </template>
 
 <script>
-import { ref, reactive, toRaw, nextTick, h } from 'vue'
-import { Button } from 'ant-design-vue'
+import { ref, reactive, toRaw, nextTick } from 'vue'
 import { getAPI, postAPI } from '@/api'
+import { accessNotice } from '@/utils/instanceAccess'
 import _ from 'lodash'
 import { mixin, mixinDevice } from '@/utils/mixin.js'
 import store from '@/store'
@@ -2006,7 +2006,6 @@ export default {
 
         const title = this.$t('label.create.instance.from.backup')
         const description = values.name || ''
-        const password = this.$t('label.password')
 
         deployVmData = Object.fromEntries(
           Object.entries(deployVmData).filter(([key, value]) => value !== undefined))
@@ -2019,23 +2018,9 @@ export default {
               title,
               description,
               successMethod: result => {
-                const vm = result.jobresult.virtualmachine
-                const name = vm.displayname || vm.name || vm.id
-                if (vm.password) {
-                  this.$notification.success({
-                    message: password + ` ${this.$t('label.for')} ` + name,
-                    description: vm.password,
-                    btn: () => h(
-                      Button,
-                      {
-                        type: 'primary',
-                        size: 'small',
-                        onClick: () => this.copyToClipboard(vm.password)
-                      },
-                      () => [this.$t('label.copy.password')]
-                    ),
-                    duration: 0
-                  })
+                const notice = accessNotice(this.$config?.instanceAccess, store.getters.userInfo?.username, result.jobresult.virtualmachine)
+                if (notice) {
+                  eventBus.emit('instance-access', notice)
                 }
                 eventBus.emit('vm-refresh-data')
               },
@@ -2640,14 +2625,6 @@ export default {
         }
       }
       return networks
-    },
-    copyToClipboard (txt) {
-      const parent = this
-      this.$copyText(txt, document.body, function (err) {
-        if (!err) {
-          parent.$message.success(parent.$t('label.copied.clipboard'))
-        }
-      })
     }
   }
 }

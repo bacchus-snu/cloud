@@ -22,6 +22,7 @@ import { isAdmin, isAdminOrDomainAdmin } from '@/role'
 import { isZoneCreated } from '@/utils/zone'
 import { vueProps } from '@/vue-app'
 import { escapeHtml } from '@/utils/util'
+import { i18n } from '@/locales'
 
 export default {
   name: 'network',
@@ -761,7 +762,12 @@ export default {
           show: (record) => { return ['Stopped'].includes(record.state) && record.passwordenabled },
           response: (result) => {
             return {
-              message: result.virtualmachine && result.virtualmachine.password ? `The password of VM <b>${escapeHtml(result.virtualmachine.displayname)}</b> is <b>${result.virtualmachine.password}</b>` : null,
+              message: result.virtualmachine && result.virtualmachine.password
+                ? i18n.global.t('message.instance.password.reset', {
+                  name: `<b>${escapeHtml(result.virtualmachine.displayname)}</b>`,
+                  password: `<b>${escapeHtml(result.virtualmachine.password)}</b>`
+                })
+                : null,
               copybuttontext: result.virtualmachine.password ? 'label.copy.password' : null,
               copytext: result.virtualmachine.password ? result.virtualmachine.password : null
             }

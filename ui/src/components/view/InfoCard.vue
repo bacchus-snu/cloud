@@ -687,6 +687,28 @@
                 <span v-else>{{ resource.templatedisplaytext || resource.templatename || resource.templateid }}</span>
               </div>
             </div>
+            <div class="resource-detail-item" v-if="sshCommandText">
+              <div class="resource-detail-item__label">{{ $t('label.ssh.access') }}</div>
+              <div class="resource-detail-item__details">
+                <tooltip-button
+                  tooltipPlacement="top"
+                  :tooltip="$t('label.copy')"
+                  icon="CopyOutlined"
+                  type="dashed"
+                  size="small"
+                  :copyResource="sshCommandText"
+                  @onClick="$message.success($t('label.copied.clipboard'))" />
+                <code class="instance-ssh-command">{{ sshCommandText }}</code>
+              </div>
+            </div>
+            <div class="resource-detail-item" v-if="sshCommandText && loginAccountName">
+              <div class="resource-detail-item__label">{{ $t('label.login.account') }}</div>
+              <div class="resource-detail-item__details">
+                <user-outlined />
+                <code class="instance-login-account">{{ loginAccountName }}</code>
+              </div>
+              <div class="instance-login-account-help">{{ $t('message.login.account') }}</div>
+            </div>
             <div class="resource-detail-item" v-if="resource.isoid">
               <div class="resource-detail-item__label">{{ $t('label.isoname') }}</div>
               <div class="resource-detail-item__details">
@@ -1043,6 +1065,7 @@ import ImageDeployInstanceButton from '@/components/view/ImageDeployInstanceButt
 import LeaseCountdown from '@/components/view/LeaseCountdown'
 import { isHourLease, remainingLeaseDaysText } from '@/utils/lease'
 import { showCpuSpeed } from '@/utils/uiConfig'
+import { sshCommand, loginAccount } from '@/utils/instanceAccess'
 import { FileTextOutlined } from '@ant-design/icons-vue'
 
 export default {
@@ -1145,6 +1168,17 @@ export default {
   computed: {
     cpuSpeedShown () {
       return showCpuSpeed(this.$config)
+    },
+    isExistingInstance () {
+      return this.$route.meta.name === 'vm' && !!this.resource.id
+    },
+    sshCommandText () {
+      return this.isExistingInstance
+        ? sshCommand(this.$config?.instanceAccess, this.$store.getters.userInfo?.username, this.resource.name)
+        : null
+    },
+    loginAccountName () {
+      return this.isExistingInstance ? loginAccount(this.$config?.instanceAccess, this.resource.templatename) : null
     },
     tagsSupportingResourceTypes () {
       return ['UserVm', 'Template', 'ISO', 'Volume', 'Snapshot', 'Backup', 'Network',
@@ -1506,6 +1540,18 @@ export default {
 }
 .user-keys {
   word-wrap: break-word;
+}
+.instance-ssh-command {
+  margin-left: 10px;
+  font-family: monospace;
+}
+.instance-login-account {
+  font-family: monospace;
+}
+.instance-login-account-help {
+  margin-top: 5px;
+  opacity: 0.65;
+  font-size: 12px;
 }
 .account-center-tags {
   .ant-tag {

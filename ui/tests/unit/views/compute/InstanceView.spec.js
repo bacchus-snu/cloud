@@ -233,3 +233,66 @@ describe('instance page for the minimal user role', () => {
     expect(stop.args(gpuVm, { userInfo: { roletype: 'User' }, features: { allowuserforcestopvm: true } })).toEqual(['forced'])
   })
 })
+
+describe('the instance card tells how to reach the instance', () => {
+  const debianVm = { ...gpuVm, name: 'My-VM', templateid: 'tpl-1', templatename: 'debian-13-20260914' }
+  const storeOf = (username) => common.createMockStore({ user: { apis: apiMap(minimalUser.apis), info: { roletype: 'User', username }, features: {} } })
+
+  const cardFor = async ({ config = deployedConfig, resource = debianVm, username = 'baneling100', route = vmRouter } = {}) =>
+    common.createFactory(InfoCard, {
+      router: await route(), i18n, store: storeOf(username), props: { resource, loading: false }, mocks: { $config: config }
+    })
+
+  const shown = (card) => ({
+    ssh: card.find('.instance-ssh-command').exists() ? card.find('.instance-ssh-command').text() : null,
+    account: card.find('.instance-login-account').exists() ? card.find('.instance-login-account').text() : null
+  })
+
+  it('shows the SSH command with a copy button and the login account of the template family, with the help line', async () => {
+    const card = await cardFor()
+    const command = 'ssh -p 2222 baneling100:my-vm@cloud.snucse.org'
+    expect(shown(card)).toEqual({ ssh: command, account: 'debian' })
+    expect(card.text()).toContain('label.ssh.access')
+    expect(card.text()).toContain('label.login.account')
+    expect(card.find('.instance-login-account-help').text()).toBe('message.login.account')
+    expect(card.find('.instance-ssh-command').element.tagName).toBe('CODE')
+    const copy = card.findAllComponents({ name: 'TooltipButton' }).find(button => button.props('copyResource') === command)
+    expect(copy).toBeDefined()
+  })
+
+  it('names the signed-in user, a member by the full username', async () => {
+    const member = await cardFor({ username: 'jh.kim@bacchus.snucse.org' })
+    expect(shown(member).ssh).toBe('ssh -p 2222 jh.kim@bacchus.snucse.org:my-vm@cloud.snucse.org')
+    expect(shown(await cardFor({ username: null })).ssh).toBeNull()
+  })
+
+  it('shows neither without instanceAccess in the config, or with it empty as shipped', async () => {
+    for (const config of [{ ...deployedConfig, instanceAccess: undefined }, { ...deployedConfig, instanceAccess: {} }, {}]) {
+      const card = await cardFor({ config })
+      expect(shown(card)).toEqual({ ssh: null, account: null })
+      expect(card.text()).not.toContain('label.ssh.access')
+      expect(card.text()).not.toContain('label.login.account')
+    }
+  })
+
+  it('leaves out the login account when the template is not in the map, and keeps the command', async () => {
+    const card = await cardFor({ resource: { ...debianVm, templatename: 'windows-2025-20260914' } })
+    expect(shown(card)).toEqual({ ssh: 'ssh -p 2222 baneling100:my-vm@cloud.snucse.org', account: null })
+    expect(card.text()).not.toContain('label.login.account')
+    expect(card.find('.instance-login-account-help').exists()).toBe(false)
+  })
+
+  it('is for an instance that exists, on the instance page only', async () => {
+    const { id, ...unsaved } = debianVm
+    expect(shown(await cardFor({ resource: unsaved }))).toEqual({ ssh: null, account: null })
+
+    const volumeRoute = async () => {
+      const router = common.createMockRouter([{ name: 'volume', path: '/volume/:id', meta: { name: 'volume' }, component: {} },
+        { path: '/:catchAll(.*)', redirect: '/exception/404' }])
+      router.push('/volume/vol-1')
+      await router.isReady()
+      return router
+    }
+    expect(shown(await cardFor({ route: volumeRoute }))).toEqual({ ssh: null, account: null })
+  })
+})

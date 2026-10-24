@@ -1,4 +1,18 @@
 {
+  "instanceAccess": {
+    "sshHost": "cloud.snucse.org",
+    "sshPort": 2222,
+    "loginAccounts": {
+      "ubuntu": "ubuntu",
+      "debian": "debian",
+      "fedora": "fedora",
+      "rocky": "rocky",
+      "almalinux": "almalinux",
+      "opensuse": "opensuse",
+      "arch": "arch",
+      "alpine": "alpine"
+    }
+  },
   "docHelpMappings": {
     "adminguide/virtual_machines.html": "instance.html",
     "adminguide/storage.html": "instance.html",

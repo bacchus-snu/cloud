@@ -1,3 +1,11 @@
+cloudstack (4.23.0.100+snucse.6) unstable; urgency=low
+
+  * A local pool is served by its host while new placements on the host
+    are disabled, so volumes there can be deleted
+  * The agent package keeps a libvirt qemu hook already in place
+
+ -- SNUCSE Cloud maintainers <contact@bacchus.snucse.org>  Fri, 23 Oct 2026 21:08:32 -0400
+
 cloudstack (4.23.0.100+snucse.5) unstable; urgency=low
 
   * Volume copies between hosts complete: the transfer units run their

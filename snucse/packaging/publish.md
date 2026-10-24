@@ -42,12 +42,14 @@ $ k="kubectl --context bacchus-atrium -n bacchus-repo"
    $ $k cp cloudstack-common_${v}_all.deb bacchus-repo-0:/deb/cloudstack-common_${v}_all.deb -c reprepro
    ```
 
-3. Open a shell there and import the key if `gpg -K` lists none: run
-   `gpg --import` and paste the value of "repo.snucse.org GPG key" from Vault
-   `passwords/regular-members`.
+3. Open a shell there and import the key, which step 6 removed after the last
+   publish: run `gpg --import`, paste the value of "repo.snucse.org GPG key"
+   from Vault `passwords/regular-members` and end the input with Ctrl-D. Then
+   `gpg -K` lists it.
 
    ```console
    $ $k exec -it bacchus-repo-0 -c reprepro -- bash
+   # gpg --import
    # gpg -K
    ```
 
@@ -70,7 +72,8 @@ $ k="kubectl --context bacchus-atrium -n bacchus-repo"
      volume grows by a release each time.
 
 5. Include both packages. reprepro signs the new index; when gpg asks for the
-   passphrase, it is "deprecated/리눅스 서버" in the same Vault entry.
+   passphrase (also when step 3 imports the key), it is "deprecated/New 리눅스
+   서버" in the same Vault entry.
 
    ```console
    # v=4.23.0.100+snucse.1
@@ -79,7 +82,17 @@ $ k="kubectl --context bacchus-atrium -n bacchus-repo"
    # reprepro -b /srv/repos/debian list trixie cloudstack-common
    ```
 
-   Both lists show `$v`, and only `$v`.
+   Both lists show `$v`, and only `$v`. The lists read reprepro's database,
+   not the published index: when signing fails, `includedeb` still records the
+   packages, ends with "There have been errors!", and leaves the previous index
+   and the previous packages in place. Running `includedeb` again then only
+   skips the packages it already has. With the key imported, export the index
+   and drop the packages it no longer names:
+
+   ```console
+   # reprepro -b /srv/repos/debian export trixie
+   # reprepro -b /srv/repos/debian deleteunreferenced
+   ```
 
 6. Clean up: remove the copied packages and the secret key (it stays in
    Vault).
@@ -93,7 +106,7 @@ $ k="kubectl --context bacchus-atrium -n bacchus-repo"
 7. Check the published index from outside:
 
    ```console
-   $ curl -fsS https://repo.snucse.org/debian/dists/trixie/main/binary-amd64/Packages | grep -A1 -E '^Package: cloudstack-(agent|common)$'
+   $ curl -fsS https://repo.snucse.org/debian/dists/trixie/main/binary-amd64/Packages | grep -A2 -E '^Package: cloudstack-(agent|common)$'
    ```
 
    On a host, `apt-get update` succeeds (the signature checks) and

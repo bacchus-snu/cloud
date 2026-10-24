@@ -1,3 +1,11 @@
+cloudstack (4.23.0.100+snucse.7) unstable; urgency=low
+
+  * An instance shows how to reach it: the SSH command, the account it
+    logs in as, and once after creation the instance password with what
+    it is for
+
+ -- SNUCSE Cloud maintainers <contact@bacchus.snucse.org>  Sat, 24 Oct 2026 03:22:29 -0400
+
 cloudstack (4.23.0.100+snucse.6) unstable; urgency=low
 
   * A local pool is served by its host while new placements on the host

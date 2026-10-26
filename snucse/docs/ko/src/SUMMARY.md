@@ -10,6 +10,7 @@
 # 사용 방법
 
 - [인스턴스 만들기와 관리](instance.md)
+- [볼륨과 스냅샷](volume.md)
 - [인스턴스에 접속하기](access.md)
 - [수업·연구실에서 쓰기](course.md)
 - [네트워크](network.md)

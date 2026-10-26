@@ -10,80 +10,31 @@
 
 ## 학생 등록
 
-1. 학생들에게 **cloud.snucse.org에 한 번 로그인**하라고 안내하고 SNUCSE ID 유저명을 모읍니다. 로그인 전에는 계정이 없어서 아래 태그가 효력이 없습니다. SNUCSE ID가 없는 외부 참여자는 [이용 대상](account.md)을 참고하세요.
+1. 학생들에게 **cloud.snucse.org에 한 번 로그인**하라고 안내하고 SNUCSE ID 유저명을 모읍니다. 로그인 전에는 계정이 없어서 아래 게스트 목록에 적어도 효력이 없습니다. SNUCSE ID가 없는 외부 참여자는 [이용 대상](account.md)을 참고하세요.
 2. 인스턴스 안에서 계정을 만듭니다. 사람마다 하나씩(`sudo adduser hong`) 또는 공용 계정 하나(`sudo adduser student`). sudo를 줄지, 홈 디스크를 어떻게 나눌지는 관리자가 정합니다.
-3. 웹 UI의 **컴퓨트 → 인스턴스**에서 인스턴스를 열고, 왼쪽 정보 카드를 맨 아래로 내리면 **태그**가 있습니다. **새 태그**를 누르면 키와 값 칸이 나옵니다. 키는 `ssh.account.<계정 이름>`, 값은 그 계정으로 들어올 SNUCSE ID 유저명을 쉼표로(공백 없이) 나열하고 체크 표시를 누릅니다.
+3. 웹 UI의 **컴퓨트 → 인스턴스**에서 인스턴스를 열고 **SSH 게스트** 탭을 엽니다. 게스트는 인스턴스 안의 계정별 칸에 적습니다. 처음에는 로그인 계정(`ubuntu` 등)의 칸만 있으니, 2번에서 만든 계정은 **계정 추가**의 **새 계정 이름** 칸에 이름을 적고 **추가**를 눌러 칸을 만듭니다. 그 칸에 그 계정으로 들어올 SNUCSE ID 유저명을 쉼표로 구분해 적고 **저장**을 누릅니다.
 
-   | 키 | 값 | 뜻 |
+   | 계정 | 칸에 적는 내용 | 뜻 |
    | --- | --- | --- |
-   | `ssh.account.yun` | `yun` | yun은 자기 계정으로 |
-   | `ssh.account.student` | `hong,kim,lee` | 세 명이 공용 계정 `student`로 |
+   | `yun` | `yun` | yun은 자기 계정으로 |
+   | `student` | `hong, kim, lee` | 세 명이 공용 계정 `student`로 |
 
-   값 한 칸에는 8192자까지 들어가므로 한 계정에 SNUCSE ID 수백 개를 적을 수 있습니다. 같은 키를 두 번 만들 수는 없습니다. 이름이 수십 명을 넘으면 아래 [CLI로 한 번에 등록하기](#cli로-한-번에-등록하기)를 쓰세요.
-4. 학생에게 접속 문자열을 알려 줍니다. 처음 접속 때 브라우저 로그인이 한 번 필요합니다([접속하기](access.md)).
+   이름은 쉼표로만 구분하고(공백이나 줄바꿈만으로 나누면 오류), 앞뒤 공백과 줄바꿈은 무시합니다. 수강생이 수백 명이어도 한 칸에 모두 적으면 됩니다. 명단이 한 줄에 하나씩 적힌 파일(`ids.txt`)이 있으면 아래 명령으로 쉼표로 이은 한 줄을 만들어 붙여 넣으세요. 자세한 규칙은 [게스트](access.md#다른-사람에게-접속-권한-주기-게스트)에 있습니다.
 
    ```console
-   $ ssh -p 2222 <SNUCSE ID 유저명>:<인스턴스 이름>:<계정 이름>@cloud.snucse.org
+   $ paste -sd, ids.txt
+   ```
+4. 학생에게 접속 문자열을 알려 줍니다. 각 칸 아래에 학생이 쓸 명령이 나오니, `<ID>` 자리만 학생 본인의 유저명으로 바꿔 알려 주면 됩니다. 처음 접속 때 브라우저 로그인이 한 번 필요합니다([접속하기](access.md)).
+
+   ```console
+   $ ssh -p 2222 <학생 유저명>:<SSH 이름>:<계정 이름>@cloud.snucse.org
    ```
 
-태그를 넣고 1분 안에 접속이 됩니다. 학생은 인스턴스를 정지·삭제하거나 콘솔을 열 수 없고, 태그에 적힌 계정으로 SSH만 됩니다.
-
-## CLI로 한 번에 등록하기
-
-수강생이 수백 명이면 태그를 손으로 넣기 어렵습니다. CloudStack API를 쓰는 공식 CLI [cloudmonkey](https://github.com/apache/cloudstack-cloudmonkey/releases)(`cmk`)로 한 번에 넣을 수 있습니다.
-
-### API 키 만들기
-
-오른쪽 위의 본인 이름 → **정보** → **API 키 쌍** 탭 → **API 키 쌍 등록**. 이름만 적고 **확인**을 누르면 표에 API 키와 비밀 키가 나타납니다. 둘 다 비밀번호처럼 다루세요. 이 키로는 본인 계정의 자원을 API로 다룰 수 있습니다.
-
-![API 키 쌍 탭](images/api-keys.png)
-
-![API 키 쌍 등록 대화상자](images/api-key-dialog.png)
-
-### cmk 설정
-
-```console
-$ cmk set profile snucse
-$ cmk set url https://cloud.snucse.org/client/api
-$ cmk set apikey <API key>
-$ cmk set secretkey <Secret key>
-$ cmk sync
-```
-
-cmk는 API를 POST로 보냅니다. cmk 대신 직접 만든 스크립트로 인스턴스를 만들거나 고칠 때(`deployVirtualMachine`, `updateVirtualMachine`)도 POST로 보내세요. 모든 템플릿에 붙는 초기 설정 스크립트(user data)가 GET 요청의 한도(4 KB)를 넘어 GET으로는 `User data is too long for http GET request` 오류가 납니다. 만든 뒤 user data를 바꿀 때는 `updateVirtualMachine`의 `userdata` 값으로 보냅니다(인스턴스 편집 창의 user data 칸도 같은 명령을 씁니다).
-
-바꾼 user data가 언제 적용되는지는 [사용자 데이터](instance.md#사용자-데이터)를 보세요.
-
-인스턴스 ID를 찾습니다.
-
-```console
-$ cmk list virtualmachines filter=id,name
-```
-
-### 태그 넣기와 빼기
-
-키에 대괄호가 들어가므로 따옴표로 감쌉니다.
-
-```console
-$ cmk create tags resourceids=<인스턴스 ID> resourcetype=UserVm \
-    'tags[0].key=ssh.account.student' 'tags[0].value=kim,lee,park'
-$ cmk delete tags resourceids=<인스턴스 ID> resourcetype=UserVm \
-    'tags[0].key=ssh.account.student'
-```
-
-SNUCSE ID를 한 줄에 하나씩 적은 파일(`ids.txt`)이 있으면, 아래 스크립트(bash)가 쉼표로 이어 태그 하나로 넣습니다.
-
-```bash
-#!/bin/bash
-VM=<인스턴스 ID>; ACCOUNT=student
-ids=$(grep -v '^$' ids.txt | paste -sd, -)
-cmk create tags resourceids=$VM resourcetype=UserVm "tags[0].key=ssh.account.$ACCOUNT" "tags[0].value=$ids"
-```
-
-이미 같은 키가 있으면 오류가 나므로, 명단을 바꿀 때는 먼저 `cmk delete tags`로 지우고 다시 넣습니다. 태그가 반영되면 1분 안에 접속이 열립니다.
+저장하고 1분 안에 접속이 됩니다. 학생은 인스턴스를 정지·삭제하거나 콘솔을 열 수 없고, 목록에 적힌 계정으로 SSH만 됩니다. 인스턴스 이름을 바꾸면 SSH 이름도 바뀌므로 학생에게 새 명령을 알려 주세요([인스턴스 이름](instance.md#인스턴스-이름)).
 
 ## 학기가 끝나면
 
-- 태그를 지우면 1분 안에 접속이 끊기고 막힙니다. 인스턴스 안 계정과 파일은 남습니다.
-- 인스턴스를 지우면 vCPU·메모리·GPU 쿼터가 돌아옵니다. 데이터 디스크와 남긴 루트 디스크는 볼륨으로 남아 스토리지 쿼터를 차지하니, 필요 없는 볼륨은 지워야 쿼터가 돌아옵니다([인스턴스 삭제와 루트 디스크](instance.md#인스턴스-삭제와-루트-디스크)). 필요한 데이터는 미리 받아 두세요.
+- 게스트 목록을 비우고 저장하면 1분 안에 접속이 끊기고 막힙니다. 인스턴스 안 계정과 파일은 남습니다.
+- 인스턴스를 지우면 vCPU·메모리·GPU 쿼터가 돌아옵니다. 휴지통은 없어서 지우면 바로 사라지고 되돌릴 수 없으니, 필요한 데이터는 미리 받아 두세요. 지울 때 이름을 입력해야 합니다.
+- 데이터 디스크와 남긴 루트 디스크는 볼륨으로 남고, 스냅샷도 남습니다. 모두 스토리지 쿼터를 차지하므로 필요 없는 것은 직접 지워야 쿼터가 돌아옵니다(지우면 복구할 수 없습니다). 루트 디스크가 필요 없으면 인스턴스를 지울 때 **루트 디스크 남기기**를 끄세요([인스턴스 삭제와 루트 디스크](instance.md#인스턴스-삭제와-루트-디스크), [볼륨과 스냅샷](volume.md)).
 - 다음 학기에도 쓰려면 만료일 전에 그 승인의 **갱신 신청**을 하세요([만료와 갱신](quota.md#만료와-갱신)).

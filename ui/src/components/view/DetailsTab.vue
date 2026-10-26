@@ -489,7 +489,7 @@ export default {
       }
 
       if (typeof details === 'function') {
-        details = details()
+        details = details(this.resource)
       }
 
       let detailsKeys = []

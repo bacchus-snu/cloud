@@ -24,7 +24,7 @@ import store from '@/store'
 import { sourceToken } from '@/utils/request'
 import { toLocalDate, toLocaleDate } from '@/utils/date'
 import { docHelpUrl, isHidden } from '@/utils/uiConfig'
-import { canEditTags } from '@/utils/resourceTags'
+import { canEditTags, canSeeTags } from '@/utils/resourceTags'
 
 export const pollJobPlugin = {
   install (app) {
@@ -192,23 +192,28 @@ export const pollJobPlugin = {
           }, 3000)
         }
       }).catch(e => {
-        console.error(`${catchMessage} - ${e}`)
-        if (!sourceToken.isCancel(e)) {
-          let countNotify = store.getters.countNotify
-          countNotify++
-          store.commit('SET_COUNT_NOTIFY', countNotify)
-          notification.error({
-            top: '65px',
-            message: i18n.global.t('label.error'),
-            description: catchMessage,
-            duration: 0,
-            onClose: () => {
-              let countNotify = store.getters.countNotify
-              countNotify > 0 ? countNotify-- : countNotify = 0
-              store.commit('SET_COUNT_NOTIFY', countNotify)
-            }
-          })
+        // A job does not belong to the page that started it: leaving the page cancels the request in flight, not the job.
+        if (sourceToken.isCancel(e)) {
+          setTimeout(() => {
+            this.$pollJob(options, action)
+          }, 3000)
+          return
         }
+        console.error(`${catchMessage} - ${e}`)
+        let countNotify = store.getters.countNotify
+        countNotify++
+        store.commit('SET_COUNT_NOTIFY', countNotify)
+        notification.error({
+          top: '65px',
+          message: i18n.global.t('label.error'),
+          description: catchMessage,
+          duration: 0,
+          onClose: () => {
+            let countNotify = store.getters.countNotify
+            countNotify > 0 ? countNotify-- : countNotify = 0
+            store.commit('SET_COUNT_NOTIFY', countNotify)
+          }
+        })
         catchMethod && catchMethod()
       })
     }
@@ -348,6 +353,10 @@ export const configUtilPlugin = {
 
     app.config.globalProperties.$canEditTags = function () {
       return canEditTags(this.$store?.getters?.userInfo?.roletype)
+    }
+
+    app.config.globalProperties.$canSeeTags = function () {
+      return canSeeTags(this.$store?.getters?.userInfo?.roletype)
     }
   }
 }

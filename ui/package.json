@@ -101,6 +101,7 @@
     "less-loader": "^5.0.0",
     "nan": "2.18.0",
     "node-gyp": "10.0.1",
+    "postcss": "^7.0.39",
     "sass": "^1.49.9",
     "sass-loader": "^8.0.2",
     "uglifyjs-webpack-plugin": "^2.2.0",

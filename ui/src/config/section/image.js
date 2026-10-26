@@ -17,8 +17,13 @@
 
 import { shallowRef, defineAsyncComponent } from 'vue'
 import store from '@/store'
-import { isZoneCreated } from '@/utils/zone'
+import { hasSeveralZones, isZoneCreated } from '@/utils/zone'
 import kubernetesIcon from '@/assets/icons/kubernetes.svg?inline'
+
+const isStudent = () => store.getters.userInfo.roletype === 'User'
+// A student has no tags to filter by, and no zone to filter by or to copy to while there is one zone.
+const studentFilters = (filters) => isStudent() ? filters.filter(filter => filter !== 'tags' && (filter !== 'zoneid' || hasSeveralZones())) : filters
+const zonesTabShown = () => !isStudent() || hasSeveralZones()
 
 export default {
   name: 'image',
@@ -73,7 +78,7 @@ export default {
           filters.push('storageid')
           filters.push('imagestoreid')
         }
-        return filters
+        return studentFilters(filters)
       },
       related: [{
         name: 'vm',
@@ -85,7 +90,8 @@ export default {
         component: shallowRef(defineAsyncComponent(() => import('@/components/view/DetailsTab.vue')))
       }, {
         name: 'zones',
-        component: shallowRef(defineAsyncComponent(() => import('@/views/image/TemplateZones.vue')))
+        component: shallowRef(defineAsyncComponent(() => import('@/views/image/TemplateZones.vue'))),
+        show: zonesTabShown
       }, {
         name: 'settings',
         api: 'listDetailOptions',
@@ -243,7 +249,7 @@ export default {
           filters.push('storageid')
           filters.push('imagestoreid')
         }
-        return filters
+        return studentFilters(filters)
       },
       related: [{
         name: 'vm',
@@ -255,7 +261,8 @@ export default {
         component: shallowRef(defineAsyncComponent(() => import('@/components/view/DetailsTab.vue')))
       }, {
         name: 'zones',
-        component: shallowRef(defineAsyncComponent(() => import('@/views/image/IsoZones.vue')))
+        component: shallowRef(defineAsyncComponent(() => import('@/views/image/IsoZones.vue'))),
+        show: zonesTabShown
       },
       {
         name: 'events',

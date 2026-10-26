@@ -343,11 +343,15 @@ describe('the tags on the instance card', () => {
     return card
   }
 
-  it('are listed for every role, and the controls that add and remove them are for a role above User only', async () => {
+  it('are for a role above User only, with the controls that add and remove them; a student is shown none and they are not even read', async () => {
+    const readsOfTags = () => getAPI.mock.calls.filter(call => call[0] === 'listTags').length
+    const before = readsOfTags()
     const student = await cardAs('User')
-    expect(student.text()).toContain('ssh.account.foo = alice')
+    expect(student.text()).not.toContain('ssh.account.foo')
+    expect(student.text()).not.toContain('label.tags')
     expect(student.find('.btn-add-tag').exists()).toBe(false)
     expect(student.find('.ant-tag-close-icon').exists()).toBe(false)
+    expect(readsOfTags()).toBe(before)
 
     for (const roletype of ['Admin', 'DomainAdmin']) {
       const other = await cardAs(roletype)
@@ -358,7 +362,7 @@ describe('the tags on the instance card', () => {
   })
 
   it('are read again when the tags of this instance changed elsewhere on the page, and not for another instance', async () => {
-    const card = await cardAs('User')
+    const card = await cardAs('Admin')
     const reads = () => getAPI.mock.calls.filter(call => call[0] === 'listTags').length
     getAPI.mockImplementation(() => Promise.resolve({ listtagsresponse: { tag: [{ key: 'ssh.account.foo', value: 'alice,bob' }] } }))
     const before = reads()

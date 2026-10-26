@@ -379,7 +379,7 @@
         {{ text }}
       </template>
       <template v-if="column.key === 'vmname'">
-        <router-link :to="{ path: createPathBasedOnVmType(record.vmtype, record.virtualmachineid) }">{{ text
+        <router-link :to="{ path: createPathBasedOnVmType(record.vmtype, record.virtualmachineid) }">{{ record.vmdisplayname || text
           }}</router-link>
       </template>
       <template v-if="column.key === 'virtualmachinename'">

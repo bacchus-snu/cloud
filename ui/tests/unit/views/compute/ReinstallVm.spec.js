@@ -63,22 +63,24 @@ const answer = (command, params = {}) => {
   }
 }
 
-const open = async (without = [], { features = {}, locale = 'en' } = {}) => {
+const open = async (without = [], { features = {}, locale = 'en', resource = vm } = {}) => {
   const apis = Object.fromEntries(minimalUser.apis.filter(name => !without.includes(name)).map(name => [name, {
     params: name === 'restoreVirtualMachine' ? ['diskofferingid', 'rootdisksize', 'expunge'].map(param => ({ name: param, description: param })) : []
   }]))
   global.allowedApis = apis
   const store = common.createMockStore({ user: { apis, info: { roletype: 'User', domainid: 'd-1', account: 'student', accountid: 'acc-1' }, features } })
+  const $pollJob = jest.fn()
   const wrapper = common.createFactory(ReinstallVm, {
     store,
     i18n: common.createMockI18n(locale, { en, ko_KR: ko }),
-    props: { resource: vm },
+    props: { resource },
     provide: { parentFetchData: jest.fn() },
-    mocks: { $config: {}, $pollJob: jest.fn(), $notifyError: jest.fn() },
+    mocks: { $config: {}, $pollJob, $notifyError: jest.fn() },
     stubs: { OsBasedImageSelection: true, TemplateIsoSelection: true, DiskOfferingSelection: true, DiskSizeSelection: true }
   })
   await flushPromises()
   await flushPromises()
+  wrapper.$pollJob = $pollJob
   return wrapper
 }
 
@@ -188,6 +190,31 @@ describe('ReinstallVm root disk size', () => {
     expect(getAPI.mock.calls.map(call => call[0])).not.toContain('listAccounts')
     expect(sizeInput(wrapper).props('maxDiskSize')).toBeNull()
     expect(sizeInput(wrapper).props('minDiskSize')).toBe(10)
+  })
+})
+
+describe('ReinstallVm names the instance', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    state = { capabilities: { rootdisksizemin: 10, rootdisksizedefault: 20 }, remaining: 77, currentGiB: 5, rootGiB: 50 }
+    getAPI.mockImplementation((command, params) => Promise.resolve(answer(command, params)))
+    postAPI.mockImplementation(() => Promise.resolve({ restorevmresponse: { jobid: 'job-1' } }))
+  })
+
+  it('by its visible name in the notice of the job, and never by its hostname', async () => {
+    const wrapper = await open([], { resource: { ...vm, name: 'i-2-34-VM', displayname: 'lab' } })
+    wrapper.vm.handleSubmit()
+    await flushPromises()
+    const notice = JSON.stringify(Object.fromEntries(Object.entries(wrapper.$pollJob.mock.calls[0][0]).filter(([, value]) => typeof value !== 'function')))
+    expect(notice).toContain('lab')
+    expect(notice).not.toContain('i-2-34-VM')
+  })
+
+  it('by its hostname when it has no visible name', async () => {
+    const wrapper = await open([], { resource: { ...vm, name: 'old-vm' } })
+    wrapper.vm.handleSubmit()
+    await flushPromises()
+    expect(wrapper.$pollJob.mock.calls[0][0].loadingMessage).toContain('old-vm')
   })
 })
 

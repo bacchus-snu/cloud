@@ -17,7 +17,7 @@
 
 import { shallowRef, defineAsyncComponent } from 'vue'
 import store from '@/store'
-import { isZoneCreated } from '@/utils/zone'
+import { hasSeveralZones, hasZoneBesides, isZoneCreated } from '@/utils/zone'
 import { isAdmin } from '@/role'
 import { canDeployFromSnapshot, canDeployFromVolume } from '@/utils/deployImages'
 import { resourceNameRule } from '@/utils/resourceName'
@@ -97,7 +97,10 @@ export default {
         }
       ],
       searchFilters: () => {
-        const filters = ['name', 'zoneid', 'domainid', 'account', 'state', 'tags', 'serviceofferingid', 'diskofferingid', 'kmskeyid', 'isencrypted']
+        let filters = ['name', 'zoneid', 'domainid', 'account', 'state', 'tags', 'serviceofferingid', 'diskofferingid', 'kmskeyid', 'isencrypted']
+        if (store.getters.userInfo.roletype === 'User') {
+          filters = filters.filter(filter => filter !== 'tags' && (filter !== 'zoneid' || hasSeveralZones()))
+        }
         if (['Admin', 'DomainAdmin'].includes(store.getters.userInfo.roletype)) {
           filters.push('storageid')
         }
@@ -392,7 +395,8 @@ export default {
         },
         {
           name: 'zones',
-          component: shallowRef(defineAsyncComponent(() => import('@/views/storage/SnapshotZones.vue')))
+          component: shallowRef(defineAsyncComponent(() => import('@/views/storage/SnapshotZones.vue'))),
+          show: (record) => { return store.getters.userInfo.roletype !== 'User' || hasZoneBesides(record?.zoneid) }
         },
         {
           name: 'events',
@@ -407,7 +411,10 @@ export default {
         }
       ],
       searchFilters: () => {
-        const filters = ['name', 'domainid', 'account', 'tags', 'zoneid']
+        let filters = ['name', 'domainid', 'account', 'tags', 'zoneid']
+        if (store.getters.userInfo.roletype === 'User') {
+          filters = filters.filter(filter => filter !== 'tags' && (filter !== 'zoneid' || hasSeveralZones()))
+        }
         if (['Admin', 'DomainAdmin'].includes(store.getters.userInfo.roletype)) {
           filters.push('storageid')
           filters.push('imagestoreid')

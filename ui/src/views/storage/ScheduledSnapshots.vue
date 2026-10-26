@@ -88,6 +88,7 @@
 import { postAPI } from '@/api'
 import TooltipButton from '@/components/widgets/TooltipButton'
 import { timeZoneName } from '@/utils/timezone'
+import { hasZoneBesides } from '@/utils/zone'
 
 export default {
   name: 'ScheduledSnapshots',
@@ -111,56 +112,65 @@ export default {
   data () {
     return {
       actionLoading: false,
-      columns: [],
       dataSchedules: [],
       listDayOfWeek: ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
     }
   },
-  created () {
-    this.columns = [
-      {
-        key: 'icon',
-        title: '',
-        dataIndex: 'icon',
-        width: 30
-      },
-      {
-        key: 'time',
-        title: this.$t('label.time'),
-        dataIndex: 'schedule'
-      },
-      {
-        key: 'interval',
-        title: '',
-        dataIndex: 'interval'
-      },
-      {
-        key: 'timezone',
-        title: this.$t('label.timezone'),
-        dataIndex: 'timezone'
-      },
-      {
-        key: 'keep',
-        title: this.$t('label.keep'),
-        dataIndex: 'maxsnaps'
-      },
-      {
-        key: 'tags',
-        title: this.$t('label.tags'),
-        dataIndex: 'tags'
-      },
-      {
-        key: 'zones',
-        title: this.$t('label.zones'),
-        dataIndex: 'zone'
-      },
-      {
+  computed: {
+    showsZones () {
+      return this.$store.getters.userInfo.roletype !== 'User' || hasZoneBesides(this.resource.zoneid)
+    },
+    columns () {
+      const columns = [
+        {
+          key: 'icon',
+          title: '',
+          dataIndex: 'icon',
+          width: 30
+        },
+        {
+          key: 'time',
+          title: this.$t('label.time'),
+          dataIndex: 'schedule'
+        },
+        {
+          key: 'interval',
+          title: '',
+          dataIndex: 'interval'
+        },
+        {
+          key: 'timezone',
+          title: this.$t('label.timezone'),
+          dataIndex: 'timezone'
+        },
+        {
+          key: 'keep',
+          title: this.$t('label.keep'),
+          dataIndex: 'maxsnaps'
+        }
+      ]
+      if (this.$canSeeTags()) {
+        columns.push({
+          key: 'tags',
+          title: this.$t('label.tags'),
+          dataIndex: 'tags'
+        })
+      }
+      if (this.showsZones) {
+        columns.push({
+          key: 'zones',
+          title: this.$t('label.zones'),
+          dataIndex: 'zone'
+        })
+      }
+      columns.push({
         key: 'actions',
         title: this.$t('label.actions'),
         dataIndex: 'actions',
         width: 50
-      }
-    ]
+      })
+      return columns
+    }
   },
   mounted () {
     this.dataSchedules = this.dataSource

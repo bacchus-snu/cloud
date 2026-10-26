@@ -129,6 +129,7 @@ import TooltipLabel from '@/components/widgets/TooltipLabel'
 import PlacementMoveModal from '@views/compute/wizard/PlacementMoveModal'
 import placementApproval from '@/utils/placementApproval'
 import { checkPlacement } from '@/utils/placement'
+import { instanceName } from '@/utils/instanceName'
 
 export default {
   name: 'StartVirtualMachine',
@@ -287,10 +288,10 @@ export default {
     jobOptions () {
       return {
         title: this.$t('label.action.start.instance'),
-        description: this.resource.name,
-        loadingMessage: `${this.$t('label.action.start.instance')} ${this.resource.name}`,
+        description: instanceName(this.resource),
+        loadingMessage: `${this.$t('label.action.start.instance')} ${instanceName(this.resource)}`,
         catchMessage: this.$t('error.fetching.async.job.result'),
-        successMessage: `${this.$t('label.action.start.instance')} ${this.resource.name}`,
+        successMessage: `${this.$t('label.action.start.instance')} ${instanceName(this.resource)}`,
         response: (result) => { return result.virtualmachine && result.virtualmachine.password ? `The password of VM <b>${result.virtualmachine.displayname}</b> is <b>${result.virtualmachine.password}</b>` : null }
       }
     },

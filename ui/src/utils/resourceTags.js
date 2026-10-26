@@ -20,3 +20,8 @@
 export function canEditTags (roletype) {
   return roletype !== 'User'
 }
+
+// The User role type sees no tags at all: they store settings that the pages which own them show in their own words.
+export function canSeeTags (roletype) {
+  return roletype !== 'User'
+}

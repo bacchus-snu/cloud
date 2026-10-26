@@ -19,6 +19,7 @@
   <a-spin :spinning="loading">
     <div class="ssh-guests">
       <p class="ssh-guests-help">{{ $t('message.ssh.guests') }}</p>
+      <p class="ssh-guests-accounts" v-html="$t('message.ssh.guests.accounts')" />
       <div v-for="section in sections" :key="section.account" class="ssh-guests-section">
         <div class="ssh-guests-title">
           {{ $t('label.ssh.guests.account') }}
@@ -30,6 +31,7 @@
           :autoSize="{ minRows: 2, maxRows: 12 }"
           :placeholder="$t('message.ssh.guests.placeholder')"
           @update:value="value => setDraft(section.account, value)" />
+        <div v-if="!section.isLogin" class="ssh-guests-note">{{ $t('message.ssh.guests.account.exists') }}</div>
         <div v-for="error in section.errors" :key="error.type + ':' + error.entry" class="ssh-guests-error">
           <template v-if="error.type === 'separator'">
             <code>{{ error.entry }}</code> {{ $t('message.ssh.guests.separator') }}
@@ -121,9 +123,11 @@ export default {
     held () {
       return Object.fromEntries(guestAccounts(this.tags).map(({ account, names }) => [account, names]))
     },
+    login () {
+      return loginAccount(this.access, this.resource.templatename)
+    },
     accounts () {
-      const login = loginAccount(this.access, this.resource.templatename)
-      return [...new Set([login, ...Object.keys(this.held), ...this.added].filter(Boolean))]
+      return [...new Set([this.login, ...Object.keys(this.held), ...this.added].filter(Boolean))]
     },
     sections () {
       return this.accounts.map(account => {
@@ -134,6 +138,7 @@ export default {
         const changed = JSON.stringify(names) !== JSON.stringify(heldNames)
         return {
           account,
+          isLogin: account === this.login,
           text,
           errors,
           diff,
@@ -273,6 +278,16 @@ export default {
 <style lang="less" scoped>
 .ssh-guests-help {
   margin-bottom: 16px;
+}
+
+.ssh-guests-accounts {
+  margin-bottom: 16px;
+}
+
+.ssh-guests-note {
+  margin-top: 4px;
+  opacity: 0.65;
+  font-size: 12px;
 }
 
 .ssh-guests-section {

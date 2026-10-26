@@ -39,6 +39,7 @@ export const STUDENT_FILES = [
   'views/storage/AttachVolume.vue',
   'views/storage/TakeSnapshot.vue',
   'views/storage/RecurringSnapshotVolume.vue',
+  'views/storage/ScheduledSnapshots.vue',
   'views/storage/FormSchedule.vue',
   'views/storage/RenameResource.vue',
   'views/storage/ResizeVolume.vue',
@@ -79,13 +80,16 @@ export const STUDENT_FILES = [
   'utils/guestList.js',
   'utils/guiTheme.js',
   'utils/instanceAccess.js',
+  'utils/instanceName.js',
   'utils/limits.js',
   'utils/links.js',
   'utils/placement.js',
   'utils/plugins.js',
   'utils/resourceLimitRequest.js',
   'utils/resourceName.js',
-  'utils/vcpuStep.js'
+  'utils/searchLabel.js',
+  'utils/vcpuStep.js',
+  'utils/zone.js'
 ]
 
 // The configuration of the sections a student reaches: their action, tab and column labels are read by the student too.

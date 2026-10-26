@@ -22,6 +22,7 @@ import { flushPromises } from '@vue/test-utils'
 import common from '../../../common'
 import { getAPI, postAPI } from '@/api'
 import DestroyVM from '@/views/compute/DestroyVM'
+import eventBus from '@/config/eventBus'
 
 jest.mock('@/api', () => ({ getAPI: jest.fn(), postAPI: jest.fn(), callAPI: jest.fn() }))
 jest.mock('@/store', () => ({ getters: { features: {}, apis: {}, userInfo: { roletype: 'User' }, zones: [] } }))
@@ -50,20 +51,22 @@ const open = async ({ props = {}, locale = 'en', roletype = 'User', apiNames = [
     ...Object.fromEntries(apiNames.map(name => [name, { params: [] }]))
   }
   const store = common.createMockStore({ user: { apis, info: { roletype }, features } })
-  const router = common.createMockRouter([{ path: '/vm', component: {} }, { path: '/vm/:id', component: {} }])
+  const router = common.createMockRouter([{ path: '/vm', component: {} }, { path: '/vm/:id', component: {} }, { path: '/volume', component: {} }, { path: '/account', component: {} }])
   router.push(route)
   await router.isReady()
   const $pollJob = jest.fn((options) => { pollOptions = options })
+  const parentFetchData = jest.fn()
   const wrapper = common.createFactory(DestroyVM, {
     store,
     router,
     i18n: common.createMockI18n(locale, { en, ko_KR: ko }),
     props: { resource: vm, action: {}, ...props },
-    provide: { parentFetchData: jest.fn() },
+    provide: { parentFetchData },
     mocks: { $pollJob, $notifyError: jest.fn(), $message: { info: jest.fn() } },
     stubs: { BulkActionProgress: true }
   })
   wrapper.$pollJob = $pollJob
+  wrapper.parentFetchData = parentFetchData
   await flushPromises()
   await flushPromises()
   return wrapper
@@ -302,6 +305,81 @@ describe('DestroyVM when the cloud deletes an Instance at once', () => {
     expect(back).toHaveBeenCalledWith(-1)
   })
 
+  describe('when the user went elsewhere before the job finished', () => {
+    let refreshed
+
+    beforeEach(() => {
+      refreshed = jest.fn()
+      eventBus.on('async-job-complete', refreshed)
+    })
+
+    afterEach(() => {
+      eventBus.off('async-job-complete', refreshed)
+    })
+
+    const startedOnThePageOfTheInstance = async () => {
+      const wrapper = await open({ route: '/vm/vm-1' })
+      const back = jest.spyOn(wrapper.vm.$router, 'go').mockImplementation(() => {})
+      await field(wrapper).setValue('lab')
+      await submit(wrapper)
+      expect(pollOptions.originalPage).toBe('/vm/vm-1')
+      return { wrapper, back }
+    }
+
+    it('does not go back, and reads the list again, when the user is on the list of instances', async () => {
+      const { wrapper, back } = await startedOnThePageOfTheInstance()
+      await wrapper.vm.$router.push('/vm')
+      pollOptions.successMethod()
+      expect(back).not.toHaveBeenCalled()
+      expect(refreshed).toHaveBeenCalledTimes(1)
+      expect(refreshed.mock.calls[0][0]).toEqual({ api: 'destroyVirtualMachine' })
+    })
+
+    it('reads the list of volumes again too, which shows the Instance of a volume', async () => {
+      const { wrapper, back } = await startedOnThePageOfTheInstance()
+      await wrapper.vm.$router.push('/volume')
+      pollOptions.successMethod()
+      expect(back).not.toHaveBeenCalled()
+      expect(refreshed).toHaveBeenCalledTimes(1)
+    })
+
+    it('does nothing on a page that has nothing to do with the Instance', async () => {
+      const { wrapper, back } = await startedOnThePageOfTheInstance()
+      await wrapper.vm.$router.push('/account')
+      pollOptions.successMethod()
+      expect(back).not.toHaveBeenCalled()
+      expect(refreshed).not.toHaveBeenCalled()
+      expect(wrapper.parentFetchData).not.toHaveBeenCalled()
+    })
+
+    it('does nothing on the page of another Instance', async () => {
+      const { wrapper, back } = await startedOnThePageOfTheInstance()
+      await wrapper.vm.$router.push('/vm/vm-2')
+      pollOptions.successMethod()
+      expect(back).not.toHaveBeenCalled()
+      expect(refreshed).not.toHaveBeenCalled()
+      expect(wrapper.parentFetchData).not.toHaveBeenCalled()
+    })
+
+    it('goes back, and does not read the page of the Instance, which no longer exists, when the user is still on it', async () => {
+      const { wrapper, back } = await startedOnThePageOfTheInstance()
+      pollOptions.successMethod()
+      expect(back).toHaveBeenCalledWith(-1)
+      expect(wrapper.parentFetchData).not.toHaveBeenCalled()
+    })
+  })
+
+  it('reads the list again when the job finishes on the page of the list it started on', async () => {
+    const wrapper = await open({ route: '/vm' })
+    const back = jest.spyOn(wrapper.vm.$router, 'go').mockImplementation(() => {})
+    await field(wrapper).setValue('lab')
+    await submit(wrapper)
+    expect(pollOptions.originalPage).toBe('/vm')
+    pollOptions.successMethod()
+    expect(back).not.toHaveBeenCalled()
+    expect(wrapper.parentFetchData).toHaveBeenCalled()
+  })
+
   it('is worded in Korean', async () => {
     const wrapper = await open({ locale: 'ko_KR' })
     expect(message(wrapper)).toContain(ko['message.action.destroy.instance.now'])
@@ -342,5 +420,15 @@ describe('DestroyVM when the cloud keeps a destroyed Instance', () => {
     const wrapper = await open()
     expect(wrapper.find('.ant-alert').text()).toContain(en['message.action.destroy.instance'])
     expect(wrapper.find('.ant-alert').text()).not.toContain(en['message.action.destroy.instance.now'])
+  })
+
+  it('reads the page of the Instance again, which still shows it as destroyed, instead of leaving it', async () => {
+    const wrapper = await open({ route: '/vm/vm-1' })
+    const back = jest.spyOn(wrapper.vm.$router, 'go').mockImplementation(() => {})
+    await field(wrapper).setValue('lab')
+    await submit(wrapper)
+    pollOptions.successMethod()
+    expect(back).not.toHaveBeenCalled()
+    expect(wrapper.parentFetchData).toHaveBeenCalledTimes(1)
   })
 })

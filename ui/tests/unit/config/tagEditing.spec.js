@@ -18,7 +18,7 @@
 import fs from 'fs'
 import path from 'path'
 
-import { canEditTags } from '@/utils/resourceTags'
+import { canEditTags, canSeeTags } from '@/utils/resourceTags'
 import { sourceDirectory } from '../../common/studentFiles'
 
 const vueFiles = (directory) => fs.readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
@@ -31,6 +31,15 @@ const vueFiles = (directory) => fs.readdirSync(directory, { withFileTypes: true 
 
 // a page offers the free-form tag controls when it opens the tag dialog of a rule or lists a new-tag control
 const OFFERS_TAGS = /openTagsModal\(|label\.new\.tag/
+
+describe('who sees the tags of a resource', () => {
+  it('is every role type but User, whose tags hold the settings of the pages that own them', () => {
+    expect(canSeeTags('User')).toBe(false)
+    for (const roletype of ['Admin', 'DomainAdmin', 'ResourceAdmin', undefined]) {
+      expect(canSeeTags(roletype)).toBe(true)
+    }
+  })
+})
 
 describe('who edits the tags of a resource with the free-form controls', () => {
   it('is every role type but User', () => {

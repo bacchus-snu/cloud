@@ -95,6 +95,7 @@ import PlacementStep from '@views/compute/wizard/PlacementStep'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
 import { automigrateAllowed, fetchCapabilities, vcpuMinimum, vcpuStep } from '@/utils/placement'
 import { gpuRemaining, gpuTypeOf, limitTagsOf, loadQuota, remainingLimit } from '@/utils/limits'
+import { instanceName } from '@/utils/instanceName'
 
 export default {
   name: 'ScaleVM',
@@ -350,7 +351,7 @@ export default {
           this.$pollJob({
             jobId,
             title: this.$t('label.scale.vm'),
-            description: this.resource.name,
+            description: instanceName(this.resource),
             successMethod: result => {
               this.$notification.success({
                 message: this.$t('message.success.change.offering')

@@ -43,8 +43,8 @@
           :filterOption="(input, option) => {
             return option.label.toLowerCase().indexOf(input.toLowerCase()) >= 0
           }" >
-          <a-select-option v-for="vm in virtualmachines" :key="vm.id" :label="vm.name || vm.displayname">
-            {{ vm.name || vm.displayname }}
+          <a-select-option v-for="vm in virtualmachines" :key="vm.id" :label="instanceName(vm)">
+            {{ instanceName(vm) }}
           </a-select-option>
         </a-select>
       </a-form-item >
@@ -88,6 +88,7 @@ import { getAPI, postAPI } from '@/api'
 import PlacementMoveModal from '@views/compute/wizard/PlacementMoveModal'
 import placementApproval from '@/utils/placementApproval'
 import { checkPlacement } from '@/utils/placement'
+import { instanceName } from '@/utils/instanceName'
 
 export default {
   name: 'AttachVolume',
@@ -115,6 +116,7 @@ export default {
     this.fetchData()
   },
   methods: {
+    instanceName,
     initForm () {
       this.formRef = ref()
       this.form = reactive({})

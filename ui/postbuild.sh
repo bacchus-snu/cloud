@@ -34,3 +34,6 @@ console.log(JSON.stringify(data, null, 2));
 EOF
 
 mv ${tmpFile} ${configFile}
+
+echo "Post-build: correcting the color mappings of ${DIR}/dist/color.less"
+node "${DIR}/scripts/theme-colors.js" "${DIR}/dist" || exit 1

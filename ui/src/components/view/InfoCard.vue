@@ -88,7 +88,7 @@
                   <a-tag v-if="resource.haenable">
                     {{ $t('label.haenable') }}
                   </a-tag>
-                  <a-tag v-if="resource.isdynamicallyscalable">
+                  <a-tag v-if="resource.isdynamicallyscalable && $store.getters.userInfo.roletype !== 'User'">
                     {{ $t('label.isdynamicallyscalable') }}
                   </a-tag>
                   <a-tag v-if="resource.scope">
@@ -603,7 +603,7 @@
               <div class="resource-detail-item__label">{{ $t('label.vmname') }}</div>
               <div class="resource-detail-item__details">
                 <desktop-outlined />
-                <router-link :to="{ path: createPathBasedOnVmType(resource.vmtype || resource.virtualmachinetype, resource.virtualmachineid) }">{{ resource.vmname || resource.vm || resource.virtualmachinename || resource.virtualmachineid }} </router-link>
+                <router-link :to="{ path: createPathBasedOnVmType(resource.vmtype || resource.virtualmachinetype, resource.virtualmachineid) }">{{ resource.vmdisplayname || resource.vmname || resource.vm || resource.virtualmachinename || resource.virtualmachineid }} </router-link>
                 <status class="status status--end" :text="resource.vmstate" v-if="resource.vmstate"/>
               </div>
             </div>
@@ -999,7 +999,7 @@
               :osCategoryId="osCategoryId" />
           </div>
 
-          <div class="account-center-tags" v-if="!isStatic && resourceType && tagsSupportingResourceTypes.includes(this.resourceType) && 'listTags' in $store.getters.apis">
+          <div class="account-center-tags" v-if="$canSeeTags() && !isStatic && resourceType && tagsSupportingResourceTypes.includes(this.resourceType) && 'listTags' in $store.getters.apis">
             <a-divider/>
             <a-spin :spinning="loadingTags">
               <div class="title">{{ $t('label.tags') }}</div>
@@ -1367,7 +1367,7 @@ export default {
       }
     },
     getTags () {
-      if (!('listTags' in this.$store.getters.apis) || !this.resource || !this.resource.id) {
+      if (!this.$canSeeTags() || !('listTags' in this.$store.getters.apis) || !this.resource || !this.resource.id) {
         return
       }
       this.loadingTags = true

@@ -37,7 +37,7 @@
             :placeholder="apiParams.name.description"
             v-focus="true" />
         </a-form-item>
-        <a-form-item ref="zoneids" name="zoneids" :required="(!isAdmin && form.useStorageReplication)">
+        <a-form-item v-if="offersZones" ref="zoneids" name="zoneids" :required="(!isAdmin && form.useStorageReplication)">
           <template #label>
             <tooltip-label :title="$t('label.zones')" :tooltip="''"/>
           </template>
@@ -66,13 +66,13 @@
             </a-select-option>
           </a-select>
         </a-form-item>
-        <a-form-item name="useStorageReplication" ref="useStorageReplication">
+        <a-form-item v-if="offersZones" name="useStorageReplication" ref="useStorageReplication">
           <template #label>
             <tooltip-label :title="$t('label.usestoragereplication')" :tooltip="apiParams.usestoragereplication.description" />
           </template>
           <a-switch v-model:checked="form.useStorageReplication" />
         </a-form-item>
-        <a-form-item v-if="isAdmin && form.useStorageReplication" ref="storageids" name="storageids">
+        <a-form-item v-if="offersZones && isAdmin && form.useStorageReplication" ref="storageids" name="storageids">
           <template #label>
             <tooltip-label :title="$t('label.storagepools')" :tooltip="''"/>
           </template>
@@ -163,6 +163,7 @@ import { getAPI, postAPI } from '@/api'
 import { isAdmin } from '@/role'
 import { mixinForm } from '@/utils/mixin'
 import { resourceNameRule } from '@/utils/resourceName'
+import { zonesBesides } from '@/utils/zone'
 import TooltipButton from '@/components/widgets/TooltipButton'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
 import ResourceIcon from '@/components/view/ResourceIcon'
@@ -216,6 +217,9 @@ export default {
     this.fetchData()
   },
   computed: {
+    offersZones () {
+      return this.zones.length > 0
+    },
     formattedAdditionalZoneMessage () {
       return `${this.$t('message.snapshot.additional.zones').replace('%x', this.resource.zonename)}`
     },
@@ -249,8 +253,7 @@ export default {
       getAPI('listZones', params).then(json => {
         const listZones = json.listzonesresponse.zone
         if (listZones) {
-          this.zones = listZones
-          this.zones = this.zones.filter(zone => zone.type !== 'Edge' && zone.id !== this.resource.zoneid)
+          this.zones = zonesBesides(listZones, this.resource.zoneid)
         }
       }).finally(() => {
         this.zoneLoading = false

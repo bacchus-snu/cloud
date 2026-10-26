@@ -161,6 +161,10 @@ import BulkActionProgress from '@/components/view/BulkActionProgress'
 import ConfirmInput from '@/components/widgets/ConfirmInput'
 import { fetchCapabilities } from '@/utils/placement'
 import { confirmationName, matchesConfirmation, matchesCount } from '@/utils/confirmation'
+import { instanceName } from '@/utils/instanceName'
+import eventBus from '@/config/eventBus'
+
+const LISTS_SHOWING_INSTANCES = ['/vm', '/volume', '/snapshot']
 
 export default {
   name: 'DestroyVM',
@@ -249,6 +253,20 @@ export default {
   },
   methods: {
     confirmationName,
+    // The job outlives the page that started it. The page of the Instance is left when it is gone and the user is still
+    // on it; the lists that show the Instance are read again wherever the user is; any other page is left alone.
+    afterDestroyed (originalPage, gone) {
+      const current = this.$router.currentRoute.value.path
+      if (current === originalPage) {
+        if (originalPage.includes('/vm/') && gone) {
+          this.$router.go(-1)
+        } else {
+          this.parentFetchData()
+        }
+      } else if (LISTS_SHOWING_INSTANCES.includes(current)) {
+        eventBus.emit('async-job-complete', { api: 'destroyVirtualMachine' })
+      }
+    },
     fetchKeepRootDefault () {
       fetchCapabilities(this.selectedRowKeys.length === 0 ? this.resource.domainid : undefined).then(capabilities => {
         this.capabilities = capabilities
@@ -331,22 +349,18 @@ export default {
             params.keeprootvolume = this.keepRoot
           }
           this.loading = true
+          const originalPage = this.$route.path
           try {
             const jobId = await this.destroyVM(params)
             await this.$pollJob({
               jobId,
+              originalPage,
               title: this.$t('label.action.destroy.instance'),
-              description: this.resource.name,
-              loadingMessage: `${this.$t('message.deleting.vm')} ${this.resource.name}`,
+              description: instanceName(this.resource),
+              loadingMessage: `${this.$t('message.deleting.vm')} ${instanceName(this.resource)}`,
               catchMessage: this.$t('error.fetching.async.job.result'),
-              successMessage: `${this.$t('message.success.delete.vm')} ${this.resource.name}`,
-              successMethod: () => {
-                if (this.$route.path.includes('/vm/') && (values.expunge || this.expungeOnDestroy)) {
-                  this.$router.go(-1)
-                } else {
-                  this.parentFetchData()
-                }
-              },
+              successMessage: `${this.$t('message.success.delete.vm')} ${instanceName(this.resource)}`,
+              successMethod: () => this.afterDestroyed(originalPage, Boolean(values.expunge || this.expungeOnDestroy)),
               action: {
                 isFetchData: false
               }
@@ -427,7 +441,7 @@ export default {
             bulkAction: false,
             title: this.$t('label.action.destroy.instance'),
             catchMessage: this.$t('error.fetching.async.job.result'),
-            successMessage: `${this.$t('message.success.delete.vm')} ${resource.name}`,
+            successMessage: `${this.$t('message.success.delete.vm')} ${instanceName(resource)}`,
             successMethod: () => {
               this.updateResourceState(resource.id, 'success')
               return resolve()

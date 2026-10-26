@@ -23,3 +23,21 @@ export function isZoneCreated () {
   }
   return true
 }
+
+// The zones a resource can be offered in besides its own. Edge zones are not a place to copy to, and zones that are
+// not loaded yet (the session starts with an empty object) are none.
+export function zonesBesides (zones, ownZoneId) {
+  if (!Array.isArray(zones)) {
+    return []
+  }
+  return zones.filter(zone => zone.type !== 'Edge' && zone.id !== ownZoneId)
+}
+
+// Without an own zone, whether there are several zones to choose from.
+export function hasZoneBesides (ownZoneId) {
+  return zonesBesides(store.getters.zones, ownZoneId).length > (ownZoneId ? 0 : 1)
+}
+
+export function hasSeveralZones () {
+  return hasZoneBesides(undefined)
+}

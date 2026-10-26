@@ -619,6 +619,7 @@ import { Button } from 'ant-design-vue'
 import { getAPI, postAPI, callAPI } from '@/api'
 import { mixinDevice } from '@/utils/mixin.js'
 import { genericCompare } from '@/utils/sort.js'
+import { instanceName } from '@/utils/instanceName'
 import { visibleColumns } from '@/utils/uiConfig'
 import { sourceToken } from '@/utils/request'
 import store from '@/store'
@@ -848,6 +849,10 @@ export default {
     },
     '$store.getters.listAllProjects' (oldVal, newVal) {
       this.fetchData()
+    },
+    // the filters that depend on the zones are read again when the zones of the session land
+    '$store.getters.zones' () {
+      this.searchFilters = this.routeSearchFilters()
     }
   },
   computed: {
@@ -951,6 +956,10 @@ export default {
         this.$router.replace({ query })
       })
     },
+    routeSearchFilters () {
+      const searchFilters = this.$route && this.$route.meta && this.$route.meta.searchFilters
+      return typeof searchFilters === 'function' ? searchFilters() : searchFilters
+    },
     fetchData (params = {}) {
       if (['deployVirtualMachine', 'usage'].includes(this.$route.name)) {
         return
@@ -1005,15 +1014,12 @@ export default {
       delete params.filter
       delete params.irefresh
 
-      this.searchFilters = this.$route && this.$route.meta && this.$route.meta.searchFilters
       this.filters = this.$route && this.$route.meta && this.$route.meta.filters
       if (typeof this.filters === 'function') {
         this.filters = this.filters()
       }
 
-      if (typeof this.searchFilters === 'function') {
-        this.searchFilters = this.searchFilters()
-      }
+      this.searchFilters = this.routeSearchFilters()
 
       this.projectView = Boolean(store.getters.project && store.getters.project.id)
       this.hasProjectId = ['vm', 'vmgroup', 'ssh', 'affinitygroup', 'userdata', 'volume', 'snapshot', 'buckets', 'vmsnapshot', 'guestnetwork',
@@ -1087,11 +1093,17 @@ export default {
             customRender[key] = columnKey[key]
           }
         }
+        const namesInstance = key === 'name' && ['vm', 'vnfapp'].includes(this.$route.meta.name)
+        // the instance column of a list of volumes is read, and so sorted, by the visible name of the instance
+        const sortedBy = namesInstance
+          ? instanceName
+          : key === 'vmname' ? (record) => record.vmdisplayname || record.vmname || '' : (record) => record[key] || ''
         this.columns.push({
           key: key,
           title: this.$t('label.' + String(title).toLowerCase()),
           dataIndex: key,
-          sorter: (a, b) => genericCompare(a[key] || '', b[key] || '')
+          sorter: (a, b) => genericCompare(sortedBy(a), sortedBy(b)),
+          ...(namesInstance ? { customRender: ({ record }) => instanceName(record) } : {})
         })
         this.selectedColumns.push(key)
       }
@@ -1760,7 +1772,7 @@ export default {
           this.actionLoading = true
           const itemsNameMap = {}
           this.items.map(x => {
-            itemsNameMap[x.id] = x.name || x.displaytext || x.id
+            itemsNameMap[x.id] = (['vm', 'vnfapp'].includes(this.$route.meta.name) ? instanceName(x) : x.name) || x.displaytext || x.id
           })
           const paramsList = this.currentAction.groupMap(this.selectedRowKeys, values, this.items)
           for (const params of paramsList) {
@@ -1965,7 +1977,8 @@ export default {
         }
 
         const resourceName = params.displayname || params.displaytext || params.name || params.hostname || params.username ||
-          params.ipaddress || params.virtualmachinename || this.resource.name || this.resource.ipaddress || this.resource.id
+          params.ipaddress || params.virtualmachinename || (['vm', 'vnfapp'].includes(this.$route.meta.name) ? instanceName(this.resource) : this.resource.name) ||
+          this.resource.ipaddress || this.resource.id
 
         var hasJobId = false
         this.actionLoading = true

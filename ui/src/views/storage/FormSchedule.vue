@@ -142,7 +142,7 @@
                 </a-select>
               </a-form-item>
             </a-col>
-            <a-col :md="24" :lg="24" v-if="resourceType === 'Volume'">
+            <a-col :md="24" :lg="24" v-if="resourceType === 'Volume' && offersZones">
               <a-form-item ref="zoneids" name="zoneids" :required="(!isAdmin && form.useStorageReplication)">
                 <template #label>
                   <tooltip-label :title="$t('label.zones')" :tooltip="''"/>
@@ -173,7 +173,7 @@
                 </a-select>
               </a-form-item>
             </a-col>
-            <a-col :md="24" :lg="24" v-if="resourceType === 'Volume'">
+            <a-col :md="24" :lg="24" v-if="resourceType === 'Volume' && offersZones">
               <a-form-item name="useStorageReplication" ref="useStorageReplication">
                 <template #label>
                   <tooltip-label :title="$t('label.usestoragereplication')" :tooltip="apiParams.usestoragereplication.description" />
@@ -267,6 +267,7 @@ import TooltipButton from '@/components/widgets/TooltipButton'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
 import { timeZone } from '@/utils/timezone'
 import { mixinForm } from '@/utils/mixin'
+import { zonesBesides } from '@/utils/zone'
 import debounce from 'lodash/debounce'
 
 export default {
@@ -333,6 +334,9 @@ export default {
     }
   },
   computed: {
+    offersZones () {
+      return this.zones.length > 0
+    },
     formattedAdditionalZoneMessage () {
       return `${this.$t('message.snapshot.additional.zones').replace('%x', this.resource.zonename)}`
     },
@@ -389,8 +393,7 @@ export default {
       getAPI('listZones', params).then(json => {
         const listZones = json.listzonesresponse.zone
         if (listZones) {
-          this.zones = listZones
-          this.zones = this.zones.filter(zone => zone.type !== 'Edge' && zone.id !== this.resource.zoneid)
+          this.zones = zonesBesides(listZones, this.resource.zoneid)
         }
       }).finally(() => {
         this.zoneLoading = false

@@ -146,6 +146,7 @@ import TemplateIsoSelection from '@views/compute/wizard/TemplateIsoSelection'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
 import _ from 'lodash'
 import { fetchCapabilities } from '@/utils/placement'
+import { instanceName } from '@/utils/instanceName'
 import { loadQuota, remainingStorage } from '@/utils/limits'
 
 export default {
@@ -353,7 +354,7 @@ export default {
           errorMethod: (result) => {
             this.closeAction()
           },
-          loadingMessage: this.$t('label.reinstall.vm') + ': ' + this.resource.name,
+          loadingMessage: this.$t('label.reinstall.vm') + ': ' + instanceName(this.resource),
           catchMessage: this.$t('error.fetching.async.job.result')
         })
       }).catch(error => {

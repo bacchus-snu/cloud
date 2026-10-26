@@ -38,7 +38,7 @@
           v-model:value="form.name"
           :placeholder="apiParams.name.description" />
       </a-form-item>
-      <a-form-item ref="zoneid" name="zoneid" v-if="!createVolumeFromVM">
+      <a-form-item ref="zoneid" name="zoneid" v-if="!createVolumeFromVM && zones.length > 1">
         <template #label>
           <tooltip-label :title="$t('label.zoneid')" :tooltip="apiParams.zoneid.description"/>
         </template>
@@ -194,8 +194,8 @@
             :filterOption="(input, option) => {
               return option.label.toLowerCase().indexOf(input.toLowerCase()) >= 0
             }" >
-            <a-select-option v-for="vm in virtualmachines" :key="vm.id" :label="vm.name || vm.displayname">
-              {{ vm.name || vm.displayname }}
+            <a-select-option v-for="vm in virtualmachines" :key="vm.id" :label="instanceName(vm)">
+              {{ instanceName(vm) }}
             </a-select-option>
           </a-select>
         </a-form-item >
@@ -232,6 +232,7 @@ import { ref, reactive, toRaw } from 'vue'
 import { getAPI, postAPI } from '@/api'
 import { mixinForm } from '@/utils/mixin'
 import { resourceNameRule } from '@/utils/resourceName'
+import { instanceName } from '@/utils/instanceName'
 import { isAdmin } from '@/role'
 import ResourceIcon from '@/components/view/ResourceIcon'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
@@ -304,6 +305,7 @@ export default {
     this.fetchData()
   },
   methods: {
+    instanceName,
     initForm () {
       this.formRef = ref()
       this.form = reactive({})

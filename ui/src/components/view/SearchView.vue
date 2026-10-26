@@ -172,6 +172,7 @@ import TooltipButton from '@/components/widgets/TooltipButton'
 import ResourceIcon from '@/components/view/ResourceIcon'
 import Status from '@/components/widgets/Status'
 import { i18n } from '@/locales'
+import { searchFieldLabelKey } from '@/utils/searchLabel'
 
 export default {
   name: 'SearchView',
@@ -272,23 +273,10 @@ export default {
       this.initFormFieldData()
     },
     retrieveFieldLabel (fieldName) {
-      if (fieldName === 'groupid') {
-        fieldName = 'group'
-      }
-      if (fieldName === 'hsmprofileid') {
-        fieldName = 'hsm.profile'
-      }
-      if (fieldName === 'kmskeyid') {
-        fieldName = 'kms.key'
-      }
-      if (fieldName === 'keyword') {
-        if ('listAnnotations' in this.$store.getters.apis) {
-          return this.$t('label.annotation')
-        } else {
-          return this.$t('label.name')
-        }
-      }
-      return this.$t('label.' + fieldName)
+      return this.$t(searchFieldLabelKey(fieldName, {
+        routeName: this.$route?.meta?.name,
+        annotations: 'listAnnotations' in this.$store.getters.apis
+      }))
     },
     initFields () {
       const arrayField = []

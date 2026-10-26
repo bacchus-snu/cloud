@@ -17,7 +17,7 @@
 
 import { shallowRef, defineAsyncComponent } from 'vue'
 import store from '@/store'
-import { isZoneCreated } from '@/utils/zone'
+import { hasSeveralZones, isZoneCreated } from '@/utils/zone'
 import { hasLease, RENEW_LEASE_API } from '@/utils/lease'
 import { showCpuSpeed } from '@/utils/uiConfig'
 import { getAPI, postAPI, getBaseUrl } from '@/api'
@@ -83,8 +83,11 @@ export default {
           fields.push(...metricsFields.filter(field => showCpuSpeed() || field !== 'cputotal'))
         }
         fields.push('arch')
+        if (store.getters.userInfo.roletype !== 'User') {
+          fields.splice(1, 0, { vmhostname: (record) => record.name })
+        }
         if (store.getters.userInfo.roletype === 'Admin') {
-          fields.splice(2, 0, 'instancename')
+          fields.splice(3, 0, 'instancename')
           fields.push('hostname')
           fields.push('account')
         } else if (store.getters.userInfo.roletype === 'DomainAdmin') {
@@ -98,12 +101,25 @@ export default {
         fields.push('zonename')
         return fields
       },
-      searchFilters: ['name', 'gpuenabled', 'zoneid', 'domainid', 'account', 'groupid', 'arch', 'extensionid', 'tags'],
-      details: () => {
-        var fields = ['name', 'displayname', 'id', 'state', 'ipaddress', 'ip6address', 'templatename', 'ostypename',
+      searchFilters: () => {
+        // a student searches the visible name, which the keyword matches; the name filter matches the hostname
+        if (store.getters.userInfo.roletype === 'User') {
+          return ['keyword', 'gpuenabled', 'zoneid', 'domainid', 'account', 'groupid', 'arch', 'extensionid']
+            .filter(filter => filter !== 'zoneid' || hasSeveralZones())
+        }
+        return ['name', 'gpuenabled', 'zoneid', 'domainid', 'account', 'groupid', 'arch', 'extensionid', 'tags']
+      },
+      details: (record) => {
+        var fields = ['id', 'state', 'ipaddress', 'ip6address', 'templatename', 'ostypename',
           'serviceofferingname', 'gpucardname', 'gpucount', 'isdynamicallyscalable', 'haenable', 'hypervisor', 'arch', 'boottype', 'bootmode', 'account',
           'domain', 'zonename', 'userdataid', 'userdataname', 'userdataparams', 'userdatadetails', 'userdatapolicy',
           'hostcontrolstate', 'deleteprotection', 'leaseexpirydate', 'leaseexpiryaction']
+        if (store.getters.userInfo.roletype === 'User') {
+          fields.splice(fields.indexOf('isdynamicallyscalable'), 1)
+          fields.unshift({ field: record?.displayname ? 'displayname' : 'name', customTitle: 'name' })
+        } else {
+          fields.unshift({ field: 'displayname', customTitle: 'name' }, { field: 'name', customTitle: 'vmhostname' })
+        }
         const listZoneHaveSGEnabled = store.getters.zones.filter(zone => zone.securitygroupsenabled === true)
         if (!listZoneHaveSGEnabled || listZoneHaveSGEnabled.length === 0) {
           return fields
@@ -522,7 +538,10 @@ export default {
         return fields
       },
       details: ['name', 'id', 'displayname', 'description', 'type', 'current', 'parentName', 'virtualmachineid', 'account', 'domain', 'created'],
-      searchFilters: ['name', 'domainid', 'account', 'tags'],
+      searchFilters: () => {
+        const filters = ['name', 'domainid', 'account', 'tags']
+        return store.getters.userInfo.roletype === 'User' ? filters.filter(filter => filter !== 'tags') : filters
+      },
       tabs: [
         {
           name: 'details',

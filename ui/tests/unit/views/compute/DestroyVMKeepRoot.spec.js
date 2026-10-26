@@ -42,7 +42,7 @@ const open = async (props = {}, locale = 'en') => {
     i18n: common.createMockI18n(locale, { en, ko_KR: ko }),
     props: { resource: vm, action: {}, ...props },
     provide: { parentFetchData: jest.fn() },
-    mocks: { $pollJob, $notifyError: jest.fn(), $message: { info: jest.fn() } },
+    mocks: { $pollJob, $notifyError: jest.fn(), $message: { info: jest.fn() }, $route: { path: '/vm' } },
     stubs: { BulkActionProgress: true }
   })
   await flushPromises()

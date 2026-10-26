@@ -104,6 +104,81 @@ describe('the SSH guests tab of an instance', () => {
     mounted.splice(0).forEach(wrapper => wrapper.unmount())
   })
 
+  describe('the help at the top', () => {
+    it('tells that guests log in as an account inside the instance, one list per account, and what sudo the login account gives', async () => {
+      const wrapper = await mountTab()
+      const help = wrapper.find('.ssh-guests-accounts')
+      expect(help.exists()).toBe(true)
+      const text = help.text()
+      expect(text).toContain('Linux account inside it')
+      expect(text).toContain('own list')
+      expect(text).toContain('passwordless sudo')
+      expect(text).toContain('ubuntu')
+    })
+
+    it('tells to create another account inside the instance first, with the command, and that a section does not create it', async () => {
+      const wrapper = await mountTab()
+      const help = wrapper.find('.ssh-guests-accounts')
+      expect(help.find('code').exists()).toBe(true)
+      expect(help.text()).toContain('sudo adduser <name>')
+      expect(help.text()).toContain('Adding a section does not create the account')
+      expect(help.text()).toContain('refused')
+    })
+
+    it('is in Korean for a Korean page', async () => {
+      const wrapper = await mountTab({ locale: 'ko_KR' })
+      const text = wrapper.find('.ssh-guests-accounts').text()
+      expect(text).toContain('인스턴스 안의 리눅스 계정으로 로그인')
+      expect(text).toContain('암호 없는 sudo')
+      expect(text).toContain('sudo adduser <이름>')
+      expect(text).toContain('칸을 추가해도 계정이 만들어지지는 않으며')
+      expect(wrapper.find('.ssh-guests-accounts code').text()).toBe('ubuntu')
+    })
+  })
+
+  describe('the reminder under a section', () => {
+    it('says that the account must exist in the instance, under every account but the login account', async () => {
+      const wrapper = await mountTab({ tags: [['ssh.account.foo', 'a'], ['ssh.account.zed', 'b']] })
+      expect(accountsOf(wrapper)).toEqual(['debian', 'foo', 'zed'])
+      expect(sectionOf(wrapper, 'debian').find('.ssh-guests-note').exists()).toBe(false)
+      for (const account of ['foo', 'zed']) {
+        expect(sectionOf(wrapper, account).find('.ssh-guests-note').text()).toBe(en['message.ssh.guests.account.exists'])
+      }
+      expect(en['message.ssh.guests.account.exists']).toBe('This account must already exist inside the instance.')
+    })
+
+    it('is in Korean for a Korean page', async () => {
+      const wrapper = await mountTab({ locale: 'ko_KR', tags: [['ssh.account.foo', 'a']] })
+      expect(ko['message.ssh.guests.account.exists']).toBe('이 계정은 인스턴스 안에 이미 만들어져 있어야 합니다.')
+      expect(sectionOf(wrapper, 'foo').find('.ssh-guests-note').text()).toBe(ko['message.ssh.guests.account.exists'])
+    })
+
+    it('is under a section that was just added too', async () => {
+      const wrapper = await mountTab()
+      await wrapper.find('.ssh-guests-add input').setValue('worker_1')
+      await wrapper.find('.ssh-guests-add button').trigger('click')
+      expect(sectionOf(wrapper, 'worker_1').find('.ssh-guests-note').exists()).toBe(true)
+    })
+  })
+
+  describe('the control that adds an account', () => {
+    it('says that the account is one already made inside the instance', async () => {
+      const wrapper = await mountTab()
+      expect(wrapper.find('.ssh-guests-add .ssh-guests-title').text()).toBe(en['label.ssh.guests.add.account'])
+      expect(en['label.ssh.guests.add.account']).toBe('Add an account in the instance')
+      expect(wrapper.find('.ssh-guests-add input').attributes('placeholder')).toBe(en['message.ssh.guests.add.account'])
+      expect(en['message.ssh.guests.add.account']).toBe('Name of an account you already made in the instance')
+    })
+
+    it('is worded in Korean as "인스턴스 안의 계정 추가"', async () => {
+      const wrapper = await mountTab({ locale: 'ko_KR' })
+      expect(ko['label.ssh.guests.add.account']).toBe('인스턴스 안의 계정 추가')
+      expect(ko['message.ssh.guests.add.account']).toBe('인스턴스 안에 이미 만든 계정 이름')
+      expect(wrapper.find('.ssh-guests-add .ssh-guests-title').text()).toBe('인스턴스 안의 계정 추가')
+      expect(wrapper.find('.ssh-guests-add input').attributes('placeholder')).toBe('인스턴스 안에 이미 만든 계정 이름')
+    })
+  })
+
   describe('the sections', () => {
     it('are the login account of the template family first, then each account with guest tags, by name', async () => {
       const wrapper = await mountTab({ tags: [['ssh.account.zed', 'a'], ['ssh.account.foo', 'b'], ['ssh.account.foo.1', 'c'], ['owner', 'me']] })

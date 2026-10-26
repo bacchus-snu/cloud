@@ -106,15 +106,17 @@ const open = async ({ resource = vm, config = shippedConfig, features = {} } = {
   ;['listServiceOfferings', 'listCapabilities', 'listResourceLimits', 'listAccounts', 'listDiskOfferings', 'listTemplates', 'checkPlacement', 'listPlacementCapacity']
     .forEach(name => { apis[name] = { params: [] } })
   const store = common.createMockStore({ user: { apis, info: { roletype: 'User', domainid: 'd-1', account: 'student', accountid: 'acc-1' }, features } })
+  const $pollJob = jest.fn()
   const wrapper = common.createFactory(ScaleVM, {
     store,
     i18n: common.createMockI18n('en', {}),
     props: { resource },
     provide: { parentFetchData: jest.fn() },
-    mocks: { $config: config, $pollJob: jest.fn(), $notifyError: jest.fn() }
+    mocks: { $config: config, $pollJob, $notifyError: jest.fn() }
   })
   await flushPromises()
   await flushPromises()
+  wrapper.$pollJob = $pollJob
   return wrapper
 }
 
@@ -142,6 +144,16 @@ describe('ScaleVM', () => {
     }
     getAPI.mockImplementation((command, params) => Promise.resolve(answer(command, params)))
     postAPI.mockImplementation(() => Promise.resolve({ scalevirtualmachineresponse: { jobid: 'job-1' } }))
+  })
+
+  it('names the instance by its visible name in the notice of the job, and never by its hostname', async () => {
+    const wrapper = await open({ resource: { ...vm, name: 'i-2-34-VM', displayname: 'lab' } })
+    await choose(wrapper, 'o-cpu')
+    await wrapper.vm.handleSubmit()
+    await flushPromises()
+    const options = wrapper.$pollJob.mock.calls[0][0]
+    expect(options.description).toBe('lab')
+    expect(JSON.stringify(options)).not.toContain('i-2-34-VM')
   })
 
   it('vCPU input steps by listCapabilities poolvcpustep (default 2) with minimum 2 in ScaleVM', async () => {

@@ -25,26 +25,22 @@
       :rules="rules"
       v-ctrl-enter="handleSubmit"
       @finish="handleSubmit">
-      <a-alert style="margin-bottom: 5px" type="warning" show-icon>
-        <template #message>
-          <span v-html="$t('message.restart.vm.to.update.settings')" />
-        </template>
-      </a-alert>
-      <a-form-item name="name" ref="name" v-if="canEditHostname">
+      <a-form-item name="name" ref="name" v-if="canEditHostname" :extra="$t('message.vm.edit.hostname.restart')">
         <template #label>
-          <tooltip-label :title="$t('label.name')" :tooltip="apiParams.name.description"/>
+          <tooltip-label :title="$t('label.vmhostname')" :tooltip="apiParams.name.description"/>
         </template>
         <a-input
           v-model:value="form.name"
           v-focus="true" />
       </a-form-item>
-      <a-form-item name="displayname" ref="displayname">
+      <a-form-item name="displayname" ref="displayname" :extra="$t('message.vm.edit.applies.now')">
         <template #label>
-          <tooltip-label :title="$t('label.displayname')" :tooltip="apiParams.displayname.description"/>
+          <tooltip-label :title="$t('label.name')" :tooltip="apiParams.displayname.description"/>
         </template>
         <a-input v-model:value="form.displayname" v-focus="!canEditHostname" />
         <div class="instance-rename-help" v-if="resource.sshname" v-html="$t('message.instance.rename.ssh')" />
       </a-form-item>
+      <div class="instance-edit-restart-note" v-if="showsRestartNote">{{ $t('message.vm.edit.admin.restart') }}</div>
       <a-form-item name="ostypeid" ref="ostypeid" v-if="'listOsTypes' in $store.getters.apis">
         <template #label>
           <tooltip-label :title="$t('label.ostypeid')" :tooltip="apiParams.ostypeid.description"/>
@@ -62,7 +58,7 @@
           </a-select-option>
         </a-select>
       </a-form-item>
-      <a-form-item name="isdynamicallyscalable" ref="isdynamicallyscalable">
+      <a-form-item name="isdynamicallyscalable" ref="isdynamicallyscalable" v-if="canEditScaling">
         <template #label>
           <tooltip-label :title="$t('label.isdynamicallyscalable')" :tooltip="apiParams.isdynamicallyscalable.description"/>
         </template>
@@ -85,11 +81,11 @@
           }"
           :options="groups.opts" />
       </a-form-item>
-      <a-form-item v-if="userDataEnabled">
+      <a-form-item v-if="userDataEnabled" :extra="userDataNote">
         <template #label>
           <tooltip-label :title="$t('label.user.data')" :tooltip="apiParams.userdata.description"/>
         </template>
-        <a-textarea v-model:value="form.userdata">
+        <a-textarea v-model:value="form.userdata" :disabled="!userDataEditable">
         </a-textarea>
       </a-form-item>
       <a-form-item v-if="extraConfigEnabled">
@@ -122,7 +118,7 @@
         </a-select>
       </a-form-item>
 
-      <a-form-item name="deleteprotection" ref="deleteprotection">
+      <a-form-item name="deleteprotection" ref="deleteprotection" :extra="$t('message.vm.edit.applies.now')">
         <template #label>
           <tooltip-label :title="$t('label.deleteprotection')" :tooltip="apiParams.deleteprotection.description"/>
         </template>
@@ -171,6 +167,7 @@ import { getAPI, postAPI } from '@/api'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
 import { SET_LEASE_API } from '@/utils/lease'
 import { isValidVisibleName } from '@/utils/instanceAccess'
+import { instanceName } from '@/utils/instanceName'
 
 export default {
   name: 'EditVM',
@@ -222,6 +219,20 @@ export default {
     canEditHostname () {
       return this.$store.getters.userInfo?.roletype === 'Admin'
     },
+    canEditScaling () {
+      return this.$store.getters.userInfo?.roletype !== 'User'
+    },
+    showsRestartNote () {
+      return this.$store.getters.userInfo?.roletype !== 'User' &&
+        ('listOsTypes' in this.$store.getters.apis || !!this.serviceOffering?.offerha || 'listInstanceGroups' in this.$store.getters.apis ||
+          !!this.extraConfigEnabled || !!this.isLeaseEditable)
+    },
+    userDataEditable () {
+      return this.resource.state === 'Stopped'
+    },
+    userDataNote () {
+      return this.$t(this.userDataEditable ? 'message.vm.edit.userdata.next.start' : 'message.vm.edit.userdata.stopped')
+    },
     extraConfigEnabled () {
       return this.$store.getters.features.additionalconfigenabled
     },
@@ -257,6 +268,7 @@ export default {
         leaseexpiryaction: this.resource.leaseexpiryaction,
         extraconfig: this.combinedExtraConfig
       })
+      this.initial = { ...toRaw(this.form), userdata: '' }
       this.rules = reactive({
         leaseduration: [this.naturalNumberRule],
         displayname: [{ validator: this.validateDisplayName }]
@@ -420,6 +432,7 @@ export default {
       }
       getAPI('listVirtualMachines', listVmParams).then(json => {
         this.form.userdata = atob(json.listvirtualmachinesresponse.virtualmachine[0].userdata || '')
+        this.initial.userdata = this.form.userdata
       })
     },
     handleSubmit () {
@@ -427,47 +440,54 @@ export default {
         const values = toRaw(this.form)
         const params = {}
         params.id = this.resource.id
+        const changed = (key) => values[key] !== this.initial[key]
+        const flagChanged = (key) => Boolean(values[key]) !== Boolean(this.initial[key])
         if (this.canEditHostname && values.name !== this.resource.name) {
           params.name = values.name
         }
         if (values.displayname !== this.resource.displayname) {
           params.displayname = values.displayname
         }
-        params.ostypeid = values.ostypeid
+        if (changed('ostypeid') && values.ostypeid) {
+          params.ostypeid = values.ostypeid
+        }
         if (this.securityGroupsEnabled && Array.isArray(values.securitygroupids) && values.securitygroupids.length > 0) {
           params.securitygroupids = values.securitygroupids
         }
-        if (values.isdynamicallyscalable !== undefined) {
-          params.isdynamicallyscalable = values.isdynamicallyscalable
+        if (this.canEditScaling && flagChanged('isdynamicallyscalable')) {
+          params.isdynamicallyscalable = Boolean(values.isdynamicallyscalable)
         }
-        if (values.deleteprotection !== undefined) {
-          params.deleteprotection = values.deleteprotection
+        if (flagChanged('deleteprotection')) {
+          params.deleteprotection = Boolean(values.deleteprotection)
         }
-        if (values.haenable !== undefined) {
-          params.haenable = values.haenable
+        if (flagChanged('haenable')) {
+          params.haenable = Boolean(values.haenable)
         }
-        if (values.group && values.group.length > 0) {
+        if (changed('group') && values.group && values.group.length > 0) {
           params.group = values.group
         }
-        if (values.userdata && values.userdata.length > 0) {
+        if (this.userDataEditable && changed('userdata') && values.userdata && values.userdata.length > 0) {
           params.userdata = this.$toBase64AndURIEncoded(values.userdata)
         }
-        if (this.isLeaseEditable && values.leaseduration !== undefined && (values.leaseduration === -1 || values.leaseduration > 0)) {
+        if (this.isLeaseEditable && (changed('leaseduration') || changed('leaseexpiryaction')) &&
+          values.leaseduration !== undefined && (values.leaseduration === -1 || values.leaseduration > 0)) {
           params.leaseduration = values.leaseduration
           if (values.leaseexpiryaction !== undefined) {
             params.leaseexpiryaction = values.leaseexpiryaction
           }
         }
-        if (values.extraconfig && values.extraconfig.length > 0) {
-          params.extraconfig = encodeURIComponent(values.extraconfig)
-        } else if (this.combinedExtraConfig) {
-          params.cleanupextraconfig = true
+        if (changed('extraconfig')) {
+          if (values.extraconfig && values.extraconfig.length > 0) {
+            params.extraconfig = encodeURIComponent(values.extraconfig)
+          } else if (this.combinedExtraConfig) {
+            params.cleanupextraconfig = true
+          }
         }
         this.loading = true
 
         postAPI('updateVirtualMachine', params).then(json => {
           this.$message.success({
-            content: `${this.$t('label.action.edit.instance')} - ${values.displayname || values.name}`,
+            content: `${this.$t('label.action.edit.instance')} - ${instanceName(values)}`,
             duration: 2
           })
           this.$emit('refresh-data')
@@ -509,10 +529,15 @@ export default {
 </script>
 
 <style scoped lang="less">
-.instance-rename-help {
+.instance-rename-help,
+.instance-edit-restart-note {
   margin-top: 4px;
   opacity: 0.65;
   font-size: 12px;
+}
+
+.instance-edit-restart-note {
+  margin-bottom: 12px;
 }
 
 .form-layout {

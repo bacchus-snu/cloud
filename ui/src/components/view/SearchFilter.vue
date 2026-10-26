@@ -57,6 +57,7 @@
 <script>
 
 import { getAPI } from '@/api'
+import { searchFieldLabelKey } from '@/utils/searchLabel'
 
 export default {
   name: 'SearchFilter',
@@ -226,23 +227,10 @@ export default {
       return (text.length <= length) ? text : (text.substring(0, length - 3) + '...')
     },
     retrieveFieldLabel (fieldName) {
-      if (fieldName === 'groupid') {
-        fieldName = 'group'
-      }
-      if (fieldName === 'hsmprofileid') {
-        fieldName = 'hsm.profile'
-      }
-      if (fieldName === 'kmskeyid') {
-        fieldName = 'kms.key'
-      }
-      if (fieldName === 'keyword') {
-        if ('listAnnotations' in this.$store.getters.apis) {
-          return this.$t('label.annotation')
-        } else {
-          return this.$t('label.name')
-        }
-      }
-      return this.$t('label.' + fieldName)
+      return this.$t(searchFieldLabelKey(fieldName, {
+        routeName: this.$route?.meta?.name,
+        annotations: 'listAnnotations' in this.$store.getters.apis
+      }))
     },
     async getSearchFilters (key, value) {
       const val = this.getStaticFieldValue(key, value)

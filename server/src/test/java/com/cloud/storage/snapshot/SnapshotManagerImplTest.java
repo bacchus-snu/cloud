@@ -19,7 +19,10 @@ package com.cloud.storage.snapshot;
 import com.cloud.dc.DataCenter;
 import com.cloud.dc.DataCenterVO;
 import com.cloud.dc.dao.DataCenterDao;
+import com.cloud.event.ActionEvent;
 import com.cloud.event.ActionEventUtils;
+import com.cloud.event.EventTypes;
+import com.cloud.hypervisor.Hypervisor;
 import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.PermissionDeniedException;
 import com.cloud.exception.ResourceUnavailableException;
@@ -29,6 +32,7 @@ import com.cloud.storage.Snapshot;
 import com.cloud.storage.Storage.StoragePoolType;
 import com.cloud.storage.SnapshotPolicyVO;
 import com.cloud.storage.SnapshotVO;
+import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeVO;
 import com.cloud.server.TaggedResourceService;
 import com.cloud.storage.dao.SnapshotDao;
@@ -47,6 +51,7 @@ import com.cloud.utils.db.SearchBuilder;
 import com.cloud.utils.db.SearchCriteria;
 import org.apache.cloudstack.api.command.user.snapshot.DeleteSnapshotPoliciesCmd;
 import org.apache.cloudstack.api.command.user.snapshot.ListSnapshotPoliciesCmd;
+import org.apache.cloudstack.api.command.user.snapshot.UpdateSnapshotCmd;
 import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.engine.subsystem.api.storage.CreateCmdResult;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
@@ -72,9 +77,11 @@ import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnitRunner;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.mockito.stubbing.Answer;
 
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 
@@ -126,6 +133,102 @@ public class SnapshotManagerImplTest {
     @After
     public void tearDown() {
         CallContext.unregister();
+    }
+
+    private SnapshotVO snapshotNamed(long id, String name, Snapshot.State state) {
+        SnapshotVO snapshot = new SnapshotVO(1L, 2L, 3L, 4L, 5L, name, (short) 0, "MANUAL", 10L, null, null, Hypervisor.HypervisorType.KVM, null);
+        ReflectionTestUtils.setField(snapshot, "id", id);
+        snapshot.setState(state);
+        return snapshot;
+    }
+
+    private UpdateSnapshotCmd renameTo(long id, String name) {
+        UpdateSnapshotCmd cmd = new UpdateSnapshotCmd();
+        ReflectionTestUtils.setField(cmd, "id", id);
+        ReflectionTestUtils.setField(cmd, "name", name);
+        return cmd;
+    }
+
+    private Account renamingCaller() {
+        Account caller = Mockito.mock(Account.class);
+        CallContext.register(Mockito.mock(User.class), caller);
+        return caller;
+    }
+
+    @Test
+    public void aSnapshotIsRenamed() {
+        Account caller = renamingCaller();
+        SnapshotVO snapshot = snapshotNamed(9L, "Web-1-ROOT-snapshot-0", Snapshot.State.BackedUp);
+        Mockito.when(snapshotDao.findById(9L)).thenReturn(snapshot);
+
+        Assert.assertSame(snapshot, snapshotManager.updateSnapshot(renameTo(9L, "before-upgrade_2026.10")));
+
+        Assert.assertEquals("before-upgrade_2026.10", snapshot.getName());
+        Mockito.verify(accountManager).checkAccess(caller, null, true, snapshot);
+        Mockito.verify(snapshotDao).update(9L, snapshot);
+    }
+
+    @Test
+    public void aSnapshotIsRenamedOnlyByWhoMayUseItToANameTheNameRuleAdmits() {
+        Account caller = renamingCaller();
+        SnapshotVO snapshot = snapshotNamed(9L, "old name", Snapshot.State.BackedUp);
+        Mockito.when(snapshotDao.findById(9L)).thenReturn(snapshot);
+
+        for (String name : new String[] {"with space", "", "x".repeat(65), null}) {
+            Assert.assertThrows(String.valueOf(name), InvalidParameterValueException.class, () -> snapshotManager.updateSnapshot(renameTo(9L, name)));
+        }
+        Assert.assertSame("the name it has is no new name", snapshot, snapshotManager.updateSnapshot(renameTo(9L, "old name")));
+
+        Mockito.doThrow(new PermissionDeniedException("another account's snapshot")).when(accountManager).checkAccess(caller, null, true, snapshot);
+        Assert.assertThrows(PermissionDeniedException.class, () -> snapshotManager.updateSnapshot(renameTo(9L, "mine")));
+
+        Mockito.when(snapshotDao.findById(10L)).thenReturn(snapshotNamed(10L, "gone", Snapshot.State.Destroyed));
+        Assert.assertThrows(InvalidParameterValueException.class, () -> snapshotManager.updateSnapshot(renameTo(10L, "back")));
+        Assert.assertThrows(InvalidParameterValueException.class, () -> snapshotManager.updateSnapshot(renameTo(11L, "none")));
+
+        Assert.assertEquals("old name", snapshot.getName());
+        Mockito.verify(snapshotDao, Mockito.never()).update(Mockito.anyLong(), Mockito.any(SnapshotVO.class));
+    }
+
+    @Test
+    public void theNumbersOfAVolumeNameContinueAcrossItsVolumesInTheAccount() {
+        // the ROOT volume of an Instance reinstalled, or created again under the same name, takes the name of the one before
+        SnapshotVO ofTheRootBefore = snapshotNamed(1L, "web-ROOT-snapshot-1", Snapshot.State.Destroyed);
+        ReflectionTestUtils.setField(ofTheRootBefore, "removed", new Date());
+        ReflectionTestUtils.setField(ofTheRootBefore, "volumeId", 40L);
+        SnapshotVO ofTheRootNow = snapshotNamed(2L, "WEB-root-snapshot-0", Snapshot.State.BackedUp);
+        ReflectionTestUtils.setField(ofTheRootNow, "volumeId", 41L);
+        Mockito.when(snapshotDao.listByAccountAndNamePrefixIncludingRemoved(2L, "web-ROOT")).thenReturn(List.of(ofTheRootBefore, ofTheRootNow));
+        Volume reinstalledRoot = Mockito.mock(Volume.class);
+        Mockito.when(reinstalledRoot.getAccountId()).thenReturn(2L);
+        Mockito.when(reinstalledRoot.getName()).thenReturn("web-ROOT");
+
+        Assert.assertEquals("web-ROOT-snapshot-2", snapshotManager.nameOfNewSnapshot(reinstalledRoot, null));
+        Mockito.verify(snapshotDao, Mockito.never()).listByVolumeIdIncludingRemoved(Mockito.anyLong());
+    }
+
+    @Test
+    public void renamingASnapshotIsAnEventOnIt() throws NoSuchMethodException {
+        ActionEvent event = SnapshotManagerImpl.class.getMethod("updateSnapshot", UpdateSnapshotCmd.class).getAnnotation(ActionEvent.class);
+        Assert.assertEquals(EventTypes.EVENT_SNAPSHOT_UPDATE, event.eventType());
+        Assert.assertEquals(Snapshot.class, EventTypes.getEntityClassForEvent(EventTypes.EVENT_SNAPSHOT_UPDATE));
+    }
+
+    @Test
+    public void aNewSnapshotWithoutANameIsNamedAfterItsVolume() {
+        Volume volume = Mockito.mock(Volume.class);
+        Mockito.when(volume.getAccountId()).thenReturn(2L);
+        Mockito.when(volume.getName()).thenReturn("Web-1-ROOT");
+        SnapshotVO deleted = snapshotNamed(3L, "Web-1-ROOT-snapshot-2", Snapshot.State.Destroyed);
+        ReflectionTestUtils.setField(deleted, "removed", new Date());
+        Mockito.when(snapshotDao.listByAccountAndNamePrefixIncludingRemoved(2L, "Web-1-ROOT")).thenReturn(List.of(
+                snapshotNamed(1L, "Web-1-ROOT-snapshot-0", Snapshot.State.BackedUp), snapshotNamed(2L, "Web-1-ROOT-snapshot-1", Snapshot.State.BackedUp),
+                deleted, snapshotNamed(4L, "Web-1-ROOT-snapshotted", Snapshot.State.BackedUp)));
+
+        Assert.assertEquals("the number of a deleted snapshot is not used again", "Web-1-ROOT-snapshot-3", snapshotManager.nameOfNewSnapshot(volume, null));
+        Assert.assertEquals("an empty name is no name", "Web-1-ROOT-snapshot-3", snapshotManager.nameOfNewSnapshot(volume, ""));
+        Assert.assertEquals("nightly", snapshotManager.nameOfNewSnapshot(volume, "nightly"));
+        Assert.assertThrows(InvalidParameterValueException.class, () -> snapshotManager.nameOfNewSnapshot(volume, "my snapshot"));
     }
 
     @Test

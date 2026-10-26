@@ -735,6 +735,7 @@ public class ApiConstants {
     public static final String HOST_TAGS = "hosttags";
     public static final String SSH_KEYPAIR = "keypair";
     public static final String SSH_KEYPAIRS = "keypairs";
+    public static final String SSH_NAME = "sshname";
     public static final String HTTPMETHOD = "httpmethod";
     public static final String HOST_CPU_CAPACITY = "hostcpucapacity";
     public static final String HOST_CPU_NUM = "hostcpunum";
@@ -1401,6 +1402,7 @@ public class ApiConstants {
     public static final String FREE_DISK = "freedisk";
     public static final String KEEP_ROOT_VOLUME = "keeprootvolume";
     public static final String KEEP_ROOT_VOLUME_DEFAULT = "keeprootvolumedefault";
+    public static final String EXPUNGE_ON_DESTROY = "expungeondestroy";
     public static final String ROOT_DISK_SIZE_MIN = "rootdisksizemin";
     public static final String ROOT_DISK_SIZE_DEFAULT = "rootdisksizedefault";
     public static final String RESOURCE_REQUEST_EXPIRY_REQUIRED = "resourcerequestexpiryrequired";

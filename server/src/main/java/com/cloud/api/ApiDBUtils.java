@@ -18,6 +18,7 @@ package com.cloud.api;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
@@ -1938,6 +1939,15 @@ public class ApiDBUtils {
     public static UserVmResponse newUserVmResponse(ResponseView view, String objectName, UserVmJoinVO userVm, Set<VMDetails> details, Boolean accumulateStats,
             Boolean showUserData, Account caller) {
         return s_userVmJoinDao.newUserVmResponse(view, objectName, userVm, details, accumulateStats, showUserData, caller);
+    }
+
+    public static UserVmResponse newUserVmResponse(ResponseView view, String objectName, UserVmJoinVO userVm, Set<VMDetails> details, Boolean accumulateStats,
+            Boolean showUserData, Account caller, String sshNamePrefix) {
+        return s_userVmJoinDao.newUserVmResponse(view, objectName, userVm, details, accumulateStats, showUserData, caller, sshNamePrefix);
+    }
+
+    public static Map<Long, String> findSshNamePrefixes(Collection<Long> vmIds) {
+        return s_userVmJoinDao.findSshNamePrefixes(vmIds);
     }
 
     public static UserVmResponse fillVmDetails(ResponseView view, UserVmResponse vmData, UserVmJoinVO vm) {

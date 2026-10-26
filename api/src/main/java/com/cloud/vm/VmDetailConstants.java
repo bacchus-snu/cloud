@@ -121,6 +121,16 @@ public interface VmDetailConstants {
     String GUEST_CPU_MODE = "guest.cpu.mode";
     String GUEST_CPU_MODEL = "guest.cpu.model";
 
+    // the prefix of the Instance's hostname and SSH name, fixed at its creation; ADMIN only
+    String SSH_NAME_PREFIX = "ssh.name.prefix";
+
+    /**
+     * @return whether the detail name is {@link #SSH_NAME_PREFIX} regardless of case, as detail names compare in the database
+     */
+    static boolean isSshNamePrefix(String name) {
+        return SSH_NAME_PREFIX.equalsIgnoreCase(name);
+    }
+
     // Lease related
     String INSTANCE_LEASE_EXPIRY_DATE = "leaseexpirydate";
     String INSTANCE_LEASE_EXPIRY_ACTION = "leaseexpiryaction";
@@ -136,6 +146,14 @@ public interface VmDetailConstants {
      */
     Set<String> LIFECYCLE_STATE_DETAILS = Set.of(INSTANCE_LEASE_EXPIRY_DATE, INSTANCE_LEASE_EXPIRY_ACTION, INSTANCE_LEASE_EXECUTION,
             INSTANCE_LEASE_EXPIRY_WARNING, RESTART_IN_PROGRESS);
+
+    /**
+     * @return whether the detail name is one of {@link #LIFECYCLE_STATE_DETAILS} regardless of case, as detail names compare in the
+     *         database
+     */
+    static boolean isLifecycleState(String name) {
+        return name != null && LIFECYCLE_STATE_DETAILS.stream().anyMatch(name::equalsIgnoreCase);
+    }
 
     // External orchestrator related
     String MAC_ADDRESS = "mac_address";

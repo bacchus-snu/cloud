@@ -68,7 +68,8 @@ public class ImportVolumeCmd extends BaseAsyncCmd {
 
     @Parameter(name = ApiConstants.NAME,
             type = BaseCmd.CommandType.STRING,
-            description = "the name of the volume. If not set, it will be set to the path of the volume.")
+            description = "the name of the volume: 1 to 64 characters, each a letter, a digit, '.', '_' or '-'. If not set, it is made of the path " +
+                    "of the volume, each other character written as '-'.")
     private String name;
 
     @Parameter(name = ApiConstants.STORAGE_ID,

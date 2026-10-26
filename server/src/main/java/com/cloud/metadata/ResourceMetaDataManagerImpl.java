@@ -20,8 +20,10 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.function.Supplier;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import javax.inject.Inject;
 import javax.naming.ConfigurationException;
@@ -29,6 +31,9 @@ import javax.naming.ConfigurationException;
 import com.cloud.offerings.dao.NetworkOfferingDetailsDao;
 import com.cloud.server.ResourceManagerUtil;
 import org.apache.cloudstack.api.ResourceDetail;
+import org.apache.cloudstack.acl.ControlledEntity;
+import org.apache.cloudstack.acl.SecurityChecker;
+import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.framework.config.ScopedConfigStorage;
 import org.apache.cloudstack.resourcedetail.ResourceDetailsDao;
 import org.apache.cloudstack.resourcedetail.dao.AutoScaleVmGroupDetailsDao;
@@ -59,24 +64,41 @@ import com.cloud.dc.dao.DataCenterDetailsDao;
 import com.cloud.event.ActionEvent;
 import com.cloud.event.EventTypes;
 import com.cloud.exception.InvalidParameterValueException;
+import com.cloud.exception.PermissionDeniedException;
+import com.cloud.network.dao.LoadBalancerVO;
 import com.cloud.network.dao.NetworkDetailsDao;
+import com.cloud.network.rules.HealthCheckPolicy;
+import com.cloud.network.rules.StickinessPolicy;
+import com.cloud.network.vpc.NetworkACL;
+import com.cloud.network.vpc.NetworkACLItem;
+import com.cloud.network.vpc.NetworkACLVO;
+import com.cloud.network.vpc.VpcVO;
 import com.cloud.server.ResourceMetaDataService;
 import com.cloud.server.ResourceTag.ResourceObjectType;
 import com.cloud.server.TaggedResourceService;
 import com.cloud.service.dao.ServiceOfferingDetailsDao;
 import com.cloud.storage.dao.VMTemplateDetailsDao;
 import com.cloud.storage.dao.VolumeDetailsDao;
+import com.cloud.tags.ResourceManagerUtilImpl;
+import com.cloud.user.AccountManager;
 import com.cloud.utils.component.ManagerBase;
 import com.cloud.utils.db.DB;
+import com.cloud.utils.db.EntityManager;
 import com.cloud.utils.db.Transaction;
 import com.cloud.utils.db.TransactionCallback;
 import com.cloud.utils.db.TransactionStatus;
+import com.cloud.vm.Nic;
+import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VmDetailConstants;
 import com.cloud.vm.dao.NicDetailsDao;
 import com.cloud.vm.dao.VMInstanceDetailsDao;
 
 @Component
 public class ResourceMetaDataManagerImpl extends ManagerBase implements ResourceMetaDataService, ResourceMetaDataManager {
+    @Inject
+    AccountManager accountManager;
+    @Inject
+    EntityManager entityManager;
     @Inject
     ConfigurationManager configurationManager;
     @Inject
@@ -189,6 +211,9 @@ public class ResourceMetaDataManagerImpl extends ManagerBase implements Resource
     @ActionEvent(eventType = EventTypes.EVENT_RESOURCE_DETAILS_CREATE, eventDescription = "creating resource meta data")
     public boolean addResourceMetaData(final String resourceId, final ResourceObjectType resourceType, final Map<String, String> details, final boolean forDisplay) {
         refuseLifecycleState(resourceType, details.keySet());
+        refuseInstanceNamePrefix(resourceType, details.keySet());
+        long id = resourceManagerUtil.getResourceId(resourceId, resourceType);
+        checkCallerMayChangeDetailsOf(resourceType, id);
         checkDetailNames(resourceType, details::keySet);
         return Transaction.execute(new TransactionCallback<Boolean>() {
             @Override
@@ -201,7 +226,7 @@ public class ResourceMetaDataManagerImpl extends ManagerBase implements Resource
                     }
 
                     DetailDaoHelper newDetailDaoHelper = new DetailDaoHelper(resourceType);
-                    newDetailDaoHelper.addDetail(resourceManagerUtil.getResourceId(resourceId, resourceType), key, value, forDisplay);
+                    newDetailDaoHelper.addDetail(id, key, value, forDisplay);
                 }
 
                 return true;
@@ -213,10 +238,11 @@ public class ResourceMetaDataManagerImpl extends ManagerBase implements Resource
     @DB
     @ActionEvent(eventType = EventTypes.EVENT_RESOURCE_DETAILS_DELETE, eventDescription = "deleting resource meta data")
     public boolean deleteResourceMetaData(String resourceId, ResourceObjectType resourceType, String key) {
-        if (key != null) {
-            refuseLifecycleState(resourceType, List.of(key));
-        }
         long id = resourceManagerUtil.getResourceId(resourceId, resourceType);
+        Collection<String> names = key != null ? Collections.singletonList(key) : namesRemovedWithEveryDetail(resourceType, id);
+        refuseLifecycleState(resourceType, names);
+        refuseInstanceNamePrefix(resourceType, names);
+        checkCallerMayChangeDetailsOf(resourceType, id);
 
         DetailDaoHelper newDetailDaoHelper = new DetailDaoHelper(resourceType);
         checkDetailNames(resourceType, () -> key != null ? Collections.singletonList(key) : s_daoMap.get(resourceType).listDetailsKeyPairs(id).keySet());
@@ -241,12 +267,79 @@ public class ResourceMetaDataManagerImpl extends ManagerBase implements Resource
 
     private static void refuseLifecycleState(ResourceObjectType resourceType, Collection<String> names) {
         for (String name : names) {
-            if (resourceType == ResourceObjectType.UserVm && VmDetailConstants.LIFECYCLE_STATE_DETAILS.contains(name)) {
+            if (resourceType == ResourceObjectType.UserVm && VmDetailConstants.isLifecycleState(name)) {
                 throw new InvalidParameterValueException(String.format("The detail %s of an Instance is kept by the system and cannot be set or removed", name));
             }
-            if (resourceType == ResourceObjectType.ServiceOffering && VMLeaseManager.OFFERING_LEASE_DETAILS.contains(name)) {
+            if (resourceType == ResourceObjectType.ServiceOffering && VMLeaseManager.isOfferingLeaseDetail(name)) {
                 throw new InvalidParameterValueException(String.format("The detail %s of a service offering is set with the offering's own parameters", name));
             }
+        }
+    }
+
+    /**
+     * @return the names, among those whose details callers may not remove, of the details that removing every detail of the resource
+     *         removes; an Instance's whole removal leaves its lifecycle state
+     */
+    private Collection<String> namesRemovedWithEveryDetail(ResourceObjectType resourceType, long id) {
+        if (resourceType != ResourceObjectType.UserVm && resourceType != ResourceObjectType.ServiceOffering) {
+            return Collections.emptyList();
+        }
+        Set<String> names = new HashSet<>(s_daoMap.get(resourceType).listDetailsKeyPairs(id).keySet());
+        if (resourceType == ResourceObjectType.UserVm) {
+            names.removeIf(VmDetailConstants::isLifecycleState);
+        }
+        return names;
+    }
+
+    private boolean callerIsRootAdmin() {
+        return accountManager.isRootAdmin(CallContext.current().getCallingAccount().getId());
+    }
+
+    /**
+     * A caller other than a root administrator changes the details only of a resource it has access to; the details of a resource
+     * without an owner are changed by root administrators alone.
+     */
+    private void checkCallerMayChangeDetailsOf(ResourceObjectType resourceType, long id) {
+        if (callerIsRootAdmin()) {
+            return;
+        }
+        ControlledEntity owned = ownedResource(resourceType, id);
+        if (owned == null) {
+            throw new PermissionDeniedException(String.format("Only a root administrator changes the details of a resource of type %s", resourceType));
+        }
+        accountManager.checkAccess(CallContext.current().getCallingAccount(), SecurityChecker.AccessType.OperateEntry, false, owned);
+    }
+
+    /**
+     * @return what an account owns of the resource: the resource itself, the Instance of a NIC, the load balancer of a policy, or the
+     *         VPC of an ACL or of its rule; null when no account owns it
+     */
+    private ControlledEntity ownedResource(ResourceObjectType resourceType, long id) {
+        Class<?> type = ResourceManagerUtilImpl.s_typeMap.get(resourceType);
+        Object resource = type == null ? null : entityManager.findById(type, id);
+        if (resource instanceof Nic) {
+            resource = entityManager.findById(VMInstanceVO.class, ((Nic) resource).getInstanceId());
+        } else if (resource instanceof StickinessPolicy) {
+            resource = entityManager.findById(LoadBalancerVO.class, ((StickinessPolicy) resource).getLoadBalancerId());
+        } else if (resource instanceof HealthCheckPolicy) {
+            resource = entityManager.findById(LoadBalancerVO.class, ((HealthCheckPolicy) resource).getLoadBalancerId());
+        } else if (resource instanceof NetworkACLItem) {
+            resource = entityManager.findById(NetworkACLVO.class, ((NetworkACLItem) resource).getAclId());
+        }
+        if (resource instanceof NetworkACL) {
+            Long vpcId = ((NetworkACL) resource).getVpcId();
+            resource = vpcId == null || vpcId == 0 ? null : entityManager.findById(VpcVO.class, vpcId);
+        }
+        return resource instanceof ControlledEntity ? (ControlledEntity) resource : null;
+    }
+
+    /**
+     * The prefix of an Instance's names is fixed at the Instance's creation; only a root administrator sets or removes it.
+     */
+    private void refuseInstanceNamePrefix(ResourceObjectType resourceType, Collection<String> names) {
+        if (resourceType == ResourceObjectType.UserVm && names.stream().anyMatch(VmDetailConstants::isSshNamePrefix) && !callerIsRootAdmin()) {
+            throw new InvalidParameterValueException(String.format("You're not allowed to set or remove the restricted setting: %s",
+                    VmDetailConstants.SSH_NAME_PREFIX));
         }
     }
 

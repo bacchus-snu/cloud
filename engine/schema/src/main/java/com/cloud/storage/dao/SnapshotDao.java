@@ -37,6 +37,12 @@ public interface SnapshotDao extends GenericDao<SnapshotVO, Long>, StateDao<Snap
 
     List<SnapshotVO> listByVolumeIdIncludingRemoved(long volumeId);
 
+    /**
+     * @return the snapshots of the account, removed ones included, whose name starts with the prefix as the name column compares,
+     *         regardless of case; a '_' of the prefix stands for any character, so callers check the names they get
+     */
+    List<SnapshotVO> listByAccountAndNamePrefixIncludingRemoved(long accountId, String namePrefix);
+
     List<SnapshotVO> listByVolumeIdVersion(long volumeId, String version);
 
     public Long countSnapshotsForAccount(long accountId);

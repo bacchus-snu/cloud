@@ -17,7 +17,11 @@
 package com.cloud.vm.dao;
 
 
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
@@ -39,12 +43,54 @@ public class VMInstanceDetailsDaoImpl extends ResourceDetailsDaoBase<VMInstanceD
     private static final String LIFECYCLE_STATE = "lifecycleState";
 
     private final SearchBuilder<VMInstanceDetailVO> detailsOutsideLifecycleStateSearch;
+    private final SearchBuilder<VMInstanceDetailVO> detailOfInstancesSearch;
 
     public VMInstanceDetailsDaoImpl() {
         detailsOutsideLifecycleStateSearch = createSearchBuilder();
         detailsOutsideLifecycleStateSearch.and("vmId", detailsOutsideLifecycleStateSearch.entity().getResourceId(), SearchCriteria.Op.EQ);
         detailsOutsideLifecycleStateSearch.and(LIFECYCLE_STATE, detailsOutsideLifecycleStateSearch.entity().getName(), SearchCriteria.Op.NIN);
         detailsOutsideLifecycleStateSearch.done();
+        detailOfInstancesSearch = createSearchBuilder();
+        detailOfInstancesSearch.and("vmIds", detailOfInstancesSearch.entity().getResourceId(), SearchCriteria.Op.IN);
+        detailOfInstancesSearch.and("name", detailOfInstancesSearch.entity().getName(), SearchCriteria.Op.EQ);
+        detailOfInstancesSearch.done();
+    }
+
+    /**
+     * Detail names compare regardless of case and callers write displayed details, so the prefix is the row that is hidden and named
+     * exactly as it.
+     */
+    private static boolean isSshNamePrefixRow(VMInstanceDetailVO detail) {
+        return VmDetailConstants.SSH_NAME_PREFIX.equals(detail.getName()) && !detail.isDisplay();
+    }
+
+    @Override
+    public String findSshNamePrefix(long vmId) {
+        return findDetails(vmId, VmDetailConstants.SSH_NAME_PREFIX).stream().filter(VMInstanceDetailsDaoImpl::isSshNamePrefixRow)
+                .map(VMInstanceDetailVO::getValue).findFirst().orElse(null);
+    }
+
+    @Override
+    public Map<Long, String> findSshNamePrefixes(Collection<Long> vmIds) {
+        Map<Long, String> prefixes = new HashMap<>();
+        if (vmIds.isEmpty()) {
+            return prefixes;
+        }
+        SearchCriteria<VMInstanceDetailVO> sc = detailOfInstancesSearch.create();
+        sc.setParameters("vmIds", vmIds.toArray());
+        sc.setParameters("name", VmDetailConstants.SSH_NAME_PREFIX);
+        for (VMInstanceDetailVO detail : listBy(sc)) {
+            if (isSshNamePrefixRow(detail)) {
+                prefixes.putIfAbsent(detail.getResourceId(), detail.getValue());
+            }
+        }
+        return prefixes;
+    }
+
+    @Override
+    public List<VMInstanceDetailVO> listBySshNamePrefix(String prefix) {
+        return findDetails(VmDetailConstants.SSH_NAME_PREFIX, prefix, false).stream()
+                .filter(detail -> isSshNamePrefixRow(detail) && prefix.equalsIgnoreCase(detail.getValue())).collect(Collectors.toList());
     }
 
     @Override
@@ -61,7 +107,7 @@ public class VMInstanceDetailsDaoImpl extends ResourceDetailsDaoBase<VMInstanceD
         txn.start();
         expunge(detailsOutsideLifecycleState(details.get(0).getResourceId()));
         for (VMInstanceDetailVO detail : details) {
-            if (!VmDetailConstants.LIFECYCLE_STATE_DETAILS.contains(detail.getName())) {
+            if (!VmDetailConstants.isLifecycleState(detail.getName())) {
                 persist(detail);
             }
         }

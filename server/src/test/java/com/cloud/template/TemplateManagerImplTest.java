@@ -79,6 +79,7 @@ import com.cloud.vm.UserVmVO;
 import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.VirtualMachine.State;
+import com.cloud.vm.VmDetailConstants;
 import com.cloud.vm.VmIsoMapVO;
 import com.cloud.vm.dao.UserVmDao;
 import com.cloud.vm.dao.VMInstanceDao;
@@ -151,7 +152,9 @@ import org.springframework.core.type.filter.TypeFilter;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
@@ -550,6 +553,23 @@ public class TemplateManagerImplTest extends TestCase {
             VMTemplateVO template = templateManager.createPrivateTemplateRecord(mockCreateCmd, mockTemplateOwner);
             assertTrue("Template in a region store should have cross zones set", template.isCrossZones());
         }
+    }
+
+    @Test
+    public void aTemplateTakesNoPrefixOfTheNamesOfAnInstance() {
+        VMTemplateVO source = mock(VMTemplateVO.class);
+        when(source.getDetails()).thenReturn(new HashMap<>(Map.of("ssh.name.PREFIX", "snucse-earlier", "videoRam", "16")));
+        when(vmTemplateDao.findById(30L)).thenReturn(source);
+        VolumeVO volume = mock(VolumeVO.class);
+        when(volume.getInstanceId()).thenReturn(7L);
+        UserVmVO vm = mock(UserVmVO.class);
+        when(vm.getDetails()).thenReturn(new HashMap<>(Map.of(VmDetailConstants.SSH_NAME_PREFIX, "snucse-baneling100", "rootDiskController", "virtio")));
+        when(_userVmDao.findById(7L)).thenReturn(vm);
+
+        Map<String, String> details = templateManager.detailsOfNewTemplate(30L, volume, new HashMap<>(Map.of("SSH.Name.Prefix", "snucse-mallory",
+                "keyboard", "us")));
+
+        assertEquals(Map.of("videoRam", "16", "rootDiskController", "virtio", "keyboard", "us"), details);
     }
 
     @Test

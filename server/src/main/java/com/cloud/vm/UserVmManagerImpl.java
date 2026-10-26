@@ -38,6 +38,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
@@ -48,7 +49,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
+import java.util.Locale;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.TimeZone;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -56,6 +59,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -113,6 +117,7 @@ import org.apache.cloudstack.api.command.user.vmgroup.CreateVMGroupCmd;
 import org.apache.cloudstack.api.command.user.vmgroup.DeleteVMGroupCmd;
 import org.apache.cloudstack.api.command.user.volume.ChangeOfferingForVolumeCmd;
 import org.apache.cloudstack.api.command.user.volume.ResizeVolumeCmd;
+import org.apache.cloudstack.auth.SignInProviderLinks;
 import org.apache.cloudstack.backup.BackupManager;
 import org.apache.cloudstack.backup.BackupScheduleVO;
 import org.apache.cloudstack.backup.BackupVO;
@@ -165,6 +170,7 @@ import org.apache.cloudstack.utils.bytescale.ByteScaleUtils;
 import org.apache.cloudstack.utils.security.ParserUtils;
 import org.apache.cloudstack.vm.UnmanagedVMsManager;
 import org.apache.cloudstack.vm.lease.VMLeaseManager;
+import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.collections.MapUtils;
 import org.apache.commons.lang.math.NumberUtils;
@@ -327,6 +333,8 @@ import com.cloud.offerings.NetworkOfferingVO;
 import com.cloud.offerings.dao.NetworkOfferingDao;
 import com.cloud.org.Cluster;
 import com.cloud.org.Grouping;
+import com.cloud.projects.ProjectVO;
+import com.cloud.projects.dao.ProjectDao;
 import com.cloud.resource.ResourceManager;
 import com.cloud.resource.ResourceState;
 import com.cloud.resourcelimit.CheckedReservation;
@@ -376,6 +384,8 @@ import com.cloud.template.TemplateApiService;
 import com.cloud.template.TemplateManager;
 import com.cloud.template.VirtualMachineTemplate;
 import com.cloud.user.Account;
+import com.cloud.user.AccountDetailVO;
+import com.cloud.user.AccountDetailsDao;
 import com.cloud.user.AccountManager;
 import com.cloud.user.AccountService;
 import com.cloud.user.AccountVO;
@@ -695,6 +705,14 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
     private int capacityReleaseInterval;
     private ExecutorService _vmIpFetchThreadExecutor;
     private List<KubernetesServiceHelper> kubernetesServiceHelpers;
+    private List<SignInProviderLinks> signInProviderLinks = Collections.emptyList();
+    @Inject
+    private ProjectDao projectDao;
+    @Inject
+    private AccountDetailsDao accountDetailsDao;
+    private static final String INSTANCE_NAMES_LOCK = "instance.names.";
+    static final String NAMES_AFTER_ACCOUNT = "instanceNamesAfterAccount";
+    private static final int INSTANCE_NAMES_LOCK_TIMEOUT_SECONDS = 60;
     private String _instance;
     private boolean _instanceNameFlag;
     private int _scaleRetry;
@@ -710,6 +728,385 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
     public void setKubernetesServiceHelpers(final List<KubernetesServiceHelper> kubernetesServiceHelpers) {
         this.kubernetesServiceHelpers = kubernetesServiceHelpers;
+    }
+
+    public void setSignInProviderLinks(final List<SignInProviderLinks> signInProviderLinks) {
+        this.signInProviderLinks = signInProviderLinks;
+    }
+
+    /**
+     * The names of a new Instance, chosen under the lock of its owner's Instance names, which closing them releases. The caller keeps
+     * them open until the Instance is stored, so that no other Instance of the owner takes the name meanwhile.
+     */
+    protected static final class NewInstanceNames implements AutoCloseable {
+        private final String name;
+        private final String hostName;
+        private final String prefix;
+        private final Runnable release;
+        private final AtomicBoolean open = new AtomicBoolean(true);
+
+        NewInstanceNames(String name, String hostName, String prefix, Runnable release) {
+            this.name = name;
+            this.hostName = hostName;
+            this.prefix = prefix;
+            this.release = release;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public String getHostName() {
+            return hostName;
+        }
+
+        /**
+         * @return the prefix of the Instance's names, or null for an Instance not named after its account
+         */
+        public String getPrefix() {
+            return prefix;
+        }
+
+        @Override
+        public void close() {
+            if (open.compareAndSet(true, false)) {
+                release.run();
+            }
+        }
+    }
+
+    /**
+     * @return the prefix of the names of the owner's Instances: that of its project for a project's account, else the sign-in
+     *         provider and the ID of a linked user of the account, or else the account's own name
+     */
+    protected String instanceNamePrefix(Account owner) {
+        if (owner.getType() == Account.Type.PROJECT) {
+            ProjectVO project = projectDao.findByProjectAccountId(owner.getId());
+            if (project == null) {
+                throw new InvalidParameterValueException(String.format("Unable to find the project of account %s", owner.getAccountName()));
+            }
+            return InstanceNames.projectPrefix(project.getId());
+        }
+        for (SignInProviderLinks links : signInProviderLinks) {
+            SignInProviderLinks.Link link = links.findAccountLink(owner.getId());
+            if (link != null) {
+                return InstanceNames.providerPrefix(link.getProviderName(), link.getUsername());
+            }
+        }
+        if (signsInThroughAProvider(owner)) {
+            throw new InvalidParameterValueException(String.format("Account %s signs in through an identity provider but is linked to none yet; "
+                    + "sign in once through your identity provider before creating instances", owner.getAccountName()));
+        }
+        List<String> providerNames = new ArrayList<>();
+        for (SignInProviderLinks links : signInProviderLinks) {
+            providerNames.addAll(links.listProviderNames());
+        }
+        String accountName = owner.getAccountName();
+        boolean nameOfAnotherAccount = _accountDao.findAccountsByName(accountName).stream()
+                .anyMatch(other -> other.getId() != owner.getId() && accountName.equalsIgnoreCase(other.getAccountName()));
+        return InstanceNames.localPrefix(accountName, providerNames, nameOfAnotherAccount);
+    }
+
+    /**
+     * @return whether a user of the account signs in through a provider, or the account awaits its adoption by one; such an account
+     *         takes its prefix from its link only, never from its own name
+     */
+    private boolean signsInThroughAProvider(Account owner) {
+        if (_userDao.listByAccount(owner.getId()).stream().anyMatch(user -> user.getSource() == User.Source.OAUTH2)) {
+            return true;
+        }
+        AccountDetailVO mark = accountDetailsDao.findDetail(owner.getId(), SignInProviderLinks.ADOPTION_MARK);
+        return mark != null && "true".equals(mark.getValue());
+    }
+
+    /**
+     * Locks the names of the account's Instances, under which one is chosen or changed until the Instance is stored with it.
+     */
+    protected GlobalLock lockInstanceNames(long accountId) {
+        return lockNamed(instanceNamesLockName(accountId), String.format("the Instance names of account %d", accountId));
+    }
+
+    static String instanceNamesLockName(long accountId) {
+        return INSTANCE_NAMES_LOCK + accountId;
+    }
+
+    /**
+     * A digest of the prefix in lower case stands for it, as a database lock name is at most 64 characters long.
+     */
+    static String instanceNamePrefixLockName(String prefix) {
+        return INSTANCE_NAMES_LOCK + "p." + DigestUtils.sha256Hex(prefix.toLowerCase(Locale.ROOT)).substring(0, 40);
+    }
+
+    /**
+     * Locks a prefix of Instance names, which the names of the Instances of no two accounts share.
+     */
+    protected GlobalLock lockInstanceNamePrefix(String prefix) {
+        return lockNamed(instanceNamePrefixLockName(prefix), "the Instance name prefix " + prefix);
+    }
+
+    private GlobalLock lockNamed(String name, String what) {
+        GlobalLock lock = GlobalLock.getInternLock(name);
+        if (!lock.lock(INSTANCE_NAMES_LOCK_TIMEOUT_SECONDS)) {
+            lock.releaseRef();
+            throw new CloudRuntimeException(String.format("Unable to lock %s; please try again", what));
+        }
+        return lock;
+    }
+
+    /**
+     * Locks the names of the account's Instances, then the prefix unless it is null.
+     *
+     * @return the release of the locks
+     */
+    private Runnable lockInstanceNamesUnder(long accountId, String prefix) {
+        GlobalLock accountLock = lockInstanceNames(accountId);
+        if (prefix == null) {
+            return () -> unlockInstanceNames(accountLock);
+        }
+        GlobalLock prefixLock = null;
+        try {
+            prefixLock = lockInstanceNamePrefix(prefix);
+        } finally {
+            if (prefixLock == null) {
+                unlockInstanceNames(accountLock);
+            }
+        }
+        GlobalLock lockedPrefix = prefixLock;
+        return () -> {
+            try {
+                unlockInstanceNames(lockedPrefix);
+            } finally {
+                unlockInstanceNames(accountLock);
+            }
+        };
+    }
+
+    /**
+     * Refuses a prefix that Instances of another account, not removed, are named under, other than the Instance with the given ID.
+     */
+    protected void checkPrefixOfNoOtherAccount(String prefix, Account owner, Long exceptVmId) {
+        Set<String> others = new TreeSet<>();
+        for (UserVmVO vm : instancesUnderPrefix(prefix, exceptVmId)) {
+            if (vm.getAccountId() != owner.getId()) {
+                Account other = _accountDao.findByIdIncludingRemoved(vm.getAccountId());
+                others.add(other == null ? String.valueOf(vm.getAccountId()) : other.getAccountName());
+            }
+        }
+        if (!others.isEmpty()) {
+            throw new InvalidParameterValueException(String.format("The Instances of account %s cannot be named under %s: the Instances of account(s) %s are",
+                    owner.getAccountName(), prefix, String.join(", ", others)));
+        }
+    }
+
+    /**
+     * @return the user Instances, not removed and other than the one with the given ID, named under the prefix regardless of case
+     */
+    private List<UserVmVO> instancesUnderPrefix(String prefix, Long exceptVmId) {
+        List<Long> vmIds = vmInstanceDetailsDao.listBySshNamePrefix(prefix).stream().map(VMInstanceDetailVO::getResourceId)
+                .filter(vmId -> !vmId.equals(exceptVmId)).collect(Collectors.toList());
+        return _vmDao.listByIds(vmIds);
+    }
+
+    protected void unlockInstanceNames(GlobalLock lock) {
+        try {
+            lock.unlock();
+        } finally {
+            lock.releaseRef();
+        }
+    }
+
+    /**
+     * @return the names of the account's Instances that are not removed, other than the one with the given ID
+     */
+    protected List<String> instanceNamesOfAccount(long accountId, Long exceptVmId) {
+        return _vmDao.listByAccountId(accountId).stream()
+                .filter(vm -> exceptVmId == null || vm.getId() != exceptVmId)
+                .map(UserVmVO::getDisplayNameOrHostName)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Names a new Instance of the owner: its name is the display name asked for, else the name asked for, else the first "VM-n"
+     * free in the account and as an SSH name, and its hostname is its SSH name unless another Instance has that. A prefix among the
+     * details, which only a root administrator passes, replaces the owner's; the details record the prefix.
+     */
+    protected NewInstanceNames nameNewInstance(Account owner, String requestedName, String requestedDisplayName, Map<String, String> customParameters) {
+        String prefix = customParameters.get(VmDetailConstants.SSH_NAME_PREFIX);
+        if (StringUtils.isEmpty(prefix)) {
+            prefix = instanceNamePrefix(owner);
+        } else {
+            InstanceNames.checkPrefix(prefix);
+        }
+        Runnable release = lockInstanceNamesUnder(owner.getId(), prefix);
+        boolean named = false;
+        try {
+            checkPrefixOfNoOtherAccount(prefix, owner, null);
+            List<String> names = new ArrayList<>(instanceNamesOfAccount(owner.getId(), null));
+            String name = StringUtils.isNotEmpty(requestedDisplayName) ? requestedDisplayName : requestedName;
+            if (StringUtils.isEmpty(name)) {
+                name = InstanceNames.defaultName(names);
+                while (sshNameHolder(InstanceNames.hostName(prefix, name), null) != null) {
+                    names.add(name);
+                    name = InstanceNames.defaultName(names);
+                }
+            } else {
+                InstanceNames.checkName(name);
+                InstanceNames.checkNameFree(name, names);
+                checkSshNameFree(InstanceNames.hostName(prefix, name), null);
+            }
+            String hostName = InstanceNames.freeHostName(prefix, name, this::hostNameTaken);
+            customParameters.put(VmDetailConstants.SSH_NAME_PREFIX, prefix);
+            NewInstanceNames instanceNames = new NewInstanceNames(name, hostName, prefix, release);
+            named = true;
+            return instanceNames;
+        } finally {
+            if (!named) {
+                release.run();
+            }
+        }
+    }
+
+    /**
+     * @return whether the Instance being created is named after its account: only a deployment that a user asks for is, while the
+     *         Instances that other components create keep the names they give
+     */
+    protected boolean namesInstancesAfterAccount() {
+        return Boolean.TRUE.equals(CallContext.current().getContextParameter(NAMES_AFTER_ACCOUNT));
+    }
+
+    /**
+     * Names a new Instance after its account when {@link #namesInstancesAfterAccount()}, and otherwise by the names asked for.
+     */
+    protected NewInstanceNames nameInstance(Account owner, String requestedName, String requestedDisplayName, Map<String, String> customParameters) {
+        if (namesInstancesAfterAccount()) {
+            return nameNewInstance(owner, requestedName, requestedDisplayName, customParameters);
+        }
+        return new NewInstanceNames(requestedDisplayName, requestedName, null, () -> { });
+    }
+
+    /**
+     * Names an Instance after the account it moves to: it keeps its name, which must be free there, and its hostname, and an Instance
+     * named under its account's prefix takes the new account's prefix. The caller keeps the names open until the move is stored.
+     */
+    protected NewInstanceNames nameMovedInstance(UserVmVO vm, Account newAccount, boolean namedUnderAPrefix) {
+        String prefix = namedUnderAPrefix ? instanceNamePrefix(newAccount) : null;
+        Runnable release = lockInstanceNamesUnder(newAccount.getId(), prefix);
+        boolean named = false;
+        try {
+            String name = vm.getDisplayNameOrHostName();
+            if (prefix != null) {
+                checkPrefixOfNoOtherAccount(prefix, newAccount, vm.getId());
+            }
+            InstanceNames.checkNameFree(name, instanceNamesOfAccount(newAccount.getId(), vm.getId()));
+            if (prefix != null) {
+                checkSshNameFree(InstanceNames.hostName(prefix, name), vm.getId());
+            }
+            NewInstanceNames instanceNames = new NewInstanceNames(name, vm.getHostName(), prefix, release);
+            named = true;
+            return instanceNames;
+        } finally {
+            if (!named) {
+                release.run();
+            }
+        }
+    }
+
+    /**
+     * @return the template's details that an Instance created from it takes: all but the prefix of the Instance's names, which no
+     *         template sets
+     */
+    protected static Map<String, String> detailsTakenFromTemplate(Map<String, String> templateDetails) {
+        Map<String, String> details = templateDetails == null ? new HashMap<>() : new HashMap<>(templateDetails);
+        details.keySet().removeIf(VmDetailConstants::isSshNamePrefix);
+        return details;
+    }
+
+    /**
+     * @return whether an Instance, not removed and of any type, has the hostname regardless of case
+     */
+    protected boolean hostNameTaken(String hostName) {
+        return _vmInstanceDao.listByHostName(hostName).stream().anyMatch(vm -> hostName.equalsIgnoreCase(vm.getHostName()));
+    }
+
+    /**
+     * @return the hostname of the user Instance, not removed and other than the one with the given ID, whose name on the SSH bastion is
+     *         the SSH name regardless of case, or null when there is none. That name is the SSH name of an Instance named under a prefix,
+     *         and the hostname of any other.
+     */
+    protected String sshNameHolder(String sshName, Long exceptVmId) {
+        for (VMInstanceVO vm : _vmInstanceDao.listByHostName(sshName)) {
+            if (vm.getType() == VirtualMachine.Type.User && !Objects.equals(vm.getId(), exceptVmId) && sshName.equalsIgnoreCase(vm.getHostName())
+                    && vmInstanceDetailsDao.findSshNamePrefix(vm.getId()) == null) {
+                return vm.getHostName();
+            }
+        }
+        for (Map.Entry<String, String> under : InstanceNames.prefixesOf(sshName).entrySet()) {
+            for (UserVmVO vm : instancesUnderPrefix(under.getKey(), exceptVmId)) {
+                if (under.getValue().equalsIgnoreCase(vm.getDisplayName())) {
+                    return vm.getHostName();
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Refuses an SSH name that another user Instance has on the SSH bastion.
+     */
+    protected void checkSshNameFree(String sshName, Long exceptVmId) {
+        String holder = sshNameHolder(sshName, exceptVmId);
+        if (holder != null) {
+            throw new InvalidParameterValueException(String.format("The SSH name %s is taken: Instance %s has it on the SSH bastion", sshName, holder));
+        }
+    }
+
+    /**
+     * Checks a new name of the Instance against the rule of names, the length its prefix, if it has one, leaves, and the names of
+     * the other Instances of its account.
+     */
+    protected void checkNewInstanceName(UserVmVO vm, String namePrefix, String name) {
+        InstanceNames.checkName(name);
+        if (namePrefix != null) {
+            checkSshNameFree(InstanceNames.hostName(namePrefix, name), vm.getId());
+        }
+        InstanceNames.checkNameFree(name, instanceNamesOfAccount(vm.getAccountId(), vm.getId()));
+    }
+
+    /**
+     * @return the details of a new Instance that are stored as not displayed
+     */
+    protected List<String> hiddenDeployDetails(Map<String, String> customParameters) {
+        List<String> hiddenDetails = new ArrayList<>();
+        for (String name : List.of(VmDetailConstants.NAME_ON_HYPERVISOR, VmDetailConstants.SSH_NAME_PREFIX)) {
+            if (customParameters.containsKey(name)) {
+                hiddenDetails.add(name);
+            }
+        }
+        return hiddenDetails;
+    }
+
+    /**
+     * Renames the Instance's ROOT volumes that carry its former name after its new name.
+     */
+    protected void renameRootVolumesAfterInstance(long vmId, String formerName, String name) {
+        String formerRootName = InstanceNames.rootVolumeName(formerName);
+        for (VolumeVO root : _volsDao.findByInstanceAndType(vmId, Volume.Type.ROOT)) {
+            if (formerRootName.equals(root.getName())) {
+                root.setName(InstanceNames.rootVolumeName(name));
+                _volsDao.update(root.getId(), root);
+            }
+        }
+    }
+
+    /**
+     * Names the new ROOT volume of a reinstalled Instance named under its account's prefix after the Instance, as at its creation.
+     */
+    protected void nameRootVolumeAfterInstance(UserVmVO vm, VolumeVO root) {
+        if (StringUtils.isNotBlank(vm.getDisplayName()) && vmInstanceDetailsDao.findSshNamePrefix(vm.getId()) != null) {
+            root.setName(InstanceNames.rootVolumeName(vm.getDisplayName()));
+            _volsDao.update(root.getId(), root);
+        }
     }
 
     private static final ConfigKey<Integer> VmIpFetchWaitInterval = new ConfigKey<>("Advanced", Integer.class, "externaldhcp.vmip.retrieval.interval", "180",
@@ -3203,11 +3600,15 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
         UserVmVO vmInstance = _vmDao.findById(cmd.getId());
         VMTemplateVO template = _templateDao.findById(vmInstance.getTemplateId());
+        if (StringUtils.isBlank(cmd.getDisplayNameParameter()) && vmInstanceDetailsDao.findSshNamePrefix(id) != null) {
+            displayName = null;
+        }
 
         UserVmVO userVm = _vmDao.findById(cmd.getId());
         if (userVm != null && UserVmManager.SHAREDFSVM.equals(userVm.getUserVmType())) {
             throw new InvalidParameterValueException("Operation not supported on Shared FileSystem Instance");
         }
+        checkVirtualMachineUpdate(vmInstance, displayName, hostName, cmd.getInstanceName(), ha, isDynamicallyScalable);
 
         String userData = cmd.getUserData();
         Long userDataId = cmd.getUserdataId();
@@ -3244,15 +3645,16 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             if (caller != null && caller.getType() == Account.Type.ADMIN) {
                 for (final VMInstanceDetailVO detail : existingDetails) {
                     if (detail != null && detail.isDisplay() && !isExtraConfig(detail.getName())
-                            && !VmDetailConstants.LIFECYCLE_STATE_DETAILS.contains(detail.getName())) {
+                            && !VmDetailConstants.isLifecycleState(detail.getName()) && !VmDetailConstants.isSshNamePrefix(detail.getName())) {
                         vmInstanceDetailsDao.removeDetail(id, detail.getName());
                     }
                 }
             } else {
                 for (final VMInstanceDetailVO detail : existingDetails) {
-                    if (detail != null && !userDenyListedSettings.contains(detail.getName())
-                            && !userReadOnlySettings.contains(detail.getName()) && detail.isDisplay()
-                            && !isExtraConfig(detail.getName()) && !VmDetailConstants.LIFECYCLE_STATE_DETAILS.contains(detail.getName())) {
+                    if (detail != null && !containsIgnoringCase(userDenyListedSettings, detail.getName())
+                            && !containsIgnoringCase(userReadOnlySettings, detail.getName()) && detail.isDisplay()
+                            && !isExtraConfig(detail.getName()) && !VmDetailConstants.isLifecycleState(detail.getName())
+                            && !VmDetailConstants.isSshNamePrefix(detail.getName())) {
                         vmInstanceDetailsDao.removeDetail(id, detail.getName());
                     }
                 }
@@ -3287,27 +3689,28 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                 if (caller != null && caller.getType() != Account.Type.ADMIN) {
                     // Ensure denied or read-only detail is not passed by non-root-admin user
                     for (final String detailName : details.keySet()) {
-                        if (userDenyListedSettings.contains(detailName)) {
+                        if (containsIgnoringCase(userDenyListedSettings, detailName)) {
                             throw new InvalidParameterValueException("You're not allowed to add or edit the restricted setting: " + detailName);
                         }
-                        if (userReadOnlySettings.contains(detailName)) {
+                        if (containsIgnoringCase(userReadOnlySettings, detailName)) {
                             throw new InvalidParameterValueException("You're not allowed to add or edit the read-only setting: " + detailName);
                         }
-                        if (existingDetails.stream().anyMatch(d -> Objects.equals(d.getName(), detailName) && !d.isDisplay())) {
+                        if (existingDetails.stream().anyMatch(d -> d.getName().equalsIgnoreCase(detailName) && !d.isDisplay())) {
                             throw new InvalidParameterValueException("You're not allowed to add or edit the non-displayable setting: " + detailName);
                         }
                     }
                     // Add any existing user denied or read-only details. We do it here because admins would already provide these (or can delete them).
                     for (final VMInstanceDetailVO detail : existingDetails) {
-                        if (userDenyListedSettings.contains(detail.getName()) || userReadOnlySettings.contains(detail.getName())) {
+                        if (containsIgnoringCase(userDenyListedSettings, detail.getName()) || containsIgnoringCase(userReadOnlySettings, detail.getName())) {
                             details.put(detail.getName(), detail.getValue());
                         }
                     }
                 }
 
-                // ensure details marked as non-displayable are maintained, regardless of admin or not
+                // ensure details marked as non-displayable are maintained, regardless of admin or not; detail names compare regardless of case
                 for (final VMInstanceDetailVO existingDetail : existingDetails) {
                     if (!existingDetail.isDisplay() || isExtraConfig(existingDetail.getName())) {
+                        details.keySet().removeIf(name -> name.equalsIgnoreCase(existingDetail.getName()));
                         details.put(existingDetail.getName(), existingDetail.getValue());
                     }
                 }
@@ -3328,6 +3731,72 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                 userDataId, userDataDetails, isDynamicallyScalable, cmd.getHttpMethod(),
                 cmd.getCustomId(), hostName, cmd.getInstanceName(), securityGroupIdList,
                 cmd.getDhcpOptionsMap());
+    }
+
+    /**
+     * Checks an update of the Instance with the given fields, null for those left as they are.
+     */
+    protected void checkVirtualMachineUpdate(UserVmVO vm, String displayName, String hostName, String instanceName, Boolean ha, Boolean isDynamicallyScalable) {
+        if (instanceName != null) {
+            VMInstanceVO vmInstance = _vmInstanceDao.findVMByInstanceName(instanceName);
+            if (vmInstance != null && vmInstance.getId() != vm.getId()) {
+                throw new CloudRuntimeException("Instance name : " + instanceName + " is not unique");
+            }
+        }
+
+        if (vm.getState() == State.Error || vm.getState() == State.Expunging) {
+            logger.error("vm {} is not in the correct state. current state: {}", vm, vm.getState());
+            throw new InvalidParameterValueException(String.format("Vm %s is not in the right state", vm));
+        }
+
+        String namePrefix = vmInstanceDetailsDao.findSshNamePrefix(vm.getId());
+        if (namePrefix != null && hostName != null && !hostName.equals(vm.getHostName())) {
+            throw new InvalidParameterValueException(String.format("The hostname of Instance %s is fixed at its creation; an Instance is renamed by its display name",
+                    vm.getDisplayNameOrHostName()));
+        }
+        if (hostName != null && !hostName.equals(vm.getHostName()) && !_accountMgr.isRootAdmin(CallContext.current().getCallingAccount().getId())) {
+            throw new InvalidParameterValueException(String.format("Only a root admin changes the hostname of Instance %s; an Instance is renamed by its display name",
+                    vm.getDisplayNameOrHostName()));
+        }
+        if (displayName != null && !displayName.equals(vm.getDisplayNameOrHostName())) {
+            checkNewInstanceName(vm, namePrefix, displayName);
+        }
+
+        boolean haEnabled = ha != null ? ha : vm.isHaEnabled();
+        ServiceOffering offering = serviceOfferingDao.findById(vm.getId(), vm.getServiceOfferingId());
+        if (haEnabled && !offering.isOfferHA()) {
+            throw new InvalidParameterValueException("Can't enable ha for the vm as it's created from the Service offering having HA disabled");
+        }
+
+        if (Boolean.TRUE.equals(isDynamicallyScalable)) {
+            VMTemplateVO template = _templateDao.findByIdIncludingRemoved(vm.getTemplateId());
+            if (!template.isDynamicallyScalable()) {
+                throw new InvalidParameterValueException("Dynamic Scaling cannot be enabled for the Instance since its Template does not have dynamic scaling enabled");
+            }
+            if (!offering.isDynamicScalingEnabled()) {
+                throw new InvalidParameterValueException("Dynamic Scaling cannot be enabled for the Instance since its service offering does not have dynamic scaling enabled");
+            }
+            if (!UserVmManager.EnableDynamicallyScaleVm.valueIn(vm.getDataCenterId())) {
+                logger.debug("Dynamic Scaling cannot be enabled for the VM {} since the global setting enable.dynamic.scale.vm is set to false", vm);
+                throw new InvalidParameterValueException("Dynamic Scaling cannot be enabled for the VM since corresponding global setting is set to false");
+            }
+        }
+
+        if (hostName != null) {
+            // Check is hostName is RFC compliant
+            checkNameForRFCCompliance(hostName);
+            String newHostName = vm.getHostName().equals(hostName) ? null : hostName;
+            if (newHostName != null) {
+                checkSshNameFree(newHostName, vm.getId());
+            }
+            List<NetworkVO> vmNtwks = _nicDao.listByVmId(vm.getId()).stream().map(nic -> _networkDao.findById(nic.getNetworkId()))
+                    .collect(Collectors.toList());
+            checkIfHostNameUniqueInNtwkDomain(newHostName, vmNtwks);
+        }
+    }
+
+    private static boolean containsIgnoringCase(Collection<String> names, String name) {
+        return names.stream().anyMatch(n -> n.equalsIgnoreCase(name));
     }
 
     private boolean isExtraConfig(String detailName) {
@@ -3439,17 +3908,10 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             throw new CloudRuntimeException("Unable to find virtual machine with id " + id);
         }
 
-        if (instanceName != null) {
-            VMInstanceVO vmInstance = _vmInstanceDao.findVMByInstanceName(instanceName);
-            if (vmInstance != null && vmInstance.getId() != id) {
-                throw new CloudRuntimeException("Instance name : " + instanceName + " is not unique");
-            }
-        }
+        checkVirtualMachineUpdate(vm, displayName, hostName, instanceName, ha, isDynamicallyScalable);
 
-        if (vm.getState() == State.Error || vm.getState() == State.Expunging) {
-            logger.error("vm {} is not in the correct state. current state: {}", vm, vm.getState());
-            throw new InvalidParameterValueException(String.format("Vm %s is not in the right state", vm));
-        }
+        String formerName = vm.getDisplayNameOrHostName();
+        boolean renamed = displayName != null && !displayName.equals(formerName);
 
         if (displayName == null) {
             displayName = vm.getDisplayName();
@@ -3457,11 +3919,6 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
         if (ha == null) {
             ha = vm.isHaEnabled();
-        }
-
-        ServiceOffering offering = serviceOfferingDao.findById(vm.getId(), vm.getServiceOfferingId());
-        if (!offering.isOfferHA() && ha) {
-            throw new InvalidParameterValueException("Can't enable ha for the vm as it's created from the Service offering having HA disabled");
         }
 
         if (isDisplayVmEnabled == null) {
@@ -3501,39 +3958,12 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
         if (isDynamicallyScalable == null) {
             isDynamicallyScalable = vm.isDynamicallyScalable();
-        } else {
-            if (isDynamicallyScalable == true) {
-                VMTemplateVO template = _templateDao.findByIdIncludingRemoved(vm.getTemplateId());
-                if (!template.isDynamicallyScalable()) {
-                    throw new InvalidParameterValueException("Dynamic Scaling cannot be enabled for the Instance since its Template does not have dynamic scaling enabled");
-                }
-                if (!offering.isDynamicScalingEnabled()) {
-                    throw new InvalidParameterValueException("Dynamic Scaling cannot be enabled for the Instance since its service offering does not have dynamic scaling enabled");
-                }
-                if (!UserVmManager.EnableDynamicallyScaleVm.valueIn(vm.getDataCenterId())) {
-                    logger.debug("Dynamic Scaling cannot be enabled for the VM {} since the global setting enable.dynamic.scale.vm is set to false", vm);
-                    throw new InvalidParameterValueException("Dynamic Scaling cannot be enabled for the VM since corresponding global setting is set to false");
-                }
-            }
         }
 
         List<? extends Nic> nics = _nicDao.listByVmId(vm.getId());
-        if (hostName != null) {
-            // Check is hostName is RFC compliant
-            checkNameForRFCCompliance(hostName);
-
-            if (vm.getHostName().equals(hostName)) {
-                logger.debug("Vm " + vm + " is already set with the hostName specified: " + hostName);
-                hostName = null;
-            }
-
-            // Verify that vm's hostName is unique
-
-            List<NetworkVO> vmNtwks = new ArrayList<>(nics.size());
-            for (Nic nic : nics) {
-                vmNtwks.add(_networkDao.findById(nic.getNetworkId()));
-            }
-            checkIfHostNameUniqueInNtwkDomain(hostName, vmNtwks);
+        if (hostName != null && vm.getHostName().equals(hostName)) {
+            logger.debug("Vm " + vm + " is already set with the hostName specified: " + hostName);
+            hostName = null;
         }
 
         List<NetworkVO> networks = nics.stream()
@@ -3551,9 +3981,22 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
         checkAndUpdateSecurityGroupForVM(securityGroupIdList, vm, networks);
 
-        _vmDao.updateVM(id, displayName, ha, osTypeId, userData, userDataId,
-                userDataDetails, isDisplayVmEnabled, isDynamicallyScalable,
-                deleteProtection, customId, hostName, instanceName);
+        GlobalLock namesLock = renamed ? lockInstanceNames(vm.getAccountId()) : null;
+        try {
+            if (renamed) {
+                InstanceNames.checkNameFree(displayName, instanceNamesOfAccount(vm.getAccountId(), vm.getId()));
+            }
+            _vmDao.updateVM(id, displayName, ha, osTypeId, userData, userDataId,
+                    userDataDetails, isDisplayVmEnabled, isDynamicallyScalable,
+                    deleteProtection, customId, hostName, instanceName);
+            if (renamed) {
+                renameRootVolumesAfterInstance(id, formerName, displayName);
+            }
+        } finally {
+            if (namesLock != null) {
+                unlockInstanceNames(namesLock);
+            }
+        }
 
         if (updateUserdata) {
             updateUserData(vm);
@@ -3913,10 +4356,11 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
     public UserVm destroyVm(DestroyVMCmd cmd, boolean checkExpunge) throws ResourceUnavailableException, ConcurrentOperationException {
         CallContext ctx = CallContext.current();
         long vmId = cmd.getId();
-        boolean expunge = cmd.getExpunge();
+        boolean expungeOnDestroy = UserVmManager.expungesOnDestroy();
+        boolean expunge = cmd.getExpunge() || expungeOnDestroy;
         boolean forced = cmd.isForced();
 
-        if (checkExpunge && expunge) {
+        if (checkExpunge && expunge && !expungeOnDestroy) {
             String jobParamsString = ((AsyncJobVO) cmd.getJob()).getCmdInfo();
             HashMap<String,String> jobParams = GsonHelper.getGson().fromJson(jobParamsString, jobParamsType);
             String apiKey = jobParams.entrySet().stream()
@@ -3959,12 +4403,19 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
         final ControlledEntity[] volumesToDelete = volumesToBeDeleted.toArray(new ControlledEntity[0]);
         _accountMgr.checkAccess(ctx.getCallingAccount(), null, true, volumesToDelete);
+        for (VolumeVO volume : volumesToBeDeleted) {
+            _volumeService.validateDestroyVolumeWithInstance(volume, ctx.getCallingAccount(), expunge);
+        }
 
         boolean keepRoot = cmd.getKeepRootVolume() != null ? cmd.getKeepRootVolume() : UserVmManager.keepRootVolumeByDefault(vm.getDomainId());
         List<VolumeVO> rootVolumesToKeep = keepRoot ? rootVolumesToKeep(vm, keepRootRequested) : null;
         boolean expungeVm = expunge || rootVolumesToKeep != null;
 
         if (expunge && rootVolumesToKeep == null) {
+            if (hasBackups(vm)) {
+                throw new InvalidParameterValueException(String.format("Unable to expunge Instance %s while it has backups; remove its backup offering first",
+                        vm.getUuid()));
+            }
             backupManager.checkAndRemoveBackupOfferingBeforeExpunge(vm);
         }
 
@@ -4002,7 +4453,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
         deleteVolumesFromVm(vm, volumesToBeDeleted, expunge);
 
-        if (rootVolumesToKeep == null && getDestroyRootVolumeOnVmDestruction(vm.getDomainId())) {
+        if (!expungeVm && rootVolumesToKeep == null && getDestroyRootVolumeOnVmDestruction(vm.getDomainId())) {
             VolumeVO rootVolume = _volsDao.getInstanceRootVolume(vm.getId());
             if (rootVolume != null) {
                 _volService.destroyVolume(rootVolume.getId());
@@ -4037,8 +4488,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
     /**
      * The ROOT volumes to keep when the Instance is destroyed, which is then expunged once they have left it: none when it has no root
      * left. Null, so the Instance is destroyed as before, when its root holds no data of its own (a failed deployment, an Instance
-     * already destroyed, a root never created), or when the root cannot be detached and keeping it was not asked for. Whatever else
-     * would stop the root from being kept is refused here, before the Instance is stopped.
+     * already destroyed, a root never created), or when the root cannot be detached, keeping it was not asked for and the destroy leaves
+     * the Instance recoverable. Whatever else would stop the root from being kept is refused here, before the Instance is stopped.
      *
      * @param requested whether the caller asked for the root to be kept, rather than leaving it to the default
      */
@@ -4059,16 +4510,18 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             try {
                 _volumeService.checkRootVolumeDetachSupported(root, vm);
             } catch (InvalidParameterValueException e) {
-                if (!requested) {
+                if (!requested && !UserVmManager.expungesOnDestroy()) {
                     return null;
                 }
                 throw new InvalidParameterValueException(String.format("%s; pass %s=false to destroy Instance %s with its ROOT volume", e.getMessage(),
                         ApiConstants.KEEP_ROOT_VOLUME, vm.getUuid()));
             }
         }
-        if (vm.getBackupOfferingId() != null && CollectionUtils.isNotEmpty(backupDao.listByVmIdAndOffering(vm.getDataCenterId(), vm.getId(), vm.getBackupOfferingId()))) {
-            throw new InvalidParameterValueException(String.format("Unable to %s Instance %s while it has backups; remove its backup offering first, or pass %s=false",
-                    root == null ? "expunge" : "keep the ROOT volume of", vm.getUuid(), ApiConstants.KEEP_ROOT_VOLUME));
+        if (hasBackups(vm)) {
+            // a destroy with the ROOT volume expunges the Instance too while expunge.on.destroy is true, which its backups refuse as well
+            String otherwise = UserVmManager.expungesOnDestroy() ? "" : String.format(", or pass %s=false", ApiConstants.KEEP_ROOT_VOLUME);
+            throw new InvalidParameterValueException(String.format("Unable to %s Instance %s while it has backups; remove its backup offering first%s",
+                    root == null ? "expunge" : "keep the ROOT volume of", vm.getUuid(), otherwise));
         }
         if (root == null) {
             return Collections.emptyList();
@@ -4078,6 +4531,11 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                     "delete them first, or pass %s=false", vm.getUuid(), ApiConstants.KEEP_ROOT_VOLUME));
         }
         return Collections.singletonList(root);
+    }
+
+    private boolean hasBackups(UserVmVO vm) {
+        return vm.getBackupOfferingId() != null && CollectionUtils.isNotEmpty(backupDao.listByVmIdAndOffering(vm.getDataCenterId(), vm.getId(),
+                vm.getBackupOfferingId()));
     }
 
     /**
@@ -4677,6 +5135,14 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         if (owner.getState() == Account.State.DISABLED) {
             throw new PermissionDeniedException("The owner of vm to deploy is disabled: " + owner);
         }
+        if (customParameters != null) {
+            for (String name : customParameters.keySet()) {
+                if (VmDetailConstants.isSshNamePrefix(name) && !(VmDetailConstants.SSH_NAME_PREFIX.equals(name) && namesInstancesAfterAccount()
+                        && _accountMgr.isRootAdmin(caller.getId()))) {
+                    throw new InvalidParameterValueException(String.format("You're not allowed to set the restricted setting: %s", VmDetailConstants.SSH_NAME_PREFIX));
+                }
+            }
+        }
         VMTemplateVO template = _templateDao.findByIdIncludingRemoved(tmplt.getId());
         if (template != null) {
             _templateDao.loadDetails(template);
@@ -4751,8 +5217,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         }
 
         DiskOfferingVO rootDiskOffering = _diskOfferingDao.findById(rootDiskOfferingId);
-        long volumesSize = configureCustomRootDiskSize(customParameters, template, hypervisorType, rootDiskOffering, boundsTemplateRoot(volume, snapshot),
-                owner.getDomainId());
+        long volumesSize = rootVolumeSizeOfDeployment(customParameters, template, hypervisorType, rootDiskOffering, volume, snapshot, owner.getDomainId());
 
         if (rootDiskOffering.getEncrypt() && hypervisorType != HypervisorType.KVM) {
             throw new InvalidParameterValueException("Root volume encryption is not supported for hypervisor type " + hypervisorType);
@@ -5091,71 +5556,70 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
             long id = _vmDao.getNextInSequence(Long.class, "id");
 
-            if (hostName != null) {
-                // Check is hostName is RFC compliant
-                checkNameForRFCCompliance(hostName);
-            }
+            try (NewInstanceNames names = nameInstance(owner, hostName, displayName, customParameters)) {
+                displayName = names.getName();
+                hostName = names.getHostName();
+                if (hostName != null) {
+                    // Check is hostName is RFC compliant
+                    checkNameForRFCCompliance(hostName);
+                }
 
-            String instanceName = null;
-            String instanceSuffix = _instance;
-            String uuidName = _uuidMgr.generateUuid(UserVm.class, customId);
-            if (_instanceNameFlag && HypervisorType.VMware.equals(hypervisorType)) {
-                if (StringUtils.isNotEmpty(hostName)) {
-                    instanceSuffix = hostName;
-                }
-                if (hostName == null) {
-                    if (displayName != null) {
-                        hostName = displayName;
-                    } else {
-                        hostName = generateHostName(uuidName);
+                String instanceSuffix = _instance;
+                String uuidName = _uuidMgr.generateUuid(UserVm.class, customId);
+                if (_instanceNameFlag && HypervisorType.VMware.equals(hypervisorType)) {
+                    if (StringUtils.isNotEmpty(hostName)) {
+                        instanceSuffix = hostName;
                     }
-                }
-                // If global config vm.instancename.flag is set to true, then CS will set guest VM's name as it appears on the hypervisor, to its hostname.
-                // In case of VMware since VM name must be unique within a DC, check if VM with the same hostname already exists in the zone.
-                VMInstanceVO vmByHostName = _vmInstanceDao.findVMByHostNameInZone(hostName, zone.getId());
-                if (vmByHostName != null && vmByHostName.getState() != State.Expunging) {
-                    throw new InvalidParameterValueException("There already exists a VM by the name: " + hostName + ".");
-                }
-            } else {
-                if (hostName == null) {
+                    if (hostName == null) {
+                        if (displayName != null) {
+                            hostName = displayName;
+                        } else {
+                            hostName = generateHostName(uuidName);
+                        }
+                    }
+                    // If global config vm.instancename.flag is set to true, then CS will set guest VM's name as it appears on the hypervisor, to its hostname.
+                    // In case of VMware since VM name must be unique within a DC, check if VM with the same hostname already exists in the zone.
+                    VMInstanceVO vmByHostName = _vmInstanceDao.findVMByHostNameInZone(hostName, zone.getId());
+                    if (vmByHostName != null && vmByHostName.getState() != State.Expunging) {
+                        throw new InvalidParameterValueException("There already exists a VM by the name: " + hostName + ".");
+                    }
+                } else if (hostName == null) {
                     //Generate name using uuid and instance.name global config
                     hostName = generateHostName(uuidName);
                 }
-            }
 
-            if (hostName != null) {
                 // Check is hostName is RFC compliant
                 checkNameForRFCCompliance(hostName);
-            }
-            instanceName = VirtualMachineName.getVmName(id, owner.getId(), instanceSuffix);
-            if (_instanceNameFlag && HypervisorType.VMware.equals(hypervisorType) && !instanceSuffix.equals(_instance)) {
-                customParameters.put(VmDetailConstants.NAME_ON_HYPERVISOR, instanceName);
-            }
-
-            // Check if VM with instanceName already exists.
-            VMInstanceVO vmObj = _vmInstanceDao.findVMByInstanceName(instanceName);
-            if (vmObj != null && vmObj.getState() != State.Expunging) {
-                throw new InvalidParameterValueException("There already exists a VM by the display name supplied");
-            }
-
-            checkIfHostNameUniqueInNtwkDomain(hostName, networkList);
-
-            long userId = CallContext.current().getCallingUserId();
-            if (CallContext.current().getCallingAccount().getId() != owner.getId()) {
-                List<UserVO> userVOs = _userDao.listByAccount(owner.getAccountId());
-                if (!userVOs.isEmpty()) {
-                    userId = userVOs.get(0).getId();
+                String instanceName = VirtualMachineName.getVmName(id, owner.getId(), instanceSuffix);
+                if (_instanceNameFlag && HypervisorType.VMware.equals(hypervisorType) && !instanceSuffix.equals(_instance)) {
+                    customParameters.put(VmDetailConstants.NAME_ON_HYPERVISOR, instanceName);
                 }
+
+                // Check if VM with instanceName already exists.
+                VMInstanceVO vmObj = _vmInstanceDao.findVMByInstanceName(instanceName);
+                if (vmObj != null && vmObj.getState() != State.Expunging) {
+                    throw new InvalidParameterValueException("There already exists a VM by the display name supplied");
+                }
+
+                checkIfHostNameUniqueInNtwkDomain(hostName, networkList);
+
+                long userId = CallContext.current().getCallingUserId();
+                if (CallContext.current().getCallingAccount().getId() != owner.getId()) {
+                    List<UserVO> userVOs = _userDao.listByAccount(owner.getAccountId());
+                    if (!userVOs.isEmpty()) {
+                        userId = userVOs.get(0).getId();
+                    }
+                }
+
+                dynamicScalingEnabled = dynamicScalingEnabled && checkIfDynamicScalingCanBeEnabled(null, offering, template, zone.getId());
+
+                UserVmVO vm = commitUserVm(zone, template, hostName, displayName, owner, diskOfferingId, diskSize, userData, userDataId, userDataDetails, caller, isDisplayVm, keyboard, accountId, userId, offering,
+                        isIso, sshPublicKeys, networkNicMap, id, instanceName, uuidName, hypervisorType, customParameters, dhcpOptionMap,
+                        datadiskTemplateToDiskOfferringMap, userVmOVFPropertiesMap, dynamicScalingEnabled, vmType, rootDiskOfferingId, rootDiskKmsKeyId, keypairnames, dataDiskInfoList, volume, snapshot);
+
+                assignInstanceToGroup(group, id);
+                return vm;
             }
-
-            dynamicScalingEnabled = dynamicScalingEnabled && checkIfDynamicScalingCanBeEnabled(null, offering, template, zone.getId());
-
-            UserVmVO vm = commitUserVm(zone, template, hostName, displayName, owner, diskOfferingId, diskSize, userData, userDataId, userDataDetails, caller, isDisplayVm, keyboard, accountId, userId, offering,
-                    isIso, sshPublicKeys, networkNicMap, id, instanceName, uuidName, hypervisorType, customParameters, dhcpOptionMap,
-                    datadiskTemplateToDiskOfferringMap, userVmOVFPropertiesMap, dynamicScalingEnabled, vmType, rootDiskOfferingId, rootDiskKmsKeyId, keypairnames, dataDiskInfoList, volume, snapshot);
-
-            assignInstanceToGroup(group, id);
-            return vm;
         } catch (ResourceAllocationException | CloudRuntimeException e) {
             throw e;
         } catch (Exception e) {
@@ -5266,6 +5730,18 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         } finally {
             CallContext.current().removeContextParameter(RECORDED_ROOT_DISK_SIZE);
         }
+    }
+
+    /**
+     * @return the bytes of the ROOT volume a deployment creates, which its storage reservation counts
+     */
+    protected long rootVolumeSizeOfDeployment(Map<String, String> customParameters, VMTemplateVO template, HypervisorType hypervisorType,
+            DiskOfferingVO rootDiskOffering, Volume volume, Snapshot snapshot, long domainId) {
+        long size = configureCustomRootDiskSize(customParameters, template, hypervisorType, rootDiskOffering, boundsTemplateRoot(volume, snapshot), domainId);
+        if (snapshot == null) {
+            return size;
+        }
+        return UserVmManager.rootDiskSizeFromSnapshot(_volsDao.findByIdIncludingRemoved(snapshot.getVolumeId()), customParameters);
     }
 
     private static boolean hasFixedSize(DiskOffering diskOffering) {
@@ -5454,10 +5930,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             vm.setUpdateParameters(false);
         }
 
-        Map<String, String> details = template.getDetails();
-        if (details != null && !details.isEmpty()) {
-            vm.details.putAll(details);
-        }
+        vm.details.putAll(detailsTakenFromTemplate(template.getDetails()));
 
         if (StringUtils.isNotBlank(sshPublicKeys)) {
             vm.setDetail(VmDetailConstants.SSH_PUBLIC_KEY, sshPublicKeys);
@@ -5547,11 +6020,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
         persistVMDeployAsIsProperties(vm, userVmOVFPropertiesMap);
 
-        List<String> hiddenDetails = new ArrayList<>();
-        if (customParameters.containsKey(VmDetailConstants.NAME_ON_HYPERVISOR)) {
-            hiddenDetails.add(VmDetailConstants.NAME_ON_HYPERVISOR);
-        }
-        _vmDao.saveDetails(vm, hiddenDetails);
+        _vmDao.saveDetails(vm, hiddenDeployDetails(customParameters));
         if (!isImport) {
             logger.debug("Allocating in the DB for vm");
             DataCenterDeployment plan = new DataCenterDeployment(zone.getId());
@@ -7162,14 +7631,10 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                 throw new InvalidParameterValueException("Could not find snapshot with id=" + cmd.getSnapshotId());
             }
             _accountMgr.checkAccess(caller, null, true, snapshot);
-            VolumeInfo volumeOfSnapshot = getVolume(snapshot.getVolumeId(), templateId, true);
-            if (volumeOfSnapshot != null) {
-                templateId = volumeOfSnapshot.getTemplateId();
-            } else if (templateId == null) {
-                throw new InvalidParameterValueException(
-                        "Could not determine template from snapshot id=" + cmd.getSnapshotId() +
-                                "; the source volume no longer exists. Please specify a templateId.");
-            }
+            VolumeInfo volumeOfSnapshot = volFactory.getVolume(snapshot.getVolumeId());
+            UserVmManager.checkSnapshotBootsAnInstance(snapshot, volumeOfSnapshot);
+            checkIfVolumeTemplateIsTheSameAsTheProvided(volumeOfSnapshot, templateId);
+            templateId = volumeOfSnapshot.getTemplateId();
         }
 
         VirtualMachineTemplate template = null;
@@ -7237,8 +7702,13 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             networkIds = new ArrayList<>(userVmNetworkMap.values());
         }
 
-        return createVirtualMachine(cmd, zone, owner, serviceOffering, template, cmd.getHypervisor(), diskOfferingId, cmd.getSize(), overrideDiskOfferingId, dataDiskInfoList,
-                networkIds, cmd.getIpToNetworkMap(), volume, snapshot, cmd.getDetails());
+        CallContext.current().putContextParameter(NAMES_AFTER_ACCOUNT, Boolean.TRUE);
+        try {
+            return createVirtualMachine(cmd, zone, owner, serviceOffering, template, cmd.getHypervisor(), diskOfferingId, cmd.getSize(), overrideDiskOfferingId,
+                    dataDiskInfoList, networkIds, cmd.getIpToNetworkMap(), volume, snapshot, cmd.getDetails());
+        } finally {
+            CallContext.current().removeContextParameter(NAMES_AFTER_ACCOUNT);
+        }
     }
 
     private UserVm createVirtualMachine(BaseDeployVMCmd cmd, DataCenter zone, Account owner, ServiceOffering serviceOffering, VirtualMachineTemplate template,
@@ -7374,7 +7844,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
      * The lease details and the mark of a restart within the running session are kept by the lease manager alone.
      */
     protected static void refuseLeaseDetails(Map<String, String> details) {
-        if (details != null && details.keySet().stream().anyMatch(VmDetailConstants.LIFECYCLE_STATE_DETAILS::contains)) {
+        if (details != null && details.keySet().stream().anyMatch(VmDetailConstants::isLifecycleState)) {
             throw new InvalidParameterValueException("lease parameters should not be included in details as key");
         }
     }
@@ -8761,12 +9231,18 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             newNetwork = ensureDestinationNetwork(cmd, vm, newAccount);
         }
         try {
-            Transaction.execute(new TransactionCallbackNoReturn() {
-                @Override
-                public void doInTransactionWithoutResult(TransactionStatus status) {
-                    executeStepsToChangeOwnershipOfVm(cmd, caller, oldAccount, newAccount, vm, offering, volumes, template, domainId);
-                }
-            });
+            boolean namedUnderAPrefix = vmInstanceDetailsDao.findSshNamePrefix(vm.getId()) != null;
+            try (NewInstanceNames names = nameMovedInstance(vm, newAccount, namedUnderAPrefix)) {
+                Transaction.execute(new TransactionCallbackNoReturn() {
+                    @Override
+                    public void doInTransactionWithoutResult(TransactionStatus status) {
+                        executeStepsToChangeOwnershipOfVm(cmd, caller, oldAccount, newAccount, vm, offering, volumes, template, domainId);
+                        if (names.getPrefix() != null) {
+                            vmInstanceDetailsDao.addDetail(vm.getId(), VmDetailConstants.SSH_NAME_PREFIX, names.getPrefix(), false);
+                        }
+                    }
+                });
+            }
             if (cmd.isSkipNetwork()) {
                 updateDhcpEntriesOwner(vm);
             }
@@ -9803,7 +10279,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
         for (VolumeVO root : rootVols) {
             if ( !Volume.State.Allocated.equals(root.getState()) || newTemplateId != null || diskOffering != null) {
-                _volumeService.validateDestroyVolume(root, caller, Volume.State.Allocated.equals(root.getState()) || expunge, false);
+                _volumeService.validateDestroyVolume(root, caller, Volume.State.Allocated.equals(root.getState()) || expunge, UserVmManager.expungesOnDestroy());
                 final UserVmVO userVm = vm;
                 Pair<UserVmVO, Volume> vmAndNewVol = Transaction.execute(new TransactionCallbackWithException<Pair<UserVmVO, Volume>, CloudRuntimeException>() {
                     @Override
@@ -9837,7 +10313,9 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
                         getRootVolumeSizeForVmRestore(newVol, template, userVm, diskOffering, details, true);
                         volumeMgr.saveVolumeDetails(newVol.getDiskOfferingId(), newVol.getId());
-                        newVol = _volsDao.findById(newVol.getId());
+                        VolumeVO restoredRoot = _volsDao.findById(newVol.getId());
+                        nameRootVolumeAfterInstance(userVm, restoredRoot);
+                        newVol = restoredRoot;
 
                         // 1. Save usage event and update resource count for user vm volumes
                         try {
@@ -10259,7 +10737,8 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                 KvmAdditionalConfigAllowList, XenServerAdditionalConfigAllowList, VmwareAdditionalConfigAllowList, DestroyRootVolumeOnVmDestruction,
                 EnforceStrictResourceLimitHostTagCheck, StrictHostTags, AllowUserForceStopVm, VmDistinctHostNameScope,
                 VmwareAdditionalDetailsFromOvaEnabled, VmwareAllowedAdditionalDetailsFromOva, AllowDifferentHostTagsOfferingsForVmScale,
-                AutoMigrateVmOnLiveScaleInsufficientCapacity, EnforceResourceLimitOnValidationVm, VmPoolVcpuStep, VmRootDiskSizeDefault, VmRootDiskSizeMin};
+                AutoMigrateVmOnLiveScaleInsufficientCapacity, EnforceResourceLimitOnValidationVm, VmPoolVcpuStep, VmRootDiskSizeDefault, VmRootDiskSizeMin,
+                ExpungeOnDestroy};
     }
 
     @Override
@@ -10628,8 +11107,14 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             ipToNetworkMap = backupManager.getIpToNetworkMapFromBackup(backup, cmd.getPreserveIp(), networkIds);
         }
 
-        UserVm vm = createVirtualMachineFromBackup(cmd, deployDetails, recordedRootDiskSize, targetZone, owner, serviceOffering, template, hypervisorType, diskOfferingId,
-                size, overrideDiskOfferingId, dataDiskInfoList, networkIds, ipToNetworkMap);
+        UserVm vm;
+        CallContext.current().putContextParameter(NAMES_AFTER_ACCOUNT, Boolean.TRUE);
+        try {
+            vm = createVirtualMachineFromBackup(cmd, deployDetails, recordedRootDiskSize, targetZone, owner, serviceOffering, template, hypervisorType,
+                    diskOfferingId, size, overrideDiskOfferingId, dataDiskInfoList, networkIds, ipToNetworkMap);
+        } finally {
+            CallContext.current().removeContextParameter(NAMES_AFTER_ACCOUNT);
+        }
 
         String vmSettingsFromBackup = backup.getDetail(ApiConstants.VM_SETTINGS);
         if (vm != null && vmSettingsFromBackup != null) {
@@ -10640,7 +11125,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             Type type = new TypeToken<Map<String, String>>(){}.getType();
             Map<String, String> vmDetailsFromBackup = new Gson().fromJson(vmSettingsFromBackup, type);
             for (Entry<String, String> entry : vmDetailsFromBackup.entrySet()) {
-                if (!details.containsKey(entry.getKey())) {
+                if (!details.containsKey(entry.getKey()) && !VmDetailConstants.isSshNamePrefix(entry.getKey())) {
                     vmVO.setDetail(entry.getKey(), entry.getValue());
                 }
             }
@@ -10957,7 +11442,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             Type type = new com.google.common.reflect.TypeToken<Map<String, String>>(){}.getType();
             Map<String, String> vmDetailsFromBackup = new Gson().fromJson(vmSettingsFromBackup, type);
             for (Entry<String, String> entry : vmDetailsFromBackup.entrySet()) {
-                if (!detailsFromBackup.containsKey(entry.getKey())) {
+                if (!detailsFromBackup.containsKey(entry.getKey()) && !VmDetailConstants.isSshNamePrefix(entry.getKey())) {
                     vmVO.setDetail(entry.getKey(), entry.getValue());
                 }
             }

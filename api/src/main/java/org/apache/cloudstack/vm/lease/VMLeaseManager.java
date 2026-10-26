@@ -56,6 +56,14 @@ public interface VMLeaseManager extends Manager {
      */
     Set<String> OFFERING_LEASE_DETAILS = Set.of(LEASE_HOURS, ApiConstants.INSTANCE_LEASE_DURATION, ApiConstants.INSTANCE_LEASE_EXPIRY_ACTION);
 
+    /**
+     * @return whether the detail name is one of {@link #OFFERING_LEASE_DETAILS} regardless of case, as detail names compare in the
+     *         database
+     */
+    static boolean isOfferingLeaseDetail(String name) {
+        return name != null && OFFERING_LEASE_DETAILS.stream().anyMatch(name::equalsIgnoreCase);
+    }
+
     String RENEW_LEASE_API = "renewVirtualMachineLease";
 
     String SET_LEASE_API = "setVirtualMachineLease";

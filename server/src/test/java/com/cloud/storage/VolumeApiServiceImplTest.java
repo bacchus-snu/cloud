@@ -49,8 +49,10 @@ import org.apache.cloudstack.api.command.user.volume.ChangeOfferingForVolumeCmd;
 import org.apache.cloudstack.api.command.user.volume.CheckAndRepairVolumeCmd;
 import org.apache.cloudstack.api.command.user.volume.CreateVolumeCmd;
 import org.apache.cloudstack.api.command.user.volume.DetachVolumeCmd;
+import org.apache.cloudstack.api.command.user.volume.GetUploadParamsForVolumeCmd;
 import org.apache.cloudstack.api.command.user.volume.MigrateVolumeCmd;
 import org.apache.cloudstack.api.command.user.volume.ResizeVolumeCmd;
+import org.apache.cloudstack.api.command.user.volume.UploadVolumeCmd;
 import org.apache.cloudstack.backup.dao.BackupDao;
 import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.engine.orchestration.service.VolumeOrchestrationService;
@@ -79,6 +81,8 @@ import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
 import org.apache.cloudstack.storage.datastore.db.VolumeDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.VolumeDataStoreVO;
 import org.apache.commons.collections.CollectionUtils;
+import org.apache.cloudstack.framework.config.ConfigKey;
+import org.apache.cloudstack.framework.config.impl.ConfigDepotImpl;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -150,6 +154,7 @@ import com.cloud.user.User;
 import com.cloud.user.UserVO;
 import com.cloud.user.dao.AccountDao;
 import com.cloud.utils.Pair;
+import com.cloud.utils.db.EntityManager;
 import com.cloud.utils.db.Transaction;
 import com.cloud.utils.db.TransactionCallback;
 import com.cloud.utils.db.TransactionLegacy;
@@ -2936,11 +2941,207 @@ public class VolumeApiServiceImplTest {
     @Test
     public void copyOfAVolumeBeingMovedIsNotRecovered() {
         copyOfAVolumeBeingMoved();
+        Mockito.when(accountManagerMock.isRootAdmin(Mockito.anyLong())).thenReturn(true);
 
         InvalidParameterValueException e = Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.recoverVolume(4242L));
 
         Assert.assertTrue(e.getMessage(), e.getMessage().contains("copy-uuid"));
         Mockito.verify(volumeDaoMock, Mockito.never()).detachVolume(Mockito.anyLong());
+    }
+
+    /** The settings the depot gives: users may not expunge or recover volumes, and a destroy expunges unless {@code recycleBin}. */
+    private void destroySettings(boolean recycleBin) {
+        ConfigDepotImpl depot = Mockito.mock(ConfigDepotImpl.class);
+        Mockito.lenient().when(depot.getConfigStringValue(Mockito.eq(VolumeApiServiceImpl.AllowUserExpungeRecoverVolume.key()), Mockito.any(), Mockito.any()))
+                .thenReturn("false");
+        Mockito.lenient().when(depot.getConfigStringValue(Mockito.eq(UserVmManager.ExpungeOnDestroy.key()), Mockito.any(), Mockito.any()))
+                .thenReturn(String.valueOf(!recycleBin));
+        ConfigKey.init(depot);
+    }
+
+    private void aVolumeToDestroy() throws Exception {
+        Mockito.lenient().doReturn(Volume.State.Ready).when(volumeVoMock).getState();
+        Mockito.doReturn(volumeVoMock).when(volumeApiServiceImpl).retrieveAndValidateVolume(volumeMockId, accountMock);
+        Mockito.doNothing().when(volumeApiServiceImpl).destroyVolumeIfPossible(volumeVoMock);
+        Mockito.lenient().doNothing().when(volumeApiServiceImpl).expungeVolumesInPrimaryStorageIfNeeded(volumeVoMock);
+        Mockito.lenient().doNothing().when(volumeApiServiceImpl).expungeVolumesInSecondaryStorageIfNeeded(volumeVoMock);
+        Mockito.lenient().doNothing().when(volumeApiServiceImpl).cleanVolumesCache(volumeVoMock);
+        Mockito.lenient().doReturn(volumeVoMock).when(volumeDaoMock).findById(volumeMockId);
+        Mockito.lenient().when(accountManagerMock.isAdmin(Mockito.anyLong())).thenReturn(false);
+    }
+
+    @Test
+    public void aUsersDestroyOfAVolumeExpungesItAtOnce() throws Exception {
+        destroySettings(false);
+        try {
+            aVolumeToDestroy();
+
+            Assert.assertSame(volumeVoMock, volumeApiServiceImpl.destroyVolume(volumeMockId, accountMock, false, false, null));
+
+            Mockito.verify(volumeApiServiceImpl).destroyVolumeIfPossible(volumeVoMock);
+            Mockito.verify(volumeApiServiceImpl).expungeVolumesInPrimaryStorageIfNeeded(volumeVoMock);
+            Mockito.verify(volumeApiServiceImpl).expungeVolumesInSecondaryStorageIfNeeded(volumeVoMock);
+            Mockito.verify(volumeDaoMock).remove(volumeMockId);
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
+
+    @Test
+    public void expungeAskedByAUserWithoutThePermissionToExpungeAVolumeIsAccepted() throws Exception {
+        destroySettings(false);
+        try {
+            aVolumeToDestroy();
+
+            volumeApiServiceImpl.destroyVolume(volumeMockId, accountMock, true, false, null);
+
+            Mockito.verify(volumeDaoMock).remove(volumeMockId);
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
+
+    @Test
+    public void anAllocatedVolumeIsExpungedByADestroyRatherThanRefused() throws Exception {
+        destroySettings(false);
+        try {
+            aVolumeToDestroy();
+            Mockito.doReturn(Volume.State.Allocated).when(volumeVoMock).getState();
+            Mockito.doReturn(true).when(volumeApiServiceImpl).stateTransitTo(volumeVoMock, Volume.Event.DestroyRequested);
+            Mockito.doReturn(true).when(volumeApiServiceImpl).stateTransitTo(volumeVoMock, Volume.Event.OperationSucceeded);
+
+            Assert.assertSame(volumeVoMock, volumeApiServiceImpl.destroyVolume(volumeMockId, accountMock, false, false, null));
+
+            Mockito.verify(volumeDaoMock).remove(volumeMockId);
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
+
+    @Test
+    public void withTheRecycleBinADestroyedVolumeStaysRecoverable() throws Exception {
+        destroySettings(true);
+        try {
+            aVolumeToDestroy();
+
+            Assert.assertSame(volumeVoMock, volumeApiServiceImpl.destroyVolume(volumeMockId, accountMock, false, false, null));
+
+            Mockito.verify(volumeApiServiceImpl).destroyVolumeIfPossible(volumeVoMock);
+            Mockito.verify(volumeApiServiceImpl, Mockito.never()).expungeVolumesInPrimaryStorageIfNeeded(volumeVoMock);
+            Mockito.verify(volumeDaoMock, Mockito.never()).remove(volumeMockId);
+            Assert.assertThrows(PermissionDeniedException.class, () -> volumeApiServiceImpl.destroyVolume(volumeMockId, accountMock, true, false, null));
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
+
+    @Test
+    public void aVolumeDestroyedWithItsInstanceIsCheckedAsItsOwnDestroyChecksIt() throws Exception {
+        destroySettings(false);
+        try {
+            Mockito.doReturn(false).when(snapshotManagerMock).canOperateOnVolume(volumeVoMock);
+            Assert.assertThrows("snapshot operations in progress", InvalidParameterValueException.class,
+                    () -> volumeApiServiceImpl.validateDestroyVolumeWithInstance(volumeVoMock, accountMock, true));
+            Mockito.doReturn(true).when(snapshotManagerMock).canOperateOnVolume(volumeVoMock);
+            Mockito.doReturn(true).when(volumeVoMock).isDeleteProtection();
+            Assert.assertThrows("delete protection", InvalidParameterValueException.class,
+                    () -> volumeApiServiceImpl.validateDestroyVolumeWithInstance(volumeVoMock, accountMock, true));
+            Mockito.doReturn(false).when(volumeVoMock).isDeleteProtection();
+
+            volumeApiServiceImpl.validateDestroyVolumeWithInstance(volumeVoMock, accountMock, false);
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
+
+    private void recoveringCallerIs(boolean rootAdmin, boolean admin) {
+        Mockito.lenient().when(accountManagerMock.isRootAdmin(Mockito.anyLong())).thenReturn(rootAdmin);
+        Mockito.lenient().when(accountManagerMock.isAdmin(Mockito.anyLong())).thenReturn(admin);
+        Mockito.lenient().when(volumeDaoMock.findById(volumeMockId)).thenReturn(volumeVoMock);
+        Mockito.lenient().when(volumeVoMock.getState()).thenReturn(Volume.State.Ready);
+    }
+
+    @Test
+    public void whileADestroyExpungesOnlyTheRootAdminRecoversAVolume() throws Exception {
+        destroySettings(false);
+        try {
+            for (boolean domainAdmin : new boolean[] {false, true}) {
+                recoveringCallerIs(false, domainAdmin);
+                PermissionDeniedException e = Assert.assertThrows(PermissionDeniedException.class, () -> volumeApiServiceImpl.recoverVolume(volumeMockId));
+                Assert.assertTrue(e.getMessage(), e.getMessage().contains("not kept") && e.getMessage().contains("storage cleanup"));
+            }
+            Mockito.verify(volumeDaoMock, Mockito.never()).detachVolume(Mockito.anyLong());
+
+            recoveringCallerIs(true, true);
+            InvalidParameterValueException e = Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.recoverVolume(volumeMockId));
+            Assert.assertEquals("the root admin meets the checks of a recovery", "Please specify a volume in Destroy state.", e.getMessage());
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
+
+    @Test
+    public void withTheRecycleBinAVolumeIsRecoveredAsBefore() throws Exception {
+        destroySettings(true);
+        try {
+            recoveringCallerIs(false, true);
+            InvalidParameterValueException e = Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.recoverVolume(volumeMockId));
+            Assert.assertEquals("an admin meets the checks of a recovery", "Please specify a volume in Destroy state.", e.getMessage());
+
+            recoveringCallerIs(false, false);
+            PermissionDeniedException denied = Assert.assertThrows(PermissionDeniedException.class, () -> volumeApiServiceImpl.recoverVolume(volumeMockId));
+            Assert.assertTrue(denied.getMessage(), denied.getMessage().contains("allow.user.expunge.recover.volume"));
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
+
+    @Test
+    public void aVolumeIsCreatedOnlyWithANameTheNameRuleAdmits() {
+        Assert.assertEquals("data_2026.10-1", volumeApiServiceImpl.getVolumeNameFromCommand("data_2026.10-1"));
+        for (String name : new String[] {"my disk", "disk/1", "x".repeat(65)}) {
+            Assert.assertThrows(name, InvalidParameterValueException.class,
+                    () -> volumeApiServiceImpl.allocVolume(accountMockId, 1L, null, null, null, volumeApiServiceImpl.getVolumeNameFromCommand(name), 1L,
+                            null, null, null, null, null));
+        }
+        Mockito.verify(accountManagerMock, Mockito.never()).getActiveAccountById(Mockito.anyLong());
+    }
+
+    @Test
+    public void aVolumeIsUploadedOnlyWithANameTheNameRuleAdmits() throws Exception {
+        ReflectionTestUtils.setField(volumeApiServiceImpl, "_entityMgr", Mockito.mock(EntityManager.class));
+        UploadVolumeCmd upload = Mockito.mock(UploadVolumeCmd.class);
+        Mockito.when(upload.getVolumeName()).thenReturn("my disk");
+        Mockito.when(upload.getFormat()).thenReturn("QCOW2");
+        GetUploadParamsForVolumeCmd postUpload = Mockito.mock(GetUploadParamsForVolumeCmd.class);
+        Mockito.when(postUpload.getName()).thenReturn("disk/1");
+        Mockito.when(postUpload.getFormat()).thenReturn("QCOW2");
+
+        Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.uploadVolume(upload));
+        Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.uploadVolume(postUpload));
+
+        Mockito.verify(accountManagerMock, Mockito.never()).getActiveAccountById(Mockito.anyLong());
+        Mockito.verify(volumeDaoMock, Mockito.never()).persist(Mockito.any(VolumeVO.class));
+    }
+
+    @Test
+    public void aVolumeIsRenamedOnlyToANameTheNameRuleAdmitsAndItsSnapshotsKeepTheirNames() {
+        VolumeVO volume = new VolumeVO(Volume.Type.DATADISK, "my disk", 1L, 2L, accountMockId, 3L, Storage.ProvisioningType.THIN, 10L, null, null, null);
+        ReflectionTestUtils.setField(volume, "id", 77L);
+        Mockito.when(volumeDaoMock.findById(77L)).thenReturn(volume);
+
+        Assert.assertThrows(InvalidParameterValueException.class,
+                () -> volumeApiServiceImpl.updateVolume(77L, null, null, null, null, null, null, accountMockId, null, "with space"));
+        Assert.assertEquals("my disk", volume.getName());
+        Mockito.verify(volumeDaoMock, Mockito.never()).update(Mockito.eq(77L), Mockito.any());
+
+        volumeApiServiceImpl.updateVolume(77L, null, null, null, null, true, null, accountMockId, null, "my disk");
+        Assert.assertTrue("the name it has is no new name", volume.isDeleteProtection());
+
+        volumeApiServiceImpl.updateVolume(77L, null, null, null, null, null, null, accountMockId, null, "data-1");
+        Assert.assertEquals("data-1", volume.getName());
+        Mockito.verify(volumeDaoMock, Mockito.times(2)).update(77L, volume);
+        Mockito.verifyNoInteractions(snapshotDaoMock);
     }
 
     @Test

@@ -18,6 +18,7 @@ package com.cloud.api.query;
 
 import java.text.DecimalFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -26,6 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.apache.cloudstack.api.ApiConstants;
 import org.apache.cloudstack.affinity.AffinityGroupResponse;
@@ -156,13 +158,15 @@ public class ViewResponseHelper {
             UserVmJoinVO... userVms) {
         Account caller = CallContext.current().getCallingAccount();
         LinkedHashMap<Long, UserVmResponse> vmDataList = new LinkedHashMap<>();
+        Map<Long, String> sshNamePrefixes = ApiDBUtils.findSshNamePrefixes(Arrays.stream(userVms).map(UserVmJoinVO::getId).collect(Collectors.toSet()));
         // Initialise the vmdatalist with the input data
 
         for (UserVmJoinVO userVm : userVms) {
             UserVmResponse userVmData = vmDataList.get(userVm.getId());
             if (userVmData == null) {
                 // first time encountering this vm
-                userVmData = ApiDBUtils.newUserVmResponse(view, objectName, userVm, details, accumulateStats, showUserData, caller);
+                userVmData = ApiDBUtils.newUserVmResponse(view, objectName, userVm, details, accumulateStats, showUserData, caller,
+                        sshNamePrefixes.get(userVm.getId()));
             } else{
                 // update nics, securitygroups, tags, affinitygroups for 1 to many mapping fields
                 userVmData = ApiDBUtils.fillVmDetails(view, userVmData, userVm);

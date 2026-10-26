@@ -24,6 +24,7 @@ import org.apache.cloudstack.api.command.user.snapshot.DeleteSnapshotPoliciesCmd
 import org.apache.cloudstack.api.command.user.snapshot.ExtractSnapshotCmd;
 import org.apache.cloudstack.api.command.user.snapshot.ListSnapshotPoliciesCmd;
 import org.apache.cloudstack.api.command.user.snapshot.ListSnapshotsCmd;
+import org.apache.cloudstack.api.command.user.snapshot.UpdateSnapshotCmd;
 import org.apache.cloudstack.api.command.user.snapshot.UpdateSnapshotPolicyCmd;
 
 import com.cloud.api.commands.ListRecurringSnapshotScheduleCmd;
@@ -135,6 +136,11 @@ public interface SnapshotApiService {
     Snapshot backupSnapshotFromVmSnapshot(Long snapshotId, Long vmId, Long volumeId, Long vmSnapshotId);
 
     SnapshotPolicy updateSnapshotPolicy(UpdateSnapshotPolicyCmd updateSnapshotPolicyCmd);
+
+    /**
+     * Renames a snapshot; its volume and the snapshot's other properties stay as they are.
+     */
+    Snapshot updateSnapshot(UpdateSnapshotCmd cmd);
 
     void markVolumeSnapshotsAsDestroyed(Volume volume);
 

@@ -472,6 +472,10 @@ public class UserVmResponse extends BaseResponseWithTagInformation implements Co
     @Param(description = "The hours of lease the Instance gets at a start or a renewal, from its service offering", since = "4.23.0.100")
     private Integer leaseHours;
 
+    @SerializedName(ApiConstants.SSH_NAME)
+    @Param(description = "the name of the instance on the SSH bastion", since = "4.23.0.100")
+    private String sshName;
+
     public UserVmResponse() {
         securityGroupList = new LinkedHashSet<>();
         nics = new TreeSet<>(Comparator.comparingInt(x -> Integer.parseInt(x.getDeviceId())));
@@ -1388,6 +1392,14 @@ public class UserVmResponse extends BaseResponseWithTagInformation implements Co
 
     public void setLeaseHours(Integer leaseHours) {
         this.leaseHours = leaseHours;
+    }
+
+    public String getSshName() {
+        return sshName;
+    }
+
+    public void setSshName(String sshName) {
+        this.sshName = sshName;
     }
 
     public String getBackupProvider() {

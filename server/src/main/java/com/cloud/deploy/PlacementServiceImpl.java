@@ -45,6 +45,7 @@ import org.apache.cloudstack.api.response.PlacementResponse;
 import org.apache.cloudstack.api.response.PlacementThisHostResponse;
 import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.engine.orchestration.service.VolumeOrchestrationService;
+import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotDataFactory;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.Configurable;
 import org.apache.cloudstack.framework.security.keys.KeysManager;
@@ -88,6 +89,7 @@ import com.cloud.service.ServiceOfferingVO;
 import com.cloud.service.dao.ServiceOfferingDao;
 import com.cloud.storage.DiskOfferingVO;
 import com.cloud.storage.ScopeType;
+import com.cloud.storage.SnapshotVO;
 import com.cloud.storage.Storage;
 import com.cloud.storage.StorageManager;
 import com.cloud.storage.StoragePool;
@@ -97,6 +99,7 @@ import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeStats;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.DiskOfferingDao;
+import com.cloud.storage.dao.SnapshotDao;
 import com.cloud.storage.dao.StoragePoolHostDao;
 import com.cloud.storage.dao.VMTemplateDao;
 import com.cloud.storage.dao.VolumeDao;
@@ -187,6 +190,10 @@ public class PlacementServiceImpl extends ManagerBase implements PlacementServic
     GpuCardDao gpuCardDao;
     @Inject
     GpuService gpuService;
+    @Inject
+    SnapshotDao snapshotDao;
+    @Inject
+    SnapshotDataFactory snapshotDataFactory;
 
     /** What a request places: its Instance, the volumes it has, and the disks it would create. */
     final class Context {
@@ -371,26 +378,28 @@ public class PlacementServiceImpl extends ManagerBase implements PlacementServic
     }
 
     /**
-     * @throws InvalidParameterValueException unless the command names exactly one of the four combinations, on resources
+     * @throws InvalidParameterValueException unless the command names exactly one of the five combinations, on resources
      *         the caller may use, in a state the operation accepts
      */
     PlacementRequest requestOf(CheckPlacementCmd cmd, Account caller) {
         Long vmId = cmd.getVirtualMachineId();
         Long volumeId = cmd.getVolumeId();
         Long templateId = cmd.getTemplateId();
+        Long snapshotId = cmd.getSnapshotId();
         Long offeringId = cmd.getServiceOfferingId();
-        boolean start = vmId != null && volumeId == null && templateId == null;
-        boolean attach = vmId != null && volumeId != null && templateId == null && offeringId == null;
-        boolean fromVolume = vmId == null && volumeId != null && templateId == null && offeringId != null;
-        boolean deploy = vmId == null && volumeId == null && templateId != null && offeringId != null;
-        if (!(start || attach || fromVolume || deploy)) {
+        boolean start = vmId != null && volumeId == null && templateId == null && snapshotId == null;
+        boolean attach = vmId != null && volumeId != null && templateId == null && snapshotId == null && offeringId == null;
+        boolean fromVolume = vmId == null && volumeId != null && templateId == null && snapshotId == null && offeringId != null;
+        boolean deploy = vmId == null && volumeId == null && templateId != null && snapshotId == null && offeringId != null;
+        boolean fromSnapshot = vmId == null && volumeId == null && templateId == null && snapshotId != null && offeringId != null;
+        if (!(start || attach || fromVolume || deploy || fromSnapshot)) {
             throw new InvalidParameterValueException("checkPlacement takes virtualmachineid; virtualmachineid and volumeid; volumeid and serviceofferingid; "
-                    + "or templateid and serviceofferingid");
+                    + "templateid and serviceofferingid; or snapshotid and serviceofferingid");
         }
         if (cmd.getRootDiskSize() != null && !deploy) {
             throw new InvalidParameterValueException("rootdisksize applies to a new Instance from a template only");
         }
-        if (CollectionUtils.isNotEmpty(cmd.getDataDiskSizes()) && !(deploy || fromVolume)) {
+        if (CollectionUtils.isNotEmpty(cmd.getDataDiskSizes()) && !(deploy || fromVolume || fromSnapshot)) {
             throw new InvalidParameterValueException("datadisksizes applies to a new Instance only");
         }
         if (!cmd.getDetails().isEmpty() && offeringId == null) {
@@ -436,6 +445,21 @@ public class PlacementServiceImpl extends ManagerBase implements PlacementServic
             checkZone(cmd.getZoneId(), volume.getDataCenterId());
             accountManager.checkAccess(accountManager.getAccount(volume.getAccountId()), offering, dataCenterDao.findById(volume.getDataCenterId()));
             return PlacementRequest.deployFromVolume(volumeId, offeringId, volume.getAccountId()).withDetails(cmd.getDetails())
+                    .withDataDiskSizesGiB(cmd.getDataDiskSizes());
+        }
+        if (fromSnapshot) {
+            SnapshotVO snapshot = snapshotDao.findById(snapshotId);
+            if (snapshot == null) {
+                throw new InvalidParameterValueException("No such snapshot");
+            }
+            accountManager.checkAccess(caller, null, true, snapshot);
+            UserVmManager.checkSnapshotBootsAnInstance(snapshot, volumeDao.findByIdIncludingRemoved(snapshot.getVolumeId()));
+            DataCenterVO zone = dataCenterDao.findById(cmd.getZoneId() != null ? cmd.getZoneId() : snapshot.getDataCenterId());
+            if (zone == null || CollectionUtils.isEmpty(snapshotDataFactory.getSnapshots(snapshot.getId(), zone.getId()))) {
+                throw new InvalidParameterValueException(String.format("Snapshot %s is not available in the zone", snapshot.getUuid()));
+            }
+            accountManager.checkAccess(caller, offering, zone);
+            return PlacementRequest.deployFromSnapshot(snapshotId, offeringId, zone.getId(), caller.getId()).withDetails(cmd.getDetails())
                     .withDataDiskSizesGiB(cmd.getDataDiskSizes());
         }
         if (cmd.getZoneId() == null) {
@@ -926,6 +950,22 @@ public class PlacementServiceImpl extends ManagerBase implements PlacementServic
                 return new Context(request, owner, volume.getDataCenterId(), vm, template, offering, volumes, dataDisks(request, offering), true,
                         String.format("An Instance from volume %s", volume.getName()));
             }
+            case DEPLOY_FROM_SNAPSHOT: {
+                SnapshotVO snapshot = snapshotDao.findById(request.getSnapshotId());
+                if (snapshot == null) {
+                    throw new InvalidParameterValueException("No such snapshot");
+                }
+                VolumeVO source = volumeDao.findByIdIncludingRemoved(snapshot.getVolumeId());
+                UserVmManager.checkSnapshotBootsAnInstance(snapshot, source);
+                VMTemplateVO template = templateDao.findByIdIncludingRemoved(source.getTemplateId());
+                ServiceOfferingVO offering = offering(request.getServiceOfferingId(), request.getDetails());
+                VMInstanceVO vm = newInstance(owner, template, offering, request.getZoneId());
+                List<DiskProfile> disks = new ArrayList<>();
+                disks.add(rootDiskFromSnapshot(request, source, template, offering, owner));
+                disks.addAll(dataDisks(request, offering));
+                return new Context(request, owner, request.getZoneId(), vm, template, offering, new ArrayList<>(), disks, true,
+                        String.format("An Instance from snapshot %s", snapshot.getName()));
+            }
             default: {
                 VMTemplateVO template = templateDao.findByIdIncludingRemoved(request.getTemplateId());
                 ServiceOfferingVO offering = offering(request.getServiceOfferingId(), request.getDetails());
@@ -968,6 +1008,18 @@ public class PlacementServiceImpl extends ManagerBase implements PlacementServic
         long size = userVmManager.configureCustomRootDiskSize(parameters, template, template.getHypervisorType(), rootOffering, true, owner.getDomainId());
         DiskProfile disk = new DiskProfile(Volume.DISK_OFFERING_SUITABILITY_CHECK_VOLUME_ID, Volume.Type.ROOT, "ROOT", rootOffering.getId(), size,
                 rootOffering.getTagsArray(), rootOffering.isUseLocalStorage(), false, template.getId());
+        disk.setHyperType(template.getHypervisorType());
+        return disk;
+    }
+
+    /** The ROOT disk a deployment creates from the snapshot of the source volume, of the size the deployment gives it. */
+    private DiskProfile rootDiskFromSnapshot(PlacementRequest request, VolumeVO source, VMTemplateVO template, ServiceOffering offering, Account owner) {
+        DiskOfferingVO rootOffering = diskOfferingDao.findById(offering.getDiskOfferingId());
+        Map<String, String> parameters = new HashMap<>(request.getDetails());
+        userVmManager.configureCustomRootDiskSize(parameters, template, template.getHypervisorType(), rootOffering, false, owner.getDomainId());
+        DiskProfile disk = new DiskProfile(Volume.DISK_OFFERING_SUITABILITY_CHECK_VOLUME_ID, Volume.Type.ROOT, "ROOT", rootOffering.getId(),
+                UserVmManager.rootDiskSizeFromSnapshot(source, parameters), rootOffering.getTagsArray(), rootOffering.isUseLocalStorage(), false,
+                template.getId());
         disk.setHyperType(template.getHypervisorType());
         return disk;
     }

@@ -234,4 +234,22 @@ public class VMInstanceDaoImplTest {
                 Mockito.any(SearchCriteria.class), Mockito.any(Filter.class), Mockito.eq(null),
                 Mockito.eq(false));
     }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void theInstancesWithAHostnameAreListedByIt() {
+        org.mockito.ArgumentCaptor<com.cloud.utils.db.SearchCriteria<VMInstanceVO>> search = org.mockito.ArgumentCaptor.forClass(
+                com.cloud.utils.db.SearchCriteria.class);
+        com.cloud.utils.db.SearchBuilder<VMInstanceVO> hostNameSearch = vmInstanceDao.createSearchBuilder();
+        hostNameSearch.and("hostName", hostNameSearch.entity().getHostName(), com.cloud.utils.db.SearchCriteria.Op.EQ);
+        hostNameSearch.done();
+        vmInstanceDao.HostNameSearch = hostNameSearch;
+        java.util.List<VMInstanceVO> instances = java.util.List.of(org.mockito.Mockito.mock(VMInstanceVO.class));
+        doReturn(instances).when(vmInstanceDao).listBy(search.capture());
+
+        org.junit.Assert.assertEquals(instances, vmInstanceDao.listByHostName("admin-web"));
+
+        org.junit.Assert.assertTrue(search.getValue().getValues().stream()
+                .anyMatch(value -> "name".equals(value.first().getColumnName()) && "admin-web".equals(value.second())));
+    }
 }

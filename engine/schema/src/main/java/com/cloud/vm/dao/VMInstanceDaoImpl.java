@@ -565,6 +565,13 @@ public class VMInstanceDaoImpl extends GenericDaoBase<VMInstanceVO, Long> implem
     }
 
     @Override
+    public List<VMInstanceVO> listByHostName(String hostName) {
+        SearchCriteria<VMInstanceVO> sc = HostNameSearch.create();
+        sc.setParameters("hostName", hostName);
+        return listBy(sc);
+    }
+
+    @Override
     public VMInstanceVO findVMByHostNameInZone(String hostName, long zoneId) {
         SearchCriteria<VMInstanceVO> sc = HostNameAndZoneSearch.create();
         sc.setParameters("hostName", hostName);

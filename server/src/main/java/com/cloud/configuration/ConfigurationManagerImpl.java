@@ -3794,7 +3794,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
             return;
         }
         for (String key : details.keySet()) {
-            if (VMLeaseManager.OFFERING_LEASE_DETAILS.contains(key)) {
+            if (VMLeaseManager.isOfferingLeaseDetail(key)) {
                 throw new InvalidParameterValueException(String.format("Set %s with its own parameter, not as a detail", key));
             }
         }
@@ -4089,7 +4089,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
 
         final Map<String, String> mergedDetails = mergeOfferingDetails(cmd, sourceOffering, customParams);
         // the lease is carried by its own parameters
-        mergedDetails.keySet().removeAll(List.of(VMLeaseManager.LEASE_HOURS, ApiConstants.INSTANCE_LEASE_DURATION, ApiConstants.INSTANCE_LEASE_EXPIRY_ACTION));
+        mergedDetails.keySet().removeIf(VMLeaseManager::isOfferingLeaseDetail);
 
         final boolean localStorageRequired = ServiceOffering.StorageType.local.toString().equalsIgnoreCase(storageType);
 

@@ -60,7 +60,7 @@ public class DestroyVMCmd extends BaseAsyncCmd implements UserCmd {
     @Parameter(name = ApiConstants.EXPUNGE,
                type = CommandType.BOOLEAN,
                description = "If true is passed, the Instance is expunged immediately. False by default. When the ROOT volume is kept (see keeprootvolume), " +
-                       "the Instance is expunged regardless.",
+                       "the Instance is expunged regardless, and so it is whenever expunge.on.destroy is true.",
                since = "4.2.1")
     private Boolean expunge;
 

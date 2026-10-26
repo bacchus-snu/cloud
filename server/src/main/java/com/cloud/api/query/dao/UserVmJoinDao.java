@@ -27,14 +27,27 @@ import org.apache.cloudstack.api.ApiConstants.VMDetails;
 import org.apache.cloudstack.api.ResponseObject.ResponseView;
 import org.apache.cloudstack.api.response.UserVmResponse;
 
+import java.util.Collection;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public interface UserVmJoinDao extends GenericDao<UserVmJoinVO, Long> {
 
     UserVmResponse newUserVmResponse(ResponseView view, String objectName, UserVmJoinVO userVm, Set<VMDetails> details, Boolean accumulateStats, Boolean showUserData,
             Account caller);
+
+    /**
+     * @param sshNamePrefix the prefix of the Instance's names, read beforehand, or null when it has none
+     */
+    UserVmResponse newUserVmResponse(ResponseView view, String objectName, UserVmJoinVO userVm, Set<VMDetails> details, Boolean accumulateStats, Boolean showUserData,
+            Account caller, String sshNamePrefix);
+
+    /**
+     * @return the prefixes of the names of those of the Instances that have one, by the Instances' IDs
+     */
+    Map<Long, String> findSshNamePrefixes(Collection<Long> vmIds);
 
     UserVmResponse setUserVmResponse(ResponseView view, UserVmResponse userVmData, UserVmJoinVO uvo);
 

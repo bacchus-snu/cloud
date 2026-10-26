@@ -93,6 +93,11 @@ public interface VMInstanceDao extends GenericDao<VMInstanceVO, Long>, StateDao<
 
     VMInstanceVO findVMByHostName(String hostName);
 
+    /**
+     * @return the Instances, of any type and not removed, with the hostname
+     */
+    List<VMInstanceVO> listByHostName(String hostName);
+
     void updateProxyId(long id, Long proxyId, Date time);
 
     List<VMInstanceVO> listByHostIdTypes(long hostid, VirtualMachine.Type... types);

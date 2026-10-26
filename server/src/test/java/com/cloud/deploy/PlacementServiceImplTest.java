@@ -48,6 +48,7 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -70,6 +71,8 @@ import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.impl.ConfigDepotImpl;
 import org.apache.cloudstack.framework.security.keys.KeysManager;
 import org.apache.cloudstack.gpu.GpuService;
+import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotDataFactory;
+import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotInfo;
 import org.apache.cloudstack.snapshot.SnapshotHelper;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
@@ -131,12 +134,15 @@ import com.cloud.storage.StorageManagerImpl;
 import com.cloud.storage.StoragePool;
 import com.cloud.storage.StoragePoolHostVO;
 import com.cloud.storage.VMTemplateVO;
+import com.cloud.storage.Snapshot;
+import com.cloud.storage.SnapshotVO;
 import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeStats;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.DiskOfferingDao;
 import com.cloud.storage.dao.StoragePoolHostDao;
 import com.cloud.storage.dao.VMTemplateDao;
+import com.cloud.storage.dao.SnapshotDao;
 import com.cloud.storage.dao.VolumeDao;
 import com.cloud.user.Account;
 import com.cloud.user.AccountManager;
@@ -226,6 +232,10 @@ public class PlacementServiceImplTest {
     private GpuCardDao gpuCardDao;
     @Mock
     private GpuService gpuService;
+    @Mock
+    private SnapshotDao snapshotDao;
+    @Mock
+    private SnapshotDataFactory snapshotDataFactory;
 
     private final ConfigDepotImpl configDepot = mock(ConfigDepotImpl.class);
 
@@ -960,6 +970,12 @@ public class PlacementServiceImplTest {
         assertThrows("an attached volume", InvalidParameterValueException.class, () -> service.requestOf(cmd(VM, 201L, null, null, null), caller));
     }
 
+    private CheckPlacementCmd cmd(Long vmId, Long volumeId, Long templateId, Long offeringId, Long zoneId, Long snapshotId) {
+        CheckPlacementCmd cmd = cmd(vmId, volumeId, templateId, offeringId, zoneId);
+        ReflectionTestUtils.setField(cmd, "snapshotId", snapshotId);
+        return cmd;
+    }
+
     private CheckPlacementCmd cmd(Long vmId, Long volumeId, Long templateId, Long offeringId, Long zoneId) {
         CheckPlacementCmd cmd = new CheckPlacementCmd();
         ReflectionTestUtils.setField(cmd, "virtualMachineId", vmId);
@@ -968,6 +984,152 @@ public class PlacementServiceImplTest {
         ReflectionTestUtils.setField(cmd, "serviceOfferingId", offeringId);
         ReflectionTestUtils.setField(cmd, "zoneId", zoneId);
         return cmd;
+    }
+
+    private static final long SNAPSHOT = 70L;
+    private static final long SOURCE = 301L;
+
+    /** A snapshot of the ROOT volume of an Instance created from the template, the volume being of the size. */
+    private SnapshotVO snapshotOfARoot(Snapshot.State state, long sizeGiB) {
+        VolumeVO source = new VolumeVO(Volume.Type.ROOT, "Web-1-ROOT", ZONE, DOMAIN, ACCOUNT, DISK_OFFERING, Storage.ProvisioningType.THIN, sizeGiB * GIB,
+                null, null, null);
+        ReflectionTestUtils.setField(source, "id", SOURCE);
+        source.setTemplateId(TEMPLATE);
+        when(volumeDao.findByIdIncludingRemoved(SOURCE)).thenReturn(source);
+        SnapshotVO snapshot = new SnapshotVO(ZONE, ACCOUNT, DOMAIN, SOURCE, DISK_OFFERING, "Web-1-ROOT-snapshot-0", (short) 0, "MANUAL", sizeGiB * GIB,
+                null, null, HypervisorType.KVM, null);
+        ReflectionTestUtils.setField(snapshot, "id", SNAPSHOT);
+        snapshot.setState(state);
+        when(snapshotDao.findById(SNAPSHOT)).thenReturn(snapshot);
+        when(snapshotDataFactory.getSnapshots(SNAPSHOT, ZONE)).thenReturn(Collections.singletonList(mock(SnapshotInfo.class)));
+        return snapshot;
+    }
+
+    @Test
+    public void checkPlacementTakesASnapshotWithAServiceOffering() {
+        SnapshotVO snapshot = snapshotOfARoot(Snapshot.State.BackedUp, 20);
+
+        PlacementRequest request = service.requestOf(cmd(null, null, null, OFFERING, null, SNAPSHOT), owner);
+
+        assertEquals(PlacementRequest.Kind.DEPLOY_FROM_SNAPSHOT, request.getKind());
+        assertEquals(Long.valueOf(SNAPSHOT), request.getSnapshotId());
+        assertEquals(Long.valueOf(OFFERING), request.getServiceOfferingId());
+        assertEquals("the snapshot's zone by default", Long.valueOf(ZONE), request.getZoneId());
+        assertEquals("the caller's new Instance", ACCOUNT, request.getOwnerId());
+        verify(accountManager).checkAccess(owner, null, true, snapshot);
+
+        CheckPlacementCmd withDataDisks = cmd(null, null, null, OFFERING, ZONE, SNAPSHOT);
+        ReflectionTestUtils.setField(withDataDisks, "dataDiskSizes", Arrays.asList(10L, 20L));
+        assertEquals(Arrays.asList(10L, 20L), service.requestOf(withDataDisks, owner).getDataDiskSizesGiB());
+
+        DataCenterVO other = mock(DataCenterVO.class);
+        when(other.getId()).thenReturn(2L);
+        when(dataCenterDao.findById(2L)).thenReturn(other);
+        assertThrows("a zone that does not hold the snapshot", InvalidParameterValueException.class,
+                () -> service.requestOf(cmd(null, null, null, OFFERING, 2L, SNAPSHOT), owner));
+        when(snapshotDataFactory.getSnapshots(SNAPSHOT, 2L)).thenReturn(Collections.singletonList(mock(SnapshotInfo.class)));
+        assertEquals("a zone the snapshot was copied to", Long.valueOf(2L), service.requestOf(cmd(null, null, null, OFFERING, 2L, SNAPSHOT), owner).getZoneId());
+    }
+
+    @Test
+    public void aSnapshotTakesNoOtherResourceAndNoRootDiskSize() {
+        snapshotOfARoot(Snapshot.State.BackedUp, 20);
+        VolumeVO detached = volume(201, Volume.Type.DATADISK, HOST_A, 10);
+        detached.setInstanceId(null);
+        detached.setTemplateId(TEMPLATE);
+
+        Object[][] refused = {
+            {null, null, null, null, null},
+            {VM, null, null, null, null},
+            {VM, null, null, OFFERING, null},
+            {null, 201L, null, OFFERING, null},
+            {null, null, TEMPLATE, OFFERING, ZONE},
+            {VM, 201L, null, null, null},
+        };
+        for (Object[] combination : refused) {
+            InvalidParameterValueException e = assertThrows(Arrays.toString(combination), InvalidParameterValueException.class, () -> service.requestOf(
+                    cmd((Long) combination[0], (Long) combination[1], (Long) combination[2], (Long) combination[3], (Long) combination[4], SNAPSHOT), owner));
+            assertTrue(e.getMessage(), e.getMessage().contains("snapshotid and serviceofferingid"));
+        }
+        CheckPlacementCmd withRootDiskSize = cmd(null, null, null, OFFERING, null, SNAPSHOT);
+        ReflectionTestUtils.setField(withRootDiskSize, "rootDiskSize", 50L);
+        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> service.requestOf(withRootDiskSize, owner));
+        assertTrue(e.getMessage(), e.getMessage().contains("rootdisksize"));
+    }
+
+    @Test
+    public void aSnapshotThatCannotBootAnInstanceIsRefused() {
+        SnapshotVO snapshot = snapshotOfARoot(Snapshot.State.BackingUp, 20);
+        CheckPlacementCmd check = cmd(null, null, null, OFFERING, null, SNAPSHOT);
+        String notFromATemplate = String.format("Snapshot %s is not of a disk made from a template and cannot boot an Instance", snapshot.getUuid());
+
+        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> service.requestOf(check, owner));
+        assertTrue(e.getMessage(), e.getMessage().contains(snapshot.getUuid()) && e.getMessage().contains("BackingUp"));
+
+        snapshot.setState(Snapshot.State.BackedUp);
+        VolumeVO source = volumeDao.findByIdIncludingRemoved(SOURCE);
+        source.setTemplateId(null);
+        assertEquals("a data disk not made from a template", notFromATemplate,
+                assertThrows(InvalidParameterValueException.class, () -> service.requestOf(check, owner)).getMessage());
+        assertEquals(notFromATemplate, assertThrows(InvalidParameterValueException.class,
+                () -> service.check(PlacementRequest.deployFromSnapshot(SNAPSHOT, OFFERING, ZONE, ACCOUNT))).getMessage());
+        when(volumeDao.findByIdIncludingRemoved(SOURCE)).thenReturn(null);
+        assertEquals("a volume whose row is gone tells no template", notFromATemplate,
+                assertThrows(InvalidParameterValueException.class, () -> service.requestOf(check, owner)).getMessage());
+
+        source.setTemplateId(TEMPLATE);
+        ReflectionTestUtils.setField(source, "removed", new Date());
+        when(volumeDao.findByIdIncludingRemoved(SOURCE)).thenReturn(source);
+        assertEquals("the volume of the snapshot may be removed", PlacementRequest.Kind.DEPLOY_FROM_SNAPSHOT, service.requestOf(check, owner).getKind());
+
+        when(snapshotDao.findById(SNAPSHOT)).thenReturn(null);
+        assertThrows("no such snapshot", InvalidParameterValueException.class, () -> service.requestOf(check, owner));
+
+        when(snapshotDao.findById(SNAPSHOT)).thenReturn(snapshot);
+        doThrow(new PermissionDeniedException("another account's snapshot")).when(accountManager).checkAccess(owner, null, true, snapshot);
+        assertThrows(PermissionDeniedException.class, () -> service.requestOf(check, owner));
+    }
+
+    @Test
+    public void anInstanceFromASnapshotIsPlacedLikeOneFromATemplateWithTheRootOfTheSnapshotsVolume() throws Exception {
+        snapshotOfARoot(Snapshot.State.BackedUp, 300);
+        PlacementRequest request = PlacementRequest.deployFromSnapshot(SNAPSHOT, OFFERING, ZONE, ACCOUNT);
+
+        PlacementVerdict verdict = service.check(request);
+
+        assertEquals(PlacementVerdict.Verdict.anyhost, verdict.getVerdict());
+        assertNull(verdict.getToken());
+        assertTrue(verdict.getVolumeIds().isEmpty());
+        verify(resourceLimitService).checkWithinQuota(eq(owner), eq(offering), any());
+
+        for (long id : new long[] {HOST_A, HOST_B, HOST_C}) {
+            freePoolBytes.put(id + 10, 299 * GIB);
+        }
+        assertEquals("no local pool takes the root of the snapshot's volume", PlacementVerdict.Verdict.none, service.check(request).getVerdict());
+
+        for (long id : new long[] {HOST_A, HOST_B, HOST_C}) {
+            freePoolBytes.put(id + 10, 1000 * GIB);
+        }
+        remainingStorageQuota = 299 * GIB;
+        PlacementVerdict shortOfQuota = service.check(request);
+        assertEquals(PlacementVerdict.Verdict.none, shortOfQuota.getVerdict());
+        assertEquals("the root counts against the storage quota", "storage quota", shortOfQuota.getReason());
+        remainingStorageQuota = 300 * GIB;
+        assertEquals(PlacementVerdict.Verdict.anyhost, service.check(request).getVerdict());
+        assertEquals("data disks count too", "storage quota", service.check(PlacementRequest.deployFromSnapshot(SNAPSHOT, OFFERING, ZONE, ACCOUNT)
+                .withDataDiskSizesGiB(Arrays.asList(1L))).getReason());
+    }
+
+    @Test
+    public void quotaRefusesAnInstanceFromASnapshotAsItRefusesOneFromATemplate() throws Exception {
+        snapshotOfARoot(Snapshot.State.BackedUp, 20);
+        doThrow(new ResourceAllocationException("quota expired or insufficient", ResourceType.gpu)).when(resourceLimitService)
+                .checkWithinQuota(eq(owner), eq(offering), any());
+
+        PlacementVerdict verdict = service.check(PlacementRequest.deployFromSnapshot(SNAPSHOT, OFFERING, ZONE, ACCOUNT));
+
+        assertEquals(PlacementVerdict.Verdict.none, verdict.getVerdict());
+        assertEquals("quota", verdict.getReason());
     }
 
     @Test

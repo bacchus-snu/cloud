@@ -62,7 +62,8 @@ public class UpdateVMCmd extends BaseCustomIdCmd implements SecurityGroupAction,
     //////////////// API parameters /////////////////////
     /////////////////////////////////////////////////////
 
-    @Parameter(name = ApiConstants.DISPLAY_NAME, type = CommandType.STRING, description = "User generated name")
+    @Parameter(name = ApiConstants.DISPLAY_NAME, type = CommandType.STRING, description = "New name of the Instance, under the rules of its name at deployment; "
+            + "a ROOT volume named after its former name is renamed after the new one")
     private String displayName;
 
     @Parameter(name = ApiConstants.GROUP, type = CommandType.STRING, description = "Group of the Instance")
@@ -108,7 +109,8 @@ public class UpdateVMCmd extends BaseCustomIdCmd implements SecurityGroupAction,
                description = "True if Instance contains XS/VMWare tools in order to support dynamic scaling of Instance cpu/memory. This can be updated only when dynamic scaling is enabled on Template, service offering and the corresponding global setting")
     protected Boolean isDynamicallyScalable;
 
-    @Parameter(name = ApiConstants.NAME, type = CommandType.STRING, description = "New host name of the Instance. The Instance has to be stopped/started for this update to take affect", validations = {ApiArgValidator.RFCComplianceDomainName}, since = "4.4")
+    @Parameter(name = ApiConstants.NAME, type = CommandType.STRING, description = "New host name of the Instance. The Instance has to be stopped/started for this update to take affect. Only a root admin changes it, and the "
+            + "hostname of an Instance named under its account's prefix is fixed", validations = {ApiArgValidator.RFCComplianceDomainName}, since = "4.4")
     private String name;
 
     @Parameter(name = ApiConstants.INSTANCE_NAME, type = CommandType.STRING, description = "Instance name of the User Instance", since = "4.4", authorized = {RoleType.Admin})
@@ -175,9 +177,13 @@ public class UpdateVMCmd extends BaseCustomIdCmd implements SecurityGroupAction,
     /////////////////////////////////////////////////////
 
     public String getDisplayName() {
-        if (StringUtils.isBlank(displayName)) {
-            displayName = name;
-        }
+        return StringUtils.isBlank(displayName) ? name : displayName;
+    }
+
+    /**
+     * @return the display name as given, which {@link #getDisplayName()} defaults to the name
+     */
+    public String getDisplayNameParameter() {
         return displayName;
     }
 

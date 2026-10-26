@@ -1666,4 +1666,17 @@ public class ConfigurationManagerImplTest {
         ReflectionTestUtils.setField(update, "leaseExpiryAction", "SUSPEND");
         Assert.assertThrows(InvalidParameterValueException.class, update::getLeaseExpiryAction);
     }
+
+    @Test
+    public void offeringLeaseIsSetOnlyThroughItsOwnParametersInAnyCase() {
+        for (String key : List.of("LEASEHOURS", "LeaseExpiryAction", "LeaseDuration")) {
+            org.apache.cloudstack.api.command.admin.offering.CreateServiceOfferingCmd create =
+                    Mockito.mock(org.apache.cloudstack.api.command.admin.offering.CreateServiceOfferingCmd.class);
+            Mockito.when(create.getDetails()).thenReturn(new HashMap<>(Map.of(key, "36h")));
+            InvalidParameterValueException e = Assert.assertThrows(key, InvalidParameterValueException.class,
+                    () -> configurationManagerImplSpy.createServiceOffering(create));
+            Assert.assertTrue(e.getMessage(), e.getMessage().contains(key));
+        }
+        Mockito.verify(serviceOfferingDetailsDao, Mockito.never()).addDetail(Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(), Mockito.anyBoolean());
+    }
 }

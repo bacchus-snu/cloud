@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
@@ -2691,5 +2692,181 @@ public class VirtualMachineManagerImplTest {
         when(vmInstanceDetailsDao.findDetail(7L, VmDetailConstants.RESTART_IN_PROGRESS)).thenReturn(null);
         virtualMachineManagerImpl.checkQuotaOfSessionStart(restarting, owner, offering, template);
         verify(resourceLimitServiceMock).checkWithinQuota(owner, offering, template);
+    }
+
+    /** Allocates the ROOT volume of the Instance from a template of the format, and returns the name it was allocated with. */
+    private String rootVolumeNameAllocatedFor(VMInstanceVO vm, Storage.ImageFormat format) {
+        return rootVolumeNameAllocatedFor(vm, format, null);
+    }
+
+    private String rootVolumeNameAllocatedFor(VMInstanceVO vm, Storage.ImageFormat format, com.cloud.storage.Snapshot snapshot) {
+        VolumeOrchestrationService volumes = mock(VolumeOrchestrationService.class);
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "volumeMgr", volumes);
+        VMTemplateVO template = mock(VMTemplateVO.class);
+        when(template.getFormat()).thenReturn(format);
+        try (MockedStatic<CallContext> ignored = Mockito.mockStatic(CallContext.class)) {
+            virtualMachineManagerImpl.allocateRootVolume(vm, template, new DiskOfferingInfo(mock(DiskOffering.class)), mock(Account.class), 10L, null, snapshot);
+        }
+        if (snapshot != null) {
+            verify(volumes).allocateTemplatedVolumes(eq(Volume.Type.ROOT), any(), any(), any(), any(), any(), eq(template), eq(vm), any(), any(), isNull(),
+                    eq(snapshot));
+        }
+        org.mockito.ArgumentCaptor<String> name = org.mockito.ArgumentCaptor.forClass(String.class);
+        if (format == Storage.ImageFormat.ISO) {
+            verify(volumes).allocateRawVolume(eq(Volume.Type.ROOT), name.capture(), any(), any(), any(), any(), eq(vm), eq(template), any(), any(), any(),
+                    Mockito.anyBoolean());
+        } else {
+            verify(volumes).allocateTemplatedVolumes(eq(Volume.Type.ROOT), name.capture(), any(), any(), any(), any(), eq(template), eq(vm), any(), any(), any(),
+                    any());
+        }
+        return name.getValue();
+    }
+
+    /** An Instance of the type with the display name, named under the prefix of its account's Instances, or under none when it is null. */
+    private VMInstanceVO instanceOfType(long id, VirtualMachine.Type type, String displayName, String prefix) {
+        VMInstanceVO vm = mock(VMInstanceVO.class);
+        Mockito.lenient().when(vm.getId()).thenReturn(id);
+        Mockito.lenient().when(vm.getType()).thenReturn(type);
+        UserVmVO userVm = mock(UserVmVO.class);
+        Mockito.lenient().when(userVm.getDisplayName()).thenReturn(displayName);
+        Mockito.lenient().when(userVmDaoMock.findById(id)).thenReturn(userVm);
+        Mockito.lenient().when(vmInstanceDetailsDao.findSshNamePrefix(id)).thenReturn(prefix);
+        return vm;
+    }
+
+    @Test
+    public void theRootVolumeOfAnInstanceNamedUnderAPrefixIsNamedAfterTheInstance() {
+        assertEquals("Web-1-ROOT", rootVolumeNameAllocatedFor(instanceOfType(5151L, VirtualMachine.Type.User, "Web-1", "admin"), Storage.ImageFormat.QCOW2));
+        assertEquals("VM-0-ROOT", rootVolumeNameAllocatedFor(instanceOfType(5152L, VirtualMachine.Type.User, "VM-0", "admin"), Storage.ImageFormat.ISO));
+    }
+
+    @Test
+    public void theRootVolumeCreatedFromASnapshotIsNamedAfterTheInstanceNamedUnderAPrefix() {
+        com.cloud.storage.Snapshot snapshot = mock(com.cloud.storage.Snapshot.class);
+        assertEquals("Web-2-ROOT", rootVolumeNameAllocatedFor(instanceOfType(5157L, VirtualMachine.Type.User, "Web-2", "admin"), Storage.ImageFormat.QCOW2,
+                snapshot));
+    }
+
+    @Test
+    public void theRootVolumeOfAnyOtherInstanceIsNamedAfterItsId() {
+        assertEquals("ROOT-5153", rootVolumeNameAllocatedFor(instanceOfType(5153L, VirtualMachine.Type.DomainRouter, "r-5153-VM", null),
+                Storage.ImageFormat.QCOW2));
+        assertEquals("ROOT-5154", rootVolumeNameAllocatedFor(instanceOfType(5154L, VirtualMachine.Type.ConsoleProxy, null, null), Storage.ImageFormat.QCOW2));
+        assertEquals("ROOT-5156", rootVolumeNameAllocatedFor(instanceOfType(5156L, VirtualMachine.Type.User, "cluster-control-18a3b0c4d5e6f", null),
+                Storage.ImageFormat.QCOW2));
+    }
+
+    /**
+     * The Instance detail table in memory behind the real detail DAO: the statements the DAO issues are simulated by the conditions
+     * of their search criteria, names and values comparing regardless of case as the database's collation compares them.
+     */
+    @SuppressWarnings("unchecked")
+    private static com.cloud.vm.dao.VMInstanceDetailsDaoImpl detailTableOver(List<VMInstanceDetailVO> rows) {
+        com.cloud.vm.dao.VMInstanceDetailsDaoImpl dao = Mockito.spy(new com.cloud.vm.dao.VMInstanceDetailsDaoImpl());
+        long[] nextId = {1};
+        Mockito.lenient().doAnswer(i -> selectDetails(rows, i.getArgument(0))).when(dao).search(any(com.cloud.utils.db.SearchCriteria.class), any());
+        Mockito.lenient().doAnswer(i -> selectDetails(rows, i.getArgument(0))).when(dao).listBy(any(com.cloud.utils.db.SearchCriteria.class));
+        Mockito.lenient().doAnswer(i -> selectDetails(rows, i.getArgument(0)).stream().findFirst().orElse(null)).when(dao)
+                .findOneBy(any(com.cloud.utils.db.SearchCriteria.class));
+        Mockito.lenient().doAnswer(i -> {
+            List<VMInstanceDetailVO> deleted = selectDetails(rows, i.getArgument(0));
+            rows.removeAll(deleted);
+            return deleted.size();
+        }).when(dao).remove(any(com.cloud.utils.db.SearchCriteria.class));
+        Mockito.lenient().doAnswer(i -> {
+            List<VMInstanceDetailVO> deleted = selectDetails(rows, i.getArgument(0));
+            rows.removeAll(deleted);
+            return deleted.size();
+        }).when(dao).expunge(any(com.cloud.utils.db.SearchCriteria.class));
+        Mockito.lenient().doAnswer(i -> rows.removeIf(row -> row.getId() == (Long) i.getArgument(0))).when(dao).remove(anyLong());
+        Mockito.lenient().doAnswer(i -> {
+            VMInstanceDetailVO row = i.getArgument(0);
+            ReflectionTestUtils.setField(row, "id", nextId[0]++);
+            rows.add(row);
+            return row;
+        }).when(dao).persist(any(VMInstanceDetailVO.class));
+        return dao;
+    }
+
+    private static List<VMInstanceDetailVO> selectDetails(List<VMInstanceDetailVO> rows, com.cloud.utils.db.SearchCriteria<VMInstanceDetailVO> sc) {
+        Set<Object> vmIds = criteriaValues(sc, "vm_id");
+        Set<Object> names = criteriaValues(sc, "name");
+        Set<Object> values = criteriaValues(sc, "value");
+        Set<Object> display = criteriaValues(sc, "display");
+        boolean namesExcluded = sc.getWhereClause().contains("name NOT IN");
+        return rows.stream().filter(row -> (vmIds.isEmpty() || vmIds.contains(row.getResourceId()))
+                && (names.isEmpty() || names.stream().anyMatch(name -> row.getName().equalsIgnoreCase(String.valueOf(name))) != namesExcluded)
+                && (values.isEmpty() || values.stream().anyMatch(value -> row.getValue().equalsIgnoreCase(String.valueOf(value))))
+                && (display.isEmpty() || display.contains(row.isDisplay()))).collect(Collectors.toList());
+    }
+
+    private static Set<Object> criteriaValues(com.cloud.utils.db.SearchCriteria<VMInstanceDetailVO> sc, String column) {
+        return sc.getValues().stream().filter(value -> column.equals(value.first().getColumnName())).map(value -> value.second())
+                .collect(Collectors.toSet());
+    }
+
+    private static VMInstanceDetailVO detailNamed(List<VMInstanceDetailVO> rows, String name) {
+        return rows.stream().filter(row -> row.getName().equals(name)).findFirst().orElse(null);
+    }
+
+    private static void assertTheOtherDetailsAreAsTheyWere(List<VMInstanceDetailVO> rows, com.cloud.vm.dao.VMInstanceDetailsDaoImpl details) {
+        assertEquals("admin", details.findSshNamePrefix(1L));
+        assertEquals("admin", detailNamed(rows, VmDetailConstants.SSH_NAME_PREFIX).getValue());
+        assertEquals("i-2-1-web", detailNamed(rows, VmDetailConstants.NAME_ON_HYPERVISOR).getValue());
+        assertEquals("virtio", detailNamed(rows, VmDetailConstants.ROOT_DISK_CONTROLLER).getValue());
+        for (String hidden : List.of(VmDetailConstants.SSH_NAME_PREFIX, VmDetailConstants.NAME_ON_HYPERVISOR, VmDetailConstants.ROOT_DISK_CONTROLLER)) {
+            assertFalse(hidden, detailNamed(rows, hidden).isDisplay());
+        }
+        assertTrue(detailNamed(rows, "keyboard").isDisplay());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void aChangeToOrFromACustomizedOfferingWritesOnlyItsOwnDetails() {
+        List<VMInstanceDetailVO> rows = new ArrayList<>();
+        com.cloud.vm.dao.VMInstanceDetailsDaoImpl details = detailTableOver(rows);
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "vmInstanceDetailsDao", details);
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "_userVmMgr", mock(UserVmManager.class));
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "_serviceOfferingDao", serviceOfferingDaoMock);
+        details.persist(new VMInstanceDetailVO(1L, VmDetailConstants.SSH_NAME_PREFIX, "admin", false));
+        details.persist(new VMInstanceDetailVO(1L, VmDetailConstants.NAME_ON_HYPERVISOR, "i-2-1-web", false));
+        details.persist(new VMInstanceDetailVO(1L, VmDetailConstants.ROOT_DISK_CONTROLLER, "virtio", false));
+        details.persist(new VMInstanceDetailVO(1L, "keyboard", "us", true));
+        when(vmInstanceDaoMock.findById(1L)).thenReturn(vmInstanceMock);
+        ServiceOfferingVO customized = mock(ServiceOfferingVO.class);
+        when(customized.getId()).thenReturn(5L);
+        when(customized.isDynamic()).thenReturn(true);
+        when(customized.getCpu()).thenReturn(4);
+        when(customized.getRamSize()).thenReturn(8192);
+        ServiceOfferingVO unfilled = mock(ServiceOfferingVO.class);
+        when(unfilled.getCpu()).thenReturn(null);
+        when(unfilled.getSpeed()).thenReturn(2000);
+        when(unfilled.getRamSize()).thenReturn(null);
+        when(serviceOfferingDaoMock.findByIdIncludingRemoved(5L)).thenReturn(unfilled);
+        ServiceOfferingVO fixed = mock(ServiceOfferingVO.class);
+        when(fixed.getId()).thenReturn(6L);
+        when(_entityMgr.findById(ServiceOffering.class, 5L)).thenReturn(customized);
+        when(_entityMgr.findById(ServiceOffering.class, 6L)).thenReturn(fixed);
+
+        try (MockedStatic<com.cloud.utils.db.Transaction> transaction = Mockito.mockStatic(com.cloud.utils.db.Transaction.class);
+             MockedStatic<com.cloud.utils.db.TransactionLegacy> txn = Mockito.mockStatic(com.cloud.utils.db.TransactionLegacy.class)) {
+            transaction.when(() -> com.cloud.utils.db.Transaction.execute(any(com.cloud.utils.db.TransactionCallback.class)))
+                    .thenAnswer(i -> ((com.cloud.utils.db.TransactionCallback<?>) i.getArgument(0)).doInTransaction(null));
+            txn.when(com.cloud.utils.db.TransactionLegacy::currentTxn).thenReturn(mock(com.cloud.utils.db.TransactionLegacy.class));
+
+            virtualMachineManagerImpl.upgradeVmDb(1L, customized, fixed);
+
+            assertEquals("4", detailNamed(rows, com.cloud.event.UsageEventVO.DynamicParameters.cpuNumber.name()).getValue());
+            assertEquals("8192", detailNamed(rows, com.cloud.event.UsageEventVO.DynamicParameters.memory.name()).getValue());
+            assertNull(detailNamed(rows, com.cloud.event.UsageEventVO.DynamicParameters.cpuSpeed.name()));
+            assertTheOtherDetailsAreAsTheyWere(rows, details);
+
+            virtualMachineManagerImpl.upgradeVmDb(1L, fixed, customized);
+
+            assertNull(detailNamed(rows, com.cloud.event.UsageEventVO.DynamicParameters.cpuNumber.name()));
+            assertNull(detailNamed(rows, com.cloud.event.UsageEventVO.DynamicParameters.memory.name()));
+            assertTheOtherDetailsAreAsTheyWere(rows, details);
+            assertEquals(4, rows.size());
+        }
     }
 }

@@ -34,6 +34,7 @@ import org.apache.cloudstack.api.ApiConstants;
 import org.apache.cloudstack.api.ApiConstants.BootMode;
 import org.apache.cloudstack.api.ApiConstants.BootType;
 import org.apache.cloudstack.api.ApiConstants.IoDriverPolicy;
+import org.apache.cloudstack.api.Parameter;
 import org.apache.cloudstack.vm.lease.VMLeaseManager;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -623,5 +624,12 @@ public class DeployVMCmdTest {
     @Test
     public void testIsBlankInstance() {
         assertFalse(cmd.isBlankInstance());
+    }
+
+    @Test
+    public void theNameParameterIsTheNameOfTheInstanceAndNoHostnameItself() throws Exception {
+        Parameter name = BaseDeployVMCmd.class.getDeclaredField("name").getAnnotation(Parameter.class);
+
+        assertEquals(0, name.validations().length);
     }
 }

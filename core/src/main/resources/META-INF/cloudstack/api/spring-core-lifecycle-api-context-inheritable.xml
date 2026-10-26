@@ -73,4 +73,9 @@
         <property name="typeClass" value="org.apache.cloudstack.auth.UserAuthenticator" />
     </bean>
 
+    <bean class="org.apache.cloudstack.spring.lifecycle.registry.RegistryLifecycle">
+        <property name="registry" ref="signInProviderLinksRegistry" />
+        <property name="typeClass" value="org.apache.cloudstack.auth.SignInProviderLinks" />
+    </bean>
+
 </beans>

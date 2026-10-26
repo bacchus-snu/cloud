@@ -39,6 +39,7 @@ import com.cloud.resourcelimit.ReservationHelper;
 import com.cloud.storage.DataStoreRole;
 import com.cloud.storage.DiskOfferingVO;
 import com.cloud.storage.Storage;
+import com.cloud.storage.StorageNames;
 import com.cloud.storage.StoragePoolHostVO;
 import com.cloud.storage.StoragePoolStatus;
 import com.cloud.storage.Volume;
@@ -177,6 +178,9 @@ public class VolumeImportUnmanageManagerImpl implements VolumeImportUnmanageServ
         if (owner == null) {
             logFailureAndThrowException("Cannot import volume due to unknown owner");
         }
+        if (StringUtils.isNotBlank(cmd.getName())) {
+            StorageNames.checkName(cmd.getName().trim(), "volume");
+        }
 
         // 2. check if pool exists and not in maintenance
         Long poolId = cmd.getStorageId();
@@ -216,7 +220,7 @@ public class VolumeImportUnmanageManagerImpl implements VolumeImportUnmanageServ
             checkResourceLimitForImportVolume(owner, volume, diskOffering, reservations);
 
             // 7. create records
-            String volumeName = StringUtils.isNotBlank(cmd.getName()) ? cmd.getName().trim() : volumePath;
+            String volumeName = nameOfImportedVolume(cmd.getName(), volumePath);
             VolumeVO volumeVO = importVolumeInternal(volume, diskOffering, owner, pool, volumeName);
 
             // 8. Update resource count
@@ -287,6 +291,13 @@ public class VolumeImportUnmanageManagerImpl implements VolumeImportUnmanageServ
         unmanageVolumeFromDatabase(volume);
 
         return true;
+    }
+
+    /**
+     * @return the name given, trimmed, or else a name made of the volume's path
+     */
+    protected String nameOfImportedVolume(String given, String volumePath) {
+        return StringUtils.isNotBlank(given) ? given.trim() : StorageNames.nameMadeOf(volumePath);
     }
 
     protected StoragePoolVO checkIfPoolAvailable(Long poolId) {

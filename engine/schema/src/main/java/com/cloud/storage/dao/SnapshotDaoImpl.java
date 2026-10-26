@@ -61,6 +61,7 @@ public class SnapshotDaoImpl extends GenericDaoBase<SnapshotVO, Long> implements
     private static final String STATUS = "status";
     private static final String VERSION = "version";
     private static final String ACCOUNT_ID = "accountId";
+    private static final String NAME = "name";
     private static final String REMOVED = "removed";
     private static final String NOT_TYPE = "notType";
     private static final String ID = "id";
@@ -75,6 +76,7 @@ public class SnapshotDaoImpl extends GenericDaoBase<SnapshotVO, Long> implements
     private SearchBuilder<SnapshotVO> VolumeIdTypeNotDestroyedSearch;
     private SearchBuilder<SnapshotVO> VolumeIdVersionSearch;
     private SearchBuilder<SnapshotVO> AccountIdSearch;
+    SearchBuilder<SnapshotVO> AccountNamePrefixSearch;
     private SearchBuilder<SnapshotVO> InstanceIdSearch;
     private SearchBuilder<SnapshotVO> StatusSearch;
     private SearchBuilder<SnapshotVO> notInStatusSearch;
@@ -112,6 +114,21 @@ public class SnapshotDaoImpl extends GenericDaoBase<SnapshotVO, Long> implements
         SearchCriteria<SnapshotVO> sc = VolumeIdSearch.create();
         sc.setParameters(VOLUME_ID, volumeId);
         return listBy(sc, filter);
+    }
+
+    @Override
+    public List<SnapshotVO> listByAccountAndNamePrefixIncludingRemoved(long accountId, String namePrefix) {
+        SearchCriteria<SnapshotVO> sc = AccountNamePrefixSearch.create();
+        sc.setParameters(ACCOUNT_ID, accountId);
+        sc.setParameters(NAME, namePrefix + "%");
+        return searchIncludingRemoved(sc, null, null, false);
+    }
+
+    protected void initAccountNamePrefixSearch() {
+        AccountNamePrefixSearch = createSearchBuilder();
+        AccountNamePrefixSearch.and(ACCOUNT_ID, AccountNamePrefixSearch.entity().getAccountId(), SearchCriteria.Op.EQ);
+        AccountNamePrefixSearch.and(NAME, AccountNamePrefixSearch.entity().getName(), SearchCriteria.Op.LIKE);
+        AccountNamePrefixSearch.done();
     }
 
     @Override
@@ -163,6 +180,8 @@ public class SnapshotDaoImpl extends GenericDaoBase<SnapshotVO, Long> implements
         AccountIdSearch = createSearchBuilder();
         AccountIdSearch.and(ACCOUNT_ID, AccountIdSearch.entity().getAccountId(), SearchCriteria.Op.EQ);
         AccountIdSearch.done();
+
+        initAccountNamePrefixSearch();
 
         StatusSearch = createSearchBuilder();
         StatusSearch.and(VOLUME_ID, StatusSearch.entity().getVolumeId(), SearchCriteria.Op.EQ);

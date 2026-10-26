@@ -265,6 +265,79 @@ public class ConfigurationManagerCloneIntegrationTest {
     }
 
     @Test
+    public void aCloneTakesNoLeaseDetailInAnyCase() {
+        Long sourceId = 1L;
+
+        ServiceOfferingVO sourceOffering = mock(ServiceOfferingVO.class);
+        Mockito.lenient().when(sourceOffering.getId()).thenReturn(sourceId);
+        Mockito.lenient().when(sourceOffering.getName()).thenReturn("source-offering");
+        Mockito.lenient().when(sourceOffering.getDisplayText()).thenReturn("Source Display Text");
+        Mockito.lenient().when(sourceOffering.getCpu()).thenReturn(2);
+        Mockito.lenient().when(sourceOffering.getSpeed()).thenReturn(1000);
+        Mockito.lenient().when(sourceOffering.getRamSize()).thenReturn(2048);
+        Mockito.lenient().when(sourceOffering.isOfferHA()).thenReturn(true);
+        Mockito.lenient().when(sourceOffering.getLimitCpuUse()).thenReturn(false);
+        Mockito.lenient().when(sourceOffering.isVolatileVm()).thenReturn(false);
+        Mockito.lenient().when(sourceOffering.isCustomized()).thenReturn(false);
+        Mockito.lenient().when(sourceOffering.isDynamicScalingEnabled()).thenReturn(true);
+        Mockito.lenient().when(sourceOffering.getDiskOfferingStrictness()).thenReturn(false);
+        Mockito.lenient().when(sourceOffering.getHostTag()).thenReturn("host-tag");
+        Mockito.lenient().when(sourceOffering.getRateMbps()).thenReturn(100);
+        Mockito.lenient().when(sourceOffering.getDeploymentPlanner()).thenReturn("FirstFitPlanner");
+        Mockito.lenient().when(sourceOffering.isSystemUse()).thenReturn(false);
+        Mockito.lenient().when(sourceOffering.getVmType()).thenReturn(VirtualMachine.Type.User.toString());
+        Mockito.lenient().when(sourceOffering.getDiskOfferingId()).thenReturn(null);
+        Mockito.lenient().when(sourceOffering.getVgpuProfileId()).thenReturn(null);
+        Mockito.lenient().when(sourceOffering.getGpuCount()).thenReturn(null);
+        Mockito.lenient().when(sourceOffering.getGpuDisplay()).thenReturn(false);
+
+        CloneServiceOfferingCmd cmd = mock(CloneServiceOfferingCmd.class);
+        when(cmd.getSourceOfferingId()).thenReturn(sourceId);
+        when(cmd.getServiceOfferingName()).thenReturn("cloned-offering");
+        when(cmd.getFullUrlParams()).thenReturn(new HashMap<>());
+        when(cmd.getDetails()).thenReturn(new HashMap<>(Map.of("LeaseHours", "36", "LEASEDURATION", "3", "LeaseExpiryAction", "STOP", "keyboard", "us")));
+        // Ensure no vGPU is specified in the command (explicitly stub to null)
+        when(cmd.getVgpuProfileId()).thenReturn(null);
+        when(cmd.getGpuCount()).thenReturn(null);
+
+        when(serviceOfferingDao.findById(sourceId)).thenReturn(sourceOffering);
+
+        ServiceOfferingVO clonedOffering = mock(ServiceOfferingVO.class);
+        Mockito.lenient().when(clonedOffering.getId()).thenReturn(2L);
+        Mockito.lenient().when(clonedOffering.getName()).thenReturn("cloned-offering");
+        Mockito.lenient().when(clonedOffering.getCpu()).thenReturn(2);
+        Mockito.lenient().when(clonedOffering.getSpeed()).thenReturn(1000);
+        Mockito.lenient().when(clonedOffering.getRamSize()).thenReturn(2048);
+
+        when(serviceOfferingDao.persist(any(ServiceOfferingVO.class))).thenReturn(clonedOffering);
+
+        DiskOfferingVO persistedDisk = mock(DiskOfferingVO.class);
+        when(persistedDisk.getId()).thenReturn(999L);
+        when(diskOfferingDao.findById(anyLong())).thenReturn(persistedDisk);
+        when(persistedDisk.getProvisioningType()).thenReturn(Storage.ProvisioningType.THIN);
+        when(diskOfferingDao.persist(any(DiskOfferingVO.class))).thenReturn(persistedDisk);
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Map<String, String>> details = org.mockito.ArgumentCaptor.forClass(Map.class);
+        // matchers that take the nulls a clone passes for what the source offering leaves unset
+        Mockito.doReturn(clonedOffering).when(configurationManager).createServiceOffering(
+            anyLong(), anyBoolean(), any(), any(),
+            any(), any(), any(), any(), any(), anyBoolean(),
+            anyBoolean(), anyBoolean(), anyBoolean(), any(), any(), any(), any(), any(),
+            any(), details.capture(), any(), any(),
+            any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+            any(), any(), any(), anyBoolean(), any(), anyBoolean(), anyBoolean(), anyBoolean(),
+            any(), any(), any(), anyBoolean(), any(), any()
+        );
+
+        Assert.assertEquals(clonedOffering, configurationManager.cloneServiceOffering(cmd));
+
+        Map<String, String> cloned = details.getValue();
+        Assert.assertEquals("us", cloned.get("keyboard"));
+        Assert.assertFalse(cloned.toString(), cloned.keySet().stream().anyMatch(key -> key.toLowerCase(java.util.Locale.ROOT).startsWith("lease")));
+    }
+
+    @Test
     public void testCloneServiceOfferingOverridesProvidedParameters() {
         Long sourceId = 1L;
 

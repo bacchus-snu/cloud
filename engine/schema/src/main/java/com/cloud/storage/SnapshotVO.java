@@ -167,6 +167,10 @@ public class SnapshotVO implements Snapshot {
         return name;
     }
 
+    public void setName(String name) {
+        this.name = name;
+    }
+
     @Override
     public long getSnapshotId() {
         return id;

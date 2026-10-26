@@ -64,6 +64,15 @@ public class ListCapabilitiesCmdTest {
     }
 
     @Test
+    public void whetherADestroyExpungesIsReturned() throws Exception {
+        Assert.assertEquals(Boolean.TRUE, responseField("expungeOnDestroy", ApiConstants.EXPUNGE_ON_DESTROY, true));
+        Assert.assertEquals(Boolean.FALSE, responseField("expungeOnDestroy", ApiConstants.EXPUNGE_ON_DESTROY, false));
+        Field field = CapabilitiesResponse.class.getDeclaredField("expungeOnDestroy");
+        Assert.assertEquals("expungeondestroy", field.getAnnotation(SerializedName.class).value());
+        Assert.assertEquals("4.23.0.100", field.getAnnotation(Param.class).since());
+    }
+
+    @Test
     public void quotaGpuTypesAreAFieldOfTheCapabilitiesResponse() throws NoSuchFieldException {
         Field field = CapabilitiesResponse.class.getDeclaredField("quotaGpuTypes");
         Assert.assertEquals("quotagputypes", field.getAnnotation(SerializedName.class).value());

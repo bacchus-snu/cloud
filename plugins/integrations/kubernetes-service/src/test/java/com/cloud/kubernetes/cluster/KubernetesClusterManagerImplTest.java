@@ -46,6 +46,11 @@ import com.cloud.user.User;
 import com.cloud.utils.Pair;
 import com.cloud.utils.net.NetUtils;
 import com.cloud.vm.VMInstanceVO;
+import com.cloud.vm.UserVmManager;
+import com.cloud.vm.UserVmService;
+import com.cloud.vm.UserVmVO;
+import com.cloud.utils.db.Transaction;
+import com.cloud.utils.db.TransactionCallback;
 import com.cloud.vm.dao.VMInstanceDao;
 import com.cloud.host.HostVO;
 import com.cloud.host.dao.HostDao;
@@ -53,6 +58,7 @@ import org.apache.cloudstack.affinity.AffinityGroupVO;
 import org.apache.cloudstack.affinity.dao.AffinityGroupDao;
 import org.apache.cloudstack.api.BaseCmd;
 import org.apache.cloudstack.api.command.user.kubernetes.cluster.AddVirtualMachinesToKubernetesClusterCmd;
+import org.apache.cloudstack.api.command.user.kubernetes.cluster.DeleteKubernetesClusterCmd;
 import org.apache.cloudstack.api.command.user.kubernetes.cluster.RemoveVirtualMachinesFromKubernetesClusterCmd;
 import org.apache.cloudstack.api.response.KubernetesClusterResponse;
 import org.apache.cloudstack.context.CallContext;
@@ -65,6 +71,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnitRunner;
@@ -118,9 +125,109 @@ public class KubernetesClusterManagerImplTest {
     @Mock
     private HostDao hostDao;
 
+    @Mock
+    private UserVmService userVmService;
+
+    @Mock
+    private UserVmManager userVmManager;
+
     @Spy
     @InjectMocks
     KubernetesClusterManagerImpl kubernetesClusterManager;
+
+    private UserVmVO externalClusterWithANode() {
+        KubernetesClusterVO cluster = Mockito.mock(KubernetesClusterVO.class);
+        Mockito.when(cluster.getClusterType()).thenReturn(KubernetesCluster.ClusterType.ExternalManaged);
+        Mockito.when(kubernetesClusterDao.findById(1L)).thenReturn(cluster);
+        KubernetesClusterVmMapVO node = Mockito.mock(KubernetesClusterVmMapVO.class);
+        Mockito.when(node.getVmId()).thenReturn(30L);
+        Mockito.when(kubernetesClusterVmMapDao.listByClusterId(1L)).thenReturn(List.of(node));
+        VMInstanceVO nodeInstance = Mockito.mock(VMInstanceVO.class);
+        Mockito.when(nodeInstance.getBackupOfferingId()).thenReturn(null);
+        Mockito.when(vmInstanceDao.findById(30L)).thenReturn(nodeInstance);
+        UserVmVO nodeVm = Mockito.mock(UserVmVO.class);
+        Mockito.lenient().when(userVmManager.getVirtualMachine(30L)).thenReturn(nodeVm);
+        return nodeVm;
+    }
+
+    private DeleteKubernetesClusterCmd deleteCmd(boolean cleanup, boolean expunge) {
+        DeleteKubernetesClusterCmd cmd = Mockito.mock(DeleteKubernetesClusterCmd.class);
+        Mockito.when(cmd.getId()).thenReturn(1L);
+        Mockito.lenient().when(cmd.getCleanup()).thenReturn(cleanup);
+        Mockito.lenient().when(cmd.getExpunge()).thenReturn(expunge);
+        return cmd;
+    }
+
+    private boolean deleteInTransaction(DeleteKubernetesClusterCmd cmd) {
+        try (MockedStatic<Transaction> transaction = Mockito.mockStatic(Transaction.class)) {
+            transaction.when(() -> Transaction.execute(Mockito.any(TransactionCallback.class))).thenReturn(true);
+            return kubernetesClusterManager.deleteKubernetesCluster(cmd);
+        }
+    }
+
+    @Test
+    public void cleaningUpAnExternalClusterExpungesItsNodes() throws Exception {
+        UserVmVO nodeVm = externalClusterWithANode();
+
+        Assert.assertTrue(deleteInTransaction(deleteCmd(true, false)));
+
+        Mockito.verify(userVmService).destroyVm(30L, true);
+        Mockito.verify(userVmManager).expunge(nodeVm);
+        Mockito.verify(userVmService, Mockito.never()).expungeVm(Mockito.anyLong());
+    }
+
+    @Test
+    public void anExternalClusterIsDeletedPastANodeThatIsGoneOrIsNotExpunged() throws Exception {
+        KubernetesClusterVO cluster = Mockito.mock(KubernetesClusterVO.class);
+        Mockito.when(cluster.getClusterType()).thenReturn(KubernetesCluster.ClusterType.ExternalManaged);
+        Mockito.when(kubernetesClusterDao.findById(1L)).thenReturn(cluster);
+        KubernetesClusterVmMapVO gone = Mockito.mock(KubernetesClusterVmMapVO.class);
+        Mockito.when(gone.getVmId()).thenReturn(31L);
+        KubernetesClusterVmMapVO notExpunged = Mockito.mock(KubernetesClusterVmMapVO.class);
+        Mockito.when(notExpunged.getVmId()).thenReturn(32L);
+        Mockito.when(kubernetesClusterVmMapDao.listByClusterId(1L)).thenReturn(List.of(gone, notExpunged));
+        Mockito.when(vmInstanceDao.findById(31L)).thenReturn(null);
+        VMInstanceVO notExpungedInstance = Mockito.mock(VMInstanceVO.class);
+        Mockito.when(notExpungedInstance.getBackupOfferingId()).thenReturn(null);
+        Mockito.when(vmInstanceDao.findById(32L)).thenReturn(notExpungedInstance);
+        Mockito.when(userVmManager.getVirtualMachine(31L)).thenReturn(null);
+        UserVmVO notExpungedVm = Mockito.mock(UserVmVO.class);
+        Mockito.when(userVmManager.getVirtualMachine(32L)).thenReturn(notExpungedVm);
+        Mockito.when(userVmManager.expunge(notExpungedVm)).thenReturn(false);
+
+        Assert.assertTrue(deleteInTransaction(deleteCmd(true, false)));
+
+        Mockito.verify(userVmManager, Mockito.never()).expunge(Mockito.isNull());
+        Mockito.verify(userVmService).destroyVm(32L, true);
+        Mockito.verify(userVmManager).expunge(notExpungedVm);
+    }
+
+    @Test
+    public void expungingTheNodesOfAnExternalClusterNeedsNoPermissionToExpunge() throws Exception {
+        UserVmVO nodeVm = externalClusterWithANode();
+        Mockito.lenient().when(accountManager.isAdmin(Mockito.anyLong())).thenReturn(false);
+
+        Assert.assertTrue(deleteInTransaction(deleteCmd(false, true)));
+
+        Mockito.verify(userVmService).destroyVm(30L, true);
+        Mockito.verify(userVmManager).expunge(nodeVm);
+    }
+
+    @Test
+    public void withTheRecycleBinCleaningUpAnExternalClusterLeavesItsNodesDestroyed() throws Exception {
+        overrideDefaultConfigValue(UserVmManager.ExpungeOnDestroy, "_defaultValue", "false");
+        try {
+            externalClusterWithANode();
+
+            Assert.assertTrue(deleteInTransaction(deleteCmd(true, false)));
+
+            Mockito.verify(userVmService).destroyVm(30L, false);
+            Mockito.verify(userVmManager, Mockito.never()).expunge(Mockito.any());
+            Mockito.verify(userVmService, Mockito.never()).expungeVm(Mockito.anyLong());
+        } finally {
+            overrideDefaultConfigValue(UserVmManager.ExpungeOnDestroy, "_defaultValue", "true");
+        }
+    }
 
     @Test
     public void testValidateVpcTierAllocated() {

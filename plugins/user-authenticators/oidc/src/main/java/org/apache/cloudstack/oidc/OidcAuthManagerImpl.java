@@ -53,6 +53,7 @@ import org.apache.cloudstack.acl.RoleVO;
 import org.apache.cloudstack.acl.dao.RoleDao;
 import org.apache.cloudstack.api.ApiCommandResourceType;
 import org.apache.cloudstack.api.ApiConstants;
+import org.apache.cloudstack.auth.SignInProviderLinks;
 import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.framework.config.ConfigKey;
 import org.apache.cloudstack.framework.config.ConfigKeyScheduledExecutionWrapper;
@@ -112,7 +113,7 @@ public class OidcAuthManagerImpl extends ManagerBase implements OidcAuthManager,
      * Account detail ("true") with which a sign-in service in front of CloudStack marked the accounts it created; this
      * module takes such an account over at its person's first sign-in.
      */
-    static final String GATE_MARK = "gate";
+    static final String GATE_MARK = SignInProviderLinks.ADOPTION_MARK;
     /** Account detail with which that service marked the accounts it disabled, with the value {@link #GATE_MARK}. */
     static final String GATE_DISABLED_BY = "disabledby";
     static final String STALE_EMAIL_DOMAIN = "@stale.invalid";

@@ -58,6 +58,7 @@ import org.apache.cloudstack.api.command.admin.guest.AddGuestOsCategoryCmd;
 import org.apache.cloudstack.api.command.admin.guest.DeleteGuestOsCategoryCmd;
 import org.apache.cloudstack.api.command.admin.guest.UpdateGuestOsCategoryCmd;
 import org.apache.cloudstack.api.command.user.address.ListPublicIpAddressesCmd;
+import org.apache.cloudstack.api.command.user.snapshot.UpdateSnapshotCmd;
 import org.apache.cloudstack.api.command.user.config.ListCapabilitiesCmd;
 import org.apache.cloudstack.api.command.user.guest.ListGuestOsCategoriesCmd;
 import org.apache.cloudstack.api.command.user.ssh.RegisterSSHKeyPairCmd;
@@ -2641,6 +2642,24 @@ public class ManagementServerImplTest {
         } finally {
             ConfigKey.init(null);
         }
+    }
+
+    @Test
+    public void listCapabilitiesTellsWhetherADestroyExpunges() {
+        Assert.assertEquals(Boolean.TRUE, capabilitiesOfACallerInDomain(7L).get(ApiConstants.EXPUNGE_ON_DESTROY));
+        ConfigDepotImpl depot = mock(ConfigDepotImpl.class);
+        lenient().when(depot.getConfigStringValue(UserVmManager.ExpungeOnDestroy.key(), ConfigKey.Scope.Global, null)).thenReturn("false");
+        ConfigKey.init(depot);
+        try {
+            Assert.assertEquals(Boolean.FALSE, capabilitiesOfACallerInDomain(7L).get(ApiConstants.EXPUNGE_ON_DESTROY));
+        } finally {
+            ConfigKey.init(null);
+        }
+    }
+
+    @Test
+    public void snapshotsAreRenamedThroughAnApi() {
+        Assert.assertTrue(spy.getCommands().contains(UpdateSnapshotCmd.class));
     }
 
     @Test

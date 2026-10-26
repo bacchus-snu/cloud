@@ -256,7 +256,9 @@ import com.cloud.utils.fsm.NoTransitionException;
 import com.cloud.utils.fsm.StateMachine2;
 import com.cloud.utils.net.NetUtils;
 import com.cloud.vm.NicVO;
+import com.cloud.vm.UserVmManager;
 import com.cloud.vm.UserVmService;
+import com.cloud.vm.UserVmVO;
 import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.dao.NicDao;
@@ -397,6 +399,8 @@ public class KubernetesClusterManagerImpl extends ManagerBase implements Kuberne
     private NicDao nicDao;
     @Inject
     private UserVmService userVmService;
+    @Inject
+    private UserVmManager userVmManager;
     @Inject
     private TemplateApiService templateService;
     @Inject
@@ -2118,10 +2122,12 @@ public class KubernetesClusterManagerImpl extends ManagerBase implements Kuberne
         } else {
             boolean cleanup = cmd.getCleanup();
             boolean expunge = cmd.getExpunge();
+            boolean expungeOnDestroy = UserVmManager.expungesOnDestroy();
             if (cleanup || expunge) {
                 CallContext ctx = CallContext.current();
 
-                if (expunge && !accountManager.isAdmin(ctx.getCallingAccount().getId()) && !AllowUserExpungeRecoverVm.valueIn(cmd.getEntityOwnerId())) {
+                if (expunge && !expungeOnDestroy && !accountManager.isAdmin(ctx.getCallingAccount().getId())
+                        && !AllowUserExpungeRecoverVm.valueIn(cmd.getEntityOwnerId())) {
                     throw new PermissionDeniedException("Parameter " + ApiConstants.EXPUNGE + " can be passed by Admin only. Or when the allow.user.expunge.recover.vm key is set.");
                 }
 
@@ -2132,8 +2138,15 @@ public class KubernetesClusterManagerImpl extends ManagerBase implements Kuberne
                 }
                 for (KubernetesClusterVmMapVO vmMap : vmMapList) {
                     try {
-                        userVmService.destroyVm(vmMap.getVmId(), expunge);
-                        if (expunge) {
+                        userVmService.destroyVm(vmMap.getVmId(), expunge || expungeOnDestroy);
+                        if (expungeOnDestroy) {
+                            UserVmVO node = userVmManager.getVirtualMachine(vmMap.getVmId());
+                            if (node == null) {
+                                logger.warn("VM {} of Kubernetes cluster {} is gone; there is nothing to expunge", vmMap.getVmId(), cluster);
+                            } else if (!userVmManager.expunge(node)) {
+                                logger.warn("Unable to expunge VM {} of Kubernetes cluster {}; the expunge task retries it", node, cluster);
+                            }
+                        } else if (expunge) {
                             userVmService.expungeVm(vmMap.getVmId());
                         }
                     } catch (Exception exception) {
@@ -2155,7 +2168,7 @@ public class KubernetesClusterManagerImpl extends ManagerBase implements Kuberne
 
     public static boolean checkIfVmsAssociatedWithBackupOffering(List<VMInstanceVO> vms) {
         for(VMInstanceVO vm : vms) {
-            if (Objects.nonNull(vm.getBackupOfferingId())) {
+            if (vm != null && Objects.nonNull(vm.getBackupOfferingId())) {
                return true;
             }
         }

@@ -523,6 +523,7 @@ import org.apache.cloudstack.api.command.user.snapshot.ExtractSnapshotCmd;
 import org.apache.cloudstack.api.command.user.snapshot.ListSnapshotPoliciesCmd;
 import org.apache.cloudstack.api.command.user.snapshot.ListSnapshotsCmd;
 import org.apache.cloudstack.api.command.user.snapshot.RevertSnapshotCmd;
+import org.apache.cloudstack.api.command.user.snapshot.UpdateSnapshotCmd;
 import org.apache.cloudstack.api.command.user.snapshot.UpdateSnapshotPolicyCmd;
 import org.apache.cloudstack.api.command.user.ssh.CreateSSHKeyPairCmd;
 import org.apache.cloudstack.api.command.user.ssh.DeleteSSHKeyPairCmd;
@@ -4160,6 +4161,7 @@ public class ManagementServerImpl extends MutualExclusiveIdsManagerBase implemen
         cmdList.add(ListSnapshotPoliciesCmd.class);
         cmdList.add(ListSnapshotsCmd.class);
         cmdList.add(RevertSnapshotCmd.class);
+        cmdList.add(UpdateSnapshotCmd.class);
         cmdList.add(CreateSSHKeyPairCmd.class);
         cmdList.add(DeleteSSHKeyPairCmd.class);
         cmdList.add(ListSSHKeyPairsCmd.class);
@@ -4969,6 +4971,7 @@ public class ManagementServerImpl extends MutualExclusiveIdsManagerBase implemen
         capabilities.put(ApiConstants.ROOT_DISK_SIZE_MIN, UserVmManager.rootDiskSizeMinGiB(domainId));
         capabilities.put(ApiConstants.ROOT_DISK_SIZE_DEFAULT, UserVmManager.rootDiskSizeDefaultGiB(domainId));
         capabilities.put(ApiConstants.KEEP_ROOT_VOLUME_DEFAULT, UserVmManager.keepRootVolumeByDefault(domainId));
+        capabilities.put(ApiConstants.EXPUNGE_ON_DESTROY, UserVmManager.expungesOnDestroy());
         capabilities.put(ApiConstants.RESOURCE_LIMIT_REQUEST_ALLOWED, ResourceLimitGrantService.limitsFollowGrants(caller, account -> isCallerRootAdmin));
         capabilities.put(ApiConstants.RESOURCE_REQUEST_EXPIRY_REQUIRED, ResourceLimitGrantService.ExpiryRequired.value());
         capabilities.put(ApiConstants.RESOURCE_REQUEST_EXPIRY_DEFAULT_DAYS, ResourceLimitGrantService.proposedExpiryDays());

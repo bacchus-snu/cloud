@@ -21,6 +21,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
@@ -97,6 +98,7 @@ import com.cloud.utils.db.SearchCriteria;
 import com.cloud.utils.db.SearchCriteria.Op;
 import com.cloud.utils.net.Dhcp;
 import com.cloud.vm.UserVmManager;
+import com.cloud.vm.InstanceNames;
 import com.cloud.vm.VMInstanceDetailVO;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.VirtualMachine.State;
@@ -206,6 +208,17 @@ public class UserVmJoinDaoImpl extends GenericDaoBaseWithTagInformation<UserVmJo
     @Override
     public UserVmResponse newUserVmResponse(ResponseView view, String objectName, UserVmJoinVO userVm, Set<VMDetails> details, Boolean accumulateStats, Boolean showUserData,
             Account caller) {
+        return newUserVmResponse(view, objectName, userVm, details, accumulateStats, showUserData, caller, _vmInstanceDetailsDao.findSshNamePrefix(userVm.getId()));
+    }
+
+    @Override
+    public Map<Long, String> findSshNamePrefixes(Collection<Long> vmIds) {
+        return _vmInstanceDetailsDao.findSshNamePrefixes(vmIds);
+    }
+
+    @Override
+    public UserVmResponse newUserVmResponse(ResponseView view, String objectName, UserVmJoinVO userVm, Set<VMDetails> details, Boolean accumulateStats, Boolean showUserData,
+            Account caller, String sshNamePrefix) {
         UserVmResponse userVmResponse = new UserVmResponse();
 
         if (userVm.getHypervisorType() != null) {
@@ -218,6 +231,9 @@ public class UserVmJoinDaoImpl extends GenericDaoBaseWithTagInformation<UserVmJo
             userVmResponse.setDisplayName(userVm.getDisplayName());
         } else {
             userVmResponse.setDisplayName(userVm.getName());
+        }
+        if (sshNamePrefix != null && userVm.getDisplayName() != null) {
+            userVmResponse.setSshName(InstanceNames.sshName(sshNamePrefix, userVm.getDisplayName()));
         }
 
         ApiResponseHelper.populateOwner(userVmResponse, userVm);

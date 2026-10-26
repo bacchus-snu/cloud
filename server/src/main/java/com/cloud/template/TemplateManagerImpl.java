@@ -2109,6 +2109,43 @@ public class TemplateManagerImpl extends ManagerBase implements TemplateManager,
         }
     }
 
+    /**
+     * @return the details a new template takes: those of its source template, of the Instance of its volume, and the ones given, which
+     *         come last; never the prefix of an Instance's names, which belongs to that Instance and its account
+     */
+    protected Map<String, String> detailsOfNewTemplate(Long sourceTemplateId, VolumeVO volume, Map<String, String> givenDetails) {
+        Map<String, String> details = new HashMap<String, String>();
+
+        if (sourceTemplateId != null) {
+            VMTemplateVO sourceTemplate = _tmpltDao.findById(sourceTemplateId);
+            if (sourceTemplate != null && sourceTemplate.getDetails() != null) {
+                details.putAll(sourceTemplate.getDetails());
+            }
+        }
+
+        if (volume != null) {
+            Long vmId = volume.getInstanceId();
+            if (vmId != null) {
+                UserVmVO userVm = _userVmDao.findById(vmId);
+                if (userVm != null) {
+                    _userVmDao.loadDetails(userVm);
+                    Map<String, String> vmDetails = userVm.getDetails();
+                    vmDetails = vmDetails.entrySet()
+                            .stream()
+                            .filter(map -> map.getValue() != null)
+                            .collect(Collectors.toMap(map -> map.getKey(), map -> map.getValue()));
+                    details.putAll(vmDetails);
+                }
+            }
+        }
+        if (givenDetails != null) {
+            details.remove(VmDetailConstants.ENCRYPTED_PASSWORD); // new password will be generated during vm deployment from password enabled template
+            details.putAll(givenDetails);
+        }
+        details.keySet().removeIf(VmDetailConstants::isSshNamePrefix);
+        return details;
+    }
+
     @Override
     @ActionEvent(eventType = EventTypes.EVENT_TEMPLATE_CREATE, eventDescription = "Creating Template", create = true)
     public VMTemplateVO createPrivateTemplateRecord(CreateTemplateCmd cmd, Account templateOwner) throws ResourceAllocationException {
@@ -2296,34 +2333,7 @@ public class TemplateManagerImpl extends ManagerBase implements TemplateManager,
             VMTemplateVO template = _tmpltDao.persist(privateTemplate);
             // Increment the number of templates
             if (template != null) {
-                Map<String, String> details = new HashMap<String, String>();
-
-                if (sourceTemplateId != null) {
-                    VMTemplateVO sourceTemplate = _tmpltDao.findById(sourceTemplateId);
-                    if (sourceTemplate != null && sourceTemplate.getDetails() != null) {
-                        details.putAll(sourceTemplate.getDetails());
-                    }
-                }
-
-                if (volume != null) {
-                    Long vmId = volume.getInstanceId();
-                    if (vmId != null) {
-                        UserVmVO userVm = _userVmDao.findById(vmId);
-                        if (userVm != null) {
-                            _userVmDao.loadDetails(userVm);
-                            Map<String, String> vmDetails = userVm.getDetails();
-                            vmDetails = vmDetails.entrySet()
-                                    .stream()
-                                    .filter(map -> map.getValue() != null)
-                                    .collect(Collectors.toMap(map -> map.getKey(), map -> map.getValue()));
-                            details.putAll(vmDetails);
-                        }
-                    }
-                }
-                if (cmd.getDetails() != null) {
-                    details.remove(VmDetailConstants.ENCRYPTED_PASSWORD); // new password will be generated during vm deployment from password enabled template
-                    details.putAll(cmd.getDetails());
-                }
+                Map<String, String> details = detailsOfNewTemplate(sourceTemplateId, volume, cmd.getDetails());
                 if (!details.isEmpty()) {
                     privateTemplate.setDetails(details);
                     _tmpltDao.saveDetails(privateTemplate);

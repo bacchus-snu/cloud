@@ -51,6 +51,7 @@ import com.cloud.network.security.SecurityGroupVO;
 import com.cloud.network.vpc.NetworkACLItemVO;
 import com.cloud.network.vpc.NetworkACLVO;
 import com.cloud.network.vpc.StaticRouteVO;
+import com.cloud.network.vpc.VpcGatewayVO;
 import com.cloud.network.vpc.VpcOfferingVO;
 import com.cloud.network.vpc.VpcVO;
 import com.cloud.offerings.NetworkOfferingVO;
@@ -104,7 +105,7 @@ public class ResourceManagerUtilImpl implements ResourceManagerUtil {
         s_typeMap.put(ResourceTag.ResourceObjectType.Zone, DataCenterVO.class);
         s_typeMap.put(ResourceTag.ResourceObjectType.ServiceOffering, ServiceOfferingVO.class);
         s_typeMap.put(ResourceTag.ResourceObjectType.Storage, StoragePoolVO.class);
-        s_typeMap.put(ResourceTag.ResourceObjectType.PrivateGateway, RemoteAccessVpnVO.class);
+        s_typeMap.put(ResourceTag.ResourceObjectType.PrivateGateway, VpcGatewayVO.class);
         s_typeMap.put(ResourceTag.ResourceObjectType.NetworkACLList, NetworkACLVO.class);
         s_typeMap.put(ResourceTag.ResourceObjectType.VpnGateway, Site2SiteVpnGatewayVO.class);
         s_typeMap.put(ResourceTag.ResourceObjectType.CustomerGateway, Site2SiteCustomerGatewayVO.class);

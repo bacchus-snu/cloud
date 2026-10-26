@@ -55,7 +55,8 @@ public class DestroyVolumeCmd extends BaseAsyncCmd {
 
     @Parameter(name = ApiConstants.EXPUNGE,
                type = CommandType.BOOLEAN,
-               description = "If true is passed, the volume is expunged immediately. False by default.",
+               description = "If true is passed, the volume is expunged immediately. False by default. The volume is expunged regardless " +
+                       "whenever expunge.on.destroy is true.",
                since = "4.6.0")
     private Boolean expunge;
 

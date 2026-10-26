@@ -28,6 +28,7 @@ import org.apache.cloudstack.api.BaseCmd;
 import org.apache.cloudstack.api.Parameter;
 import org.apache.cloudstack.api.response.PlacementResponse;
 import org.apache.cloudstack.api.response.ServiceOfferingResponse;
+import org.apache.cloudstack.api.response.SnapshotResponse;
 import org.apache.cloudstack.api.response.TemplateResponse;
 import org.apache.cloudstack.api.response.UserVmResponse;
 import org.apache.cloudstack.api.response.VolumeResponse;
@@ -40,7 +41,8 @@ import com.cloud.deploy.PlacementService;
         "holds its volumes, on some host, only after its local volumes are moved to another host (with the volumes, their sizes, the estimated " +
         "time and an approval for exactly that move), or not now (with the resource that is short). It reads only; the operation itself " +
         "decides. Takes virtualmachineid (start, scale, offering change); virtualmachineid and volumeid (attach); volumeid and " +
-        "serviceofferingid (an Instance from a detached root volume); or templateid and serviceofferingid (a new Instance).",
+        "serviceofferingid (an Instance from a detached root volume); templateid and serviceofferingid (a new Instance); or snapshotid and " +
+        "serviceofferingid (a new Instance whose ROOT volume is created from the snapshot).",
         responseObject = PlacementResponse.class, requestHasSensitiveInfo = false, responseHasSensitiveInfo = false, since = "4.23.0.100",
         authorized = {RoleType.Admin, RoleType.ResourceAdmin, RoleType.DomainAdmin, RoleType.User})
 public class CheckPlacementCmd extends BaseCmd {
@@ -60,6 +62,10 @@ public class CheckPlacementCmd extends BaseCmd {
             description = "The Template of a new Instance")
     private Long templateId;
 
+    @Parameter(name = ApiConstants.SNAPSHOT_ID, type = CommandType.UUID, entityType = SnapshotResponse.class,
+            description = "The snapshot of a disk made from a template that the ROOT volume of a new Instance is created from", since = "4.23.0.100")
+    private Long snapshotId;
+
     @Parameter(name = ApiConstants.SERVICE_OFFERING_ID, type = CommandType.UUID, entityType = ServiceOfferingResponse.class,
             description = "The service offering of a new Instance, or the offering an existing Instance changes to")
     private Long serviceOfferingId;
@@ -69,11 +75,11 @@ public class CheckPlacementCmd extends BaseCmd {
     private Map details;
 
     @Parameter(name = ApiConstants.ZONE_ID, type = CommandType.UUID, entityType = ZoneResponse.class,
-            description = "The zone of a new Instance")
+            description = "The zone of a new Instance; for an Instance from a snapshot, a zone that holds the snapshot, by default the snapshot's own")
     private Long zoneId;
 
     @Parameter(name = ApiConstants.ROOT_DISK_SIZE, type = CommandType.LONG,
-            description = "The root disk size of a new Instance, in GiB")
+            description = "The root disk size of a new Instance from a template, in GiB")
     private Long rootDiskSize;
 
     @Parameter(name = ApiConstants.DATA_DISK_SIZES, type = CommandType.LIST, collectionType = CommandType.LONG,
@@ -90,6 +96,10 @@ public class CheckPlacementCmd extends BaseCmd {
 
     public Long getTemplateId() {
         return templateId;
+    }
+
+    public Long getSnapshotId() {
+        return snapshotId;
     }
 
     public Long getServiceOfferingId() {

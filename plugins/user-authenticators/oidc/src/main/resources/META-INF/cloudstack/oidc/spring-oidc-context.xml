@@ -32,4 +32,8 @@
     <bean id="OidcAuthManager" class="org.apache.cloudstack.oidc.OidcAuthManagerImpl">
         <property name="name" value="OIDCAuth" />
     </bean>
+
+    <bean id="OidcSignInProviderLinks" class="org.apache.cloudstack.oidc.OidcSignInProviderLinks">
+        <property name="name" value="OIDC" />
+    </bean>
 </beans>

@@ -265,4 +265,65 @@ public class UserVmJoinDaoImplTest extends GenericDaoBaseWithTagInformationBaseT
             enabled.set(org.apache.cloudstack.vm.lease.VMLeaseManager.InstanceLeaseEnabled, original);
         }
     }
+
+    /** A response for an Instance with the display name, named under the prefix, or under none when it is null. */
+    private void prepareNamedInstance(String displayName, String prefix) {
+        Mockito.lenient().when(userVmMock.getId()).thenReturn(vmId);
+        Mockito.lenient().when(userVmMock.getDisplayName()).thenReturn(displayName);
+        Mockito.lenient().when(userVmMock.getName()).thenReturn("legacy-host");
+        Mockito.lenient().when(userVmMock.getTemplateType()).thenReturn(Storage.TemplateType.USER);
+        Mockito.lenient().when(userVmMock.getTemplateFormat()).thenReturn(Storage.ImageFormat.QCOW2);
+        Mockito.lenient().when(caller.getId()).thenReturn(2L);
+        SearchBuilder<UserStatisticsVO> searchBuilderMock = Mockito.mock(SearchBuilder.class);
+        Mockito.lenient().doReturn(searchBuilderMock).when(userStatsDao).createSearchBuilder();
+        Mockito.lenient().when(searchBuilderMock.entity()).thenReturn(Mockito.mock(UserStatisticsVO.class));
+        SearchCriteria<UserStatisticsVO> searchCriteriaMock = Mockito.mock(SearchCriteria.class);
+        Mockito.lenient().doReturn(searchCriteriaMock).when(searchBuilderMock).create();
+        Mockito.lenient().doReturn(Arrays.asList()).when(userStatsDao).search(searchCriteriaMock, null);
+        Mockito.lenient().when(_vmInstanceDetailsDao.findSshNamePrefix(vmId)).thenReturn(prefix);
+    }
+
+    private UserVmResponse responseFor(Account.Type callerType, ApiConstants.VMDetails detail) {
+        Mockito.when(caller.getType()).thenReturn(callerType);
+        return _userVmJoinDaoImpl.newUserVmResponse(callerType == Account.Type.ADMIN ? ResponseObject.ResponseView.Full : ResponseObject.ResponseView.Restricted,
+                "virtualmachine", userVmMock, EnumSet.of(detail), null, null, caller);
+    }
+
+    @Test
+    public void everyResponseOfAnInstanceNamedUnderAPrefixCarriesItsSshName() {
+        prepareNamedInstance("Web-1", "snucse-baneling100");
+        for (Account.Type type : Arrays.asList(Account.Type.ADMIN, Account.Type.NORMAL)) {
+            for (ApiConstants.VMDetails detail : ApiConstants.VMDetails.values()) {
+                Assert.assertEquals(type + " " + detail, "snucse-baneling100-web-1", responseFor(type, detail).getSshName());
+            }
+        }
+    }
+
+    @Test
+    public void theSshNameFollowsTheCurrentNameOfTheInstance() {
+        prepareNamedInstance("Renamed", "admin");
+        Assert.assertEquals("admin-renamed", responseFor(Account.Type.NORMAL, ApiConstants.VMDetails.min).getSshName());
+    }
+
+    @Test
+    public void anInstanceCreatedBeforePrefixesHasNoSshName() {
+        prepareNamedInstance("My VM", null);
+        for (Account.Type type : Arrays.asList(Account.Type.ADMIN, Account.Type.NORMAL)) {
+            for (ApiConstants.VMDetails detail : ApiConstants.VMDetails.values()) {
+                Assert.assertNull(type + " " + detail, responseFor(type, detail).getSshName());
+            }
+        }
+    }
+
+    @Test
+    public void aResponseGivenThePrefixOfTheInstanceNamesReadsNoDetailForIt() {
+        prepareNamedInstance("Web", null);
+        Mockito.when(caller.getType()).thenReturn(Account.Type.NORMAL);
+
+        UserVmResponse response = _userVmJoinDaoImpl.newUserVmResponse(ResponseObject.ResponseView.Restricted, "virtualmachine", userVmMock,
+                EnumSet.of(ApiConstants.VMDetails.min), null, null, caller, "admin");
+
+        Assert.assertEquals("admin-web", response.getSshName());
+        Mockito.verify(_vmInstanceDetailsDao, Mockito.never()).findSshNamePrefix(Mockito.anyLong());
+    }
 }

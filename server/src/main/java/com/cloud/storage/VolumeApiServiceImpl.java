@@ -593,6 +593,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
     }
 
     private boolean validateVolume(Account caller, long ownerId, Long zoneId, String volumeName, String url, String format, Long diskOfferingId, List<Reserver> reservations) throws ResourceAllocationException {
+        StorageNames.checkName(volumeName, "volume");
 
         // permission check
         Account volumeOwner = _accountMgr.getActiveAccountById(ownerId);
@@ -798,6 +799,9 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
     public VolumeVO allocVolume(long ownerId, Long zoneId, Long diskOfferingId, Long vmId, Long snapshotId,
                                 String name, Long cmdSize, Boolean displayVolume, Long cmdMinIops, Long cmdMaxIops,
                                 String customId, Long kmsKeyId) throws ResourceAllocationException {
+        if (name != null) {
+            StorageNames.checkName(name, "volume");
+        }
         Account caller = CallContext.current().getCallingAccount();
 
         Account owner = _accountMgr.getActiveAccountById(ownerId);
@@ -1934,6 +1938,15 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
         }
     }
 
+    @Override
+    public void validateDestroyVolumeWithInstance(Volume volume, Account caller, boolean expunge) {
+        if (!_snapshotMgr.canOperateOnVolume(volume)) {
+            throw new InvalidParameterValueException("There are snapshot operations in progress on the volume, unable to delete it");
+        }
+        boolean expungeOnDestroy = UserVmManager.expungesOnDestroy();
+        validateDestroyVolume(volume, caller, expunge || expungeOnDestroy, expungeOnDestroy);
+    }
+
     /**
      * The copy a volume move makes belongs to that move until it ends: the move keeps it or removes it with its file.
      */
@@ -1948,7 +1961,9 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
     public Volume destroyVolume(long volumeId, Account caller, boolean expunge, boolean forceExpunge, Boolean enforceResourceLimitOnDisplayFalse) {
         VolumeVO volume = retrieveAndValidateVolume(volumeId, caller);
 
-        validateDestroyVolume(volume, caller, expunge, forceExpunge);
+        boolean expungeOnDestroy = UserVmManager.expungesOnDestroy();
+        expunge = expunge || expungeOnDestroy;
+        validateDestroyVolume(volume, caller, expunge, forceExpunge || expungeOnDestroy);
 
         destroyVolumeIfPossible(volume);
 
@@ -1988,6 +2003,11 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
     public Volume recoverVolume(long volumeId) {
         Account caller = CallContext.current().getCallingAccount();
         final Long userId = caller.getAccountId();
+
+        if (UserVmManager.expungesOnDestroy() && !_accountMgr.isRootAdmin(caller.getId())) {
+            throw new PermissionDeniedException("Destroyed volumes are not kept while expunge.on.destroy is true, so there is none to recover; "
+                    + "the storage cleanup removes what failed operations leave behind");
+        }
 
         // Verify input parameters
         final VolumeVO volume = _volsDao.findById(volumeId);
@@ -3453,7 +3473,8 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
             volume.setUuid(customId);
         }
 
-        if (name != null) {
+        if (name != null && !name.equals(volume.getName())) {
+            StorageNames.checkName(name, "volume");
             volume.setName(name);
         }
 

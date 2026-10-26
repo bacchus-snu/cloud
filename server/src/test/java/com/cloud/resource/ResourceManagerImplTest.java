@@ -55,6 +55,7 @@ import com.cloud.hypervisor.Hypervisor;
 import com.cloud.storage.ScopeType;
 import com.cloud.storage.StorageManager;
 import com.cloud.storage.StoragePoolHostVO;
+import com.cloud.storage.StoragePoolStatus;
 import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.StoragePoolAndAccessGroupMapDao;
@@ -65,8 +66,11 @@ import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.utils.fsm.NoTransitionException;
 import com.cloud.utils.ssh.SSHCmdHelper;
 import com.cloud.utils.ssh.SshException;
+import com.cloud.vm.UserVmManager;
+import com.cloud.vm.UserVmVO;
 import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VirtualMachine;
+import com.cloud.vm.VirtualMachineManager;
 import com.cloud.vm.dao.VMInstanceDetailsDao;
 import com.cloud.vm.dao.VMInstanceDao;
 import com.trilead.ssh2.Connection;
@@ -84,6 +88,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.BDDMockito;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedConstruction;
@@ -146,6 +151,10 @@ public class ResourceManagerImplTest {
     private PrimaryDataStoreDao storagePoolDao;
     @Mock
     private StoragePoolHostDao storagePoolHostDao;
+    @Mock
+    private VirtualMachineManager virtualMachineManager;
+    @Mock
+    private UserVmManager userVmManager;
 
     @Spy
     @InjectMocks
@@ -1477,5 +1486,62 @@ public class ResourceManagerImplTest {
 
         verify(poolCores).removeHostPoolCores(hostId);
         verify(gpuGroups).removeHostGpuGroups(hostId);
+    }
+
+    private void localStorageWithAUserInstanceAndARouter() {
+        StoragePoolVO pool = Mockito.mock(StoragePoolVO.class);
+        when(pool.getId()).thenReturn(poolId);
+        when(pool.getStatus()).thenReturn(StoragePoolStatus.Maintenance);
+        when(storageManager.findLocalStorageOnHost(hostId)).thenReturn(pool);
+        Mockito.lenient().when(vm1.getType()).thenReturn(VirtualMachine.Type.User);
+        Mockito.lenient().when(vm1.getUuid()).thenReturn("user-vm");
+        Mockito.lenient().when(vm2.getType()).thenReturn(VirtualMachine.Type.DomainRouter);
+        Mockito.lenient().when(vm2.getUuid()).thenReturn("router");
+        when(storageManager.listByStoragePool(poolId)).thenReturn(List.of(vm1, vm2));
+    }
+
+    @Test
+    public void deletingAHostWithItsLocalStorageExpungesTheUserInstancesOnIt() throws Exception {
+        localStorageWithAUserInstanceAndARouter();
+        UserVmVO userVm = Mockito.mock(UserVmVO.class);
+        when(userVmManager.getVirtualMachine(vm1Id)).thenReturn(userVm);
+        when(userVmManager.expunge(userVm)).thenReturn(true);
+
+        resourceManager.deleteRoutingHost(host, false, true);
+
+        InOrder order = Mockito.inOrder(userVmManager);
+        order.verify(userVmManager).destroyVm(vm1Id, true);
+        order.verify(userVmManager).expunge(userVm);
+        verify(virtualMachineManager, never()).destroy(eq("user-vm"), anyBoolean());
+        verify(virtualMachineManager).destroy("router", false);
+    }
+
+    @Test
+    public void aHostIsDeletedEvenWhenTheExpungeOfAUserInstanceOnItsLocalStorageFails() throws Exception {
+        localStorageWithAUserInstanceAndARouter();
+        UserVmVO userVm = Mockito.mock(UserVmVO.class);
+        when(userVmManager.getVirtualMachine(vm1Id)).thenReturn(userVm);
+        when(userVmManager.expunge(userVm)).thenThrow(new CloudRuntimeException("Unable to delete the volume"));
+
+        resourceManager.deleteRoutingHost(host, false, true);
+
+        verify(userVmManager).destroyVm(vm1Id, true);
+        verify(virtualMachineManager).destroy("router", false);
+    }
+
+    @Test
+    public void withTheRecycleBinDeletingAHostWithItsLocalStorageLeavesItsInstancesDestroyed() throws Exception {
+        overrideDefaultConfigValue(UserVmManager.ExpungeOnDestroy, "_defaultValue", "false");
+        try {
+            localStorageWithAUserInstanceAndARouter();
+
+            resourceManager.deleteRoutingHost(host, false, true);
+
+            verify(virtualMachineManager).destroy("user-vm", false);
+            verify(virtualMachineManager).destroy("router", false);
+            verify(userVmManager, never()).destroyVm(anyLong(), anyBoolean());
+        } finally {
+            overrideDefaultConfigValue(UserVmManager.ExpungeOnDestroy, "_defaultValue", "true");
+        }
     }
 }

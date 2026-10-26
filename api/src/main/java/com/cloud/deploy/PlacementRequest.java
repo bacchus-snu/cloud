@@ -23,18 +23,20 @@ import java.util.Map;
 
 /**
  * What a placement is asked for: the start of an Instance (optionally with another offering), the attach of a volume
- * to an Instance, an Instance created from a detached root volume, or a new Instance from a template.
+ * to an Instance, an Instance created from a detached root volume, a new Instance from a template, or a new Instance
+ * whose root is created from a snapshot.
  */
 public final class PlacementRequest {
 
     public enum Kind {
-        START, ATTACH, DEPLOY_FROM_VOLUME, DEPLOY
+        START, ATTACH, DEPLOY_FROM_VOLUME, DEPLOY, DEPLOY_FROM_SNAPSHOT
     }
 
     private final Kind kind;
     private final Long vmId;
     private final Long volumeId;
     private final Long templateId;
+    private final Long snapshotId;
     private final Long serviceOfferingId;
     private final Long zoneId;
     private final long ownerId;
@@ -43,11 +45,12 @@ public final class PlacementRequest {
     private List<Long> dataDiskSizesGiB = new ArrayList<>();
     private boolean approvalBindsInstance = true;
 
-    private PlacementRequest(Kind kind, Long vmId, Long volumeId, Long templateId, Long serviceOfferingId, Long zoneId, long ownerId) {
+    private PlacementRequest(Kind kind, Long vmId, Long volumeId, Long templateId, Long snapshotId, Long serviceOfferingId, Long zoneId, long ownerId) {
         this.kind = kind;
         this.vmId = vmId;
         this.volumeId = volumeId;
         this.templateId = templateId;
+        this.snapshotId = snapshotId;
         this.serviceOfferingId = serviceOfferingId;
         this.zoneId = zoneId;
         this.ownerId = ownerId;
@@ -55,19 +58,23 @@ public final class PlacementRequest {
 
     /** @param serviceOfferingId the offering the Instance starts with after a change, or null for its own */
     public static PlacementRequest start(long vmId, Long serviceOfferingId, long ownerId) {
-        return new PlacementRequest(Kind.START, vmId, null, null, serviceOfferingId, null, ownerId);
+        return new PlacementRequest(Kind.START, vmId, null, null, null, serviceOfferingId, null, ownerId);
     }
 
     public static PlacementRequest attach(long vmId, long volumeId, long ownerId) {
-        return new PlacementRequest(Kind.ATTACH, vmId, volumeId, null, null, null, ownerId);
+        return new PlacementRequest(Kind.ATTACH, vmId, volumeId, null, null, null, null, ownerId);
     }
 
     public static PlacementRequest deployFromVolume(long volumeId, long serviceOfferingId, long ownerId) {
-        return new PlacementRequest(Kind.DEPLOY_FROM_VOLUME, null, volumeId, null, serviceOfferingId, null, ownerId);
+        return new PlacementRequest(Kind.DEPLOY_FROM_VOLUME, null, volumeId, null, null, serviceOfferingId, null, ownerId);
     }
 
     public static PlacementRequest deploy(long templateId, long serviceOfferingId, long zoneId, long ownerId) {
-        return new PlacementRequest(Kind.DEPLOY, null, null, templateId, serviceOfferingId, zoneId, ownerId);
+        return new PlacementRequest(Kind.DEPLOY, null, null, templateId, null, serviceOfferingId, zoneId, ownerId);
+    }
+
+    public static PlacementRequest deployFromSnapshot(long snapshotId, long serviceOfferingId, long zoneId, long ownerId) {
+        return new PlacementRequest(Kind.DEPLOY_FROM_SNAPSHOT, null, null, null, snapshotId, serviceOfferingId, zoneId, ownerId);
     }
 
     public PlacementRequest withDetails(Map<String, String> details) {
@@ -113,6 +120,10 @@ public final class PlacementRequest {
 
     public Long getTemplateId() {
         return templateId;
+    }
+
+    public Long getSnapshotId() {
+        return snapshotId;
     }
 
     public Long getServiceOfferingId() {

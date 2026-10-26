@@ -139,6 +139,7 @@ import com.cloud.event.ActionEventUtils;
 import com.cloud.event.EventTypes;
 import com.cloud.event.EventVO;
 import com.cloud.exception.AgentUnavailableException;
+import com.cloud.exception.ConcurrentOperationException;
 import com.cloud.exception.DiscoveryException;
 import com.cloud.exception.InsufficientServerCapacityException;
 import com.cloud.exception.InvalidParameterValueException;
@@ -232,6 +233,7 @@ import com.cloud.utils.net.NetUtils;
 import com.cloud.utils.ssh.SSHCmdHelper;
 import com.cloud.utils.ssh.SshException;
 import com.cloud.vm.UserVmManager;
+import com.cloud.vm.UserVmVO;
 import com.cloud.vm.VMInstanceVO;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.VirtualMachine.State;
@@ -3826,6 +3828,21 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
         return host;
     }
 
+    /**
+     * An Instance whose expunge fails is left Expunging, which the expunge task retries; the host is deleted all the same.
+     */
+    private void expungeUserVmOfDeletedHost(VMInstanceVO vm) throws ResourceUnavailableException, ConcurrentOperationException {
+        userVmManager.destroyVm(vm.getId(), true);
+        UserVmVO userVm = userVmManager.getVirtualMachine(vm.getId());
+        try {
+            if (userVm != null && !userVmManager.expunge(userVm)) {
+                logger.warn("Unable to expunge {} on the local storage of a deleted host; the expunge task retries it", vm);
+            }
+        } catch (RuntimeException e) {
+            logger.warn("Unable to expunge {} on the local storage of a deleted host; the expunge task retries it", vm, e);
+        }
+    }
+
     @Override
     public void deleteRoutingHost(final HostVO host, final boolean isForced, final boolean forceDestroyStorage) throws UnableDeleteHostException {
         if (host.getType() != Host.Type.Routing) {
@@ -3857,7 +3874,11 @@ public class ResourceManagerImpl extends ManagerBase implements ResourceManager,
             final List<VMInstanceVO> vmsOnLocalStorage = _storageMgr.listByStoragePool(storagePool.getId());
             for (final VMInstanceVO vm : vmsOnLocalStorage) {
                 try {
-                    _vmMgr.destroy(vm.getUuid(), false);
+                    if (vm.getType() == VirtualMachine.Type.User && UserVmManager.expungesOnDestroy()) {
+                        expungeUserVmOfDeletedHost(vm);
+                    } else {
+                        _vmMgr.destroy(vm.getUuid(), false);
+                    }
                 } catch (final Exception e) {
                     String errorMsg = String.format("There was an error when destroying %s as a part of hostDelete for %s", vm, host);
                     logger.debug(errorMsg, e);

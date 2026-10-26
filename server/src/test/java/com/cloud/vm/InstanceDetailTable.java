@@ -80,6 +80,7 @@ public class InstanceDetailTable {
         return deleted.size();
     }
 
+    /** Detail names and values compare regardless of case, as the database's collation of the columns compares them. */
     private static java.util.function.Predicate<VMInstanceDetailVO> matches(SearchCriteria<VMInstanceDetailVO> sc) {
         String where = sc.getWhereClause();
         Set<Object> vmIds = valuesOf(sc, "vm_id");
@@ -88,8 +89,8 @@ public class InstanceDetailTable {
         Set<Object> display = valuesOf(sc, "display");
         boolean namesExcluded = where.contains("name NOT IN");
         return row -> (vmIds.isEmpty() || vmIds.contains(row.getResourceId()))
-                && (names.isEmpty() || names.contains(row.getName()) != namesExcluded)
-                && (values.isEmpty() || values.contains(row.getValue()))
+                && (names.isEmpty() || names.stream().anyMatch(name -> row.getName().equalsIgnoreCase(String.valueOf(name))) != namesExcluded)
+                && (values.isEmpty() || values.stream().anyMatch(value -> row.getValue().equalsIgnoreCase(String.valueOf(value))))
                 && (display.isEmpty() || display.stream().anyMatch(value -> Objects.equals(value, row.isDisplay())));
     }
 

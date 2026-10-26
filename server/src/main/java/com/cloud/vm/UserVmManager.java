@@ -40,10 +40,13 @@ import com.cloud.hypervisor.Hypervisor.HypervisorType;
 import com.cloud.offering.ServiceOffering;
 import com.cloud.service.ServiceOfferingVO;
 import com.cloud.storage.DiskOfferingVO;
+import com.cloud.storage.Snapshot;
 import com.cloud.storage.Storage.StoragePoolType;
 import com.cloud.storage.VMTemplateVO;
+import com.cloud.storage.Volume;
 import com.cloud.template.VirtualMachineTemplate;
 import com.cloud.uservm.UserVm;
+import com.cloud.utils.NumbersUtil;
 import com.cloud.utils.Pair;
 import com.cloud.utils.StringUtils;
 
@@ -70,6 +73,17 @@ public interface UserVmManager extends UserVmService {
     ConfigKey<Boolean> DestroyRootVolumeOnVmDestruction = new ConfigKey<Boolean>("Advanced", Boolean.class, "destroy.root.volume.on.vm.destruction", "false",
             "Destroys the VM's root volume when the VM is destroyed.",
             true, ConfigKey.Scope.Domain);
+
+    ConfigKey<Boolean> ExpungeOnDestroy = new ConfigKey<>(ConfigKey.CATEGORY_ADVANCED, Boolean.class, "expunge.on.destroy", "true",
+            "Destroying an Instance or a volume expunges it at once; false keeps the recoverable Destroyed state until expunge.delay",
+            true, ConfigKey.Scope.Global);
+
+    /**
+     * @return whether destroying an Instance or a volume expunges it at once, whoever destroys it
+     */
+    static boolean expungesOnDestroy() {
+        return Boolean.TRUE.equals(ExpungeOnDestroy.value());
+    }
 
     ConfigKey<String> StrictHostTags = new ConfigKey<>(
             "Advanced",
@@ -169,6 +183,32 @@ public interface UserVmManager extends UserVmService {
      */
     static boolean keepRootVolumeByDefault(Long domainId) {
         return !Boolean.TRUE.equals(DestroyRootVolumeOnVmDestruction.valueIn(domainId));
+    }
+
+    /**
+     * @param source the volume the snapshot was taken of, removed or not; null when its row is gone
+     * @throws InvalidParameterValueException unless the snapshot is backed up and of a disk made from a template, the only snapshots the
+     *         ROOT volume of a new Instance is created from
+     */
+    static void checkSnapshotBootsAnInstance(Snapshot snapshot, Volume source) {
+        if (snapshot.getState() != Snapshot.State.BackedUp) {
+            throw new InvalidParameterValueException(String.format("Snapshot %s is %s; an Instance is created only from a backed-up snapshot",
+                    snapshot.getUuid(), snapshot.getState()));
+        }
+        if (source == null || source.getTemplateId() == null) {
+            throw new InvalidParameterValueException(String.format("Snapshot %s is not of a disk made from a template and cannot boot an Instance",
+                    snapshot.getUuid()));
+        }
+    }
+
+    /**
+     * @return the bytes of the ROOT volume created from a snapshot of the source volume: the source volume's size, or the root disk size in
+     *         GiB the deployment's parameters give when that is larger
+     */
+    static long rootDiskSizeFromSnapshot(Volume source, Map<String, String> customParameters) {
+        long size = source.getSize() == null ? 0 : source.getSize();
+        long given = NumbersUtil.parseLong(customParameters.get(VmDetailConstants.ROOT_DISK_SIZE), 0) << 30;
+        return Math.max(size, given);
     }
 
     /**

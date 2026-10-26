@@ -181,6 +181,10 @@ public class CapabilitiesResponse extends BaseResponse {
     @Param(description = "Whether destroying an Instance keeps its ROOT volume when keeprootvolume is not passed", since = "4.23.0.100")
     private Boolean keepRootVolumeDefault;
 
+    @SerializedName(ApiConstants.EXPUNGE_ON_DESTROY)
+    @Param(description = "Whether destroying an Instance or a volume expunges it at once, so that it cannot be recovered", since = "4.23.0.100")
+    private Boolean expungeOnDestroy;
+
     @SerializedName(ApiConstants.RESOURCE_LIMIT_REQUEST_ALLOWED)
     @Param(description = "Whether the limits of the calling Account follow its resource limit grants, so that it may request them; false for root admin, "
             + "project and system Accounts", since = "4.23.0.100")
@@ -361,6 +365,10 @@ public class CapabilitiesResponse extends BaseResponse {
 
     public void setKeepRootVolumeDefault(Boolean keepRootVolumeDefault) {
         this.keepRootVolumeDefault = keepRootVolumeDefault;
+    }
+
+    public void setExpungeOnDestroy(Boolean expungeOnDestroy) {
+        this.expungeOnDestroy = expungeOnDestroy;
     }
 
     public void setResourceLimitRequestAllowed(Boolean resourceLimitRequestAllowed) {

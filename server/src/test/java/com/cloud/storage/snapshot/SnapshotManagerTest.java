@@ -328,6 +328,48 @@ public class SnapshotManagerTest {
         }
     }
 
+    @SuppressWarnings("unchecked")
+    @Test
+    public void anAllocatedSnapshotWithoutANameIsNamedAfterItsVolume() throws ResourceAllocationException {
+        when(_vmDao.findById(anyLong())).thenReturn(vmMock);
+        when(vmMock.getId()).thenReturn(TEST_VM_ID);
+        when(vmMock.getState()).thenReturn(State.Stopped);
+        when(vmMock.getHypervisorType()).thenReturn(Hypervisor.HypervisorType.KVM);
+        when(volumeInfoMock.getInstanceId()).thenReturn(TEST_VM_ID);
+        when(volumeInfoMock.getId()).thenReturn(TEST_VOLUME_ID);
+        when(volumeInfoMock.getName()).thenReturn("Web-1-ROOT");
+        List<SnapshotVO> mockList = mock(List.class);
+        when(mockList.size()).thenReturn(0);
+        when(_snapshotDao.listByInstanceId(TEST_VM_ID, Snapshot.State.Creating, Snapshot.State.CreatedOnPrimary, Snapshot.State.BackingUp)).thenReturn(mockList);
+        List<VMSnapshotVO> mockList2 = mock(List.class);
+        when(mockList2.size()).thenReturn(0);
+        when(_vmSnapshotDao.listByInstanceId(TEST_VM_ID, VMSnapshot.State.Creating, VMSnapshot.State.Reverting, VMSnapshot.State.Expunging)).thenReturn(mockList2);
+        SnapshotVO earlier = new SnapshotVO(TEST_ZONE_ID, 1L, 1L, TEST_VOLUME_ID, 1L, "Web-1-ROOT-snapshot-0", (short) 0, "MANUAL", 1L, null, null,
+                HypervisorType.KVM, null);
+        earlier.setState(Snapshot.State.BackedUp);
+        when(volumeInfoMock.getAccountId()).thenReturn(1L);
+        when(_snapshotDao.listByAccountAndNamePrefixIncludingRemoved(1L, "Web-1-ROOT")).thenReturn(Collections.singletonList(earlier));
+        Mockito.lenient().when(dataCenterDao.findById(anyLong())).thenReturn(dataCenterVOMock);
+        org.mockito.ArgumentCaptor<SnapshotVO> persisted = org.mockito.ArgumentCaptor.forClass(SnapshotVO.class);
+        when(_snapshotDao.persist(persisted.capture())).thenReturn(snapshotMock);
+
+        try (MockedConstruction<CheckedReservation> mockCheckedReservation = Mockito.mockConstruction(CheckedReservation.class)) {
+            _snapshotMgr.allocSnapshot(TEST_VOLUME_ID, Snapshot.MANUAL_POLICY_ID, null, null);
+        }
+
+        Assert.assertEquals("Web-1-ROOT-snapshot-1", persisted.getValue().getName());
+    }
+
+    @Test
+    public void aSnapshotIsAllocatedOnlyWithANameTheNameRuleAdmits() throws ResourceAllocationException {
+        try (MockedConstruction<CheckedReservation> mockCheckedReservation = Mockito.mockConstruction(CheckedReservation.class)) {
+            Assert.assertThrows(InvalidParameterValueException.class,
+                    () -> _snapshotMgr.allocSnapshot(TEST_VOLUME_ID, Snapshot.MANUAL_POLICY_ID, "my snapshot", null));
+            Assert.assertTrue("nothing is reserved", mockCheckedReservation.constructed().isEmpty());
+        }
+        Mockito.verify(_snapshotDao, Mockito.never()).persist(any(SnapshotVO.class));
+    }
+
     @Test(expected = InvalidParameterValueException.class)
     public void testDeleteSnapshotDestroyedFailure() {
         when(_snapshotDao.findById(TEST_SNAPSHOT_ID)).thenReturn(snapshotMock);

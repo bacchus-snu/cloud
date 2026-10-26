@@ -261,6 +261,12 @@ public interface VolumeApiService {
 
     void validateDestroyVolume(Volume volume, Account caller, boolean expunge, boolean forceExpunge);
 
+    /**
+     * Checks a volume attached to an Instance being destroyed with it as destroying the volume would check it, so that a refusal comes
+     * before the Instance is touched.
+     */
+    void validateDestroyVolumeWithInstance(Volume volume, Account caller, boolean expunge);
+
     Volume changeDiskOfferingForVolume(ChangeOfferingForVolumeCmd cmd) throws ResourceAllocationException;
 
     void publishVolumeCreationUsageEvent(Volume volume);

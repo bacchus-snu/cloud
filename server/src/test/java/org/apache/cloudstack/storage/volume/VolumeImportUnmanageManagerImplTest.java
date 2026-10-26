@@ -25,6 +25,7 @@ import com.cloud.dc.DataCenterVO;
 import com.cloud.dc.dao.DataCenterDao;
 import com.cloud.event.ActionEventUtils;
 import com.cloud.event.UsageEventUtils;
+import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.PermissionDeniedException;
 import com.cloud.exception.ResourceAllocationException;
 import com.cloud.host.HostVO;
@@ -245,6 +246,23 @@ public class VolumeImportUnmanageManagerImplTest {
         Assert.assertEquals(storagePoolType.name(), response.getStoragePoolType());
         Assert.assertEquals(storagePoolName, response.getStoragePoolName());
         Assert.assertEquals(storagePoolUuid, response.getStoragePoolId());
+    }
+
+    @Test
+    public void aVolumeIsImportedOnlyWithANameTheNameRuleAdmits() {
+        ImportVolumeCmd cmd = mock(ImportVolumeCmd.class);
+        when(cmd.getName()).thenReturn("my disk");
+
+        Assert.assertThrows(InvalidParameterValueException.class, () -> volumeImportUnmanageManager.importVolume(cmd));
+
+        verify(volumeImportUnmanageManager, Mockito.never()).checkIfPoolAvailable(Mockito.anyLong());
+    }
+
+    @Test
+    public void aVolumeImportedWithoutANameIsNamedAfterItsPath() {
+        Assert.assertEquals("dir-disk-1.qcow2", volumeImportUnmanageManager.nameOfImportedVolume(null, "dir/disk 1.qcow2"));
+        Assert.assertEquals("dir-disk-1.qcow2", volumeImportUnmanageManager.nameOfImportedVolume(" ", "dir/disk 1.qcow2"));
+        Assert.assertEquals("the name given, trimmed", "data-1", volumeImportUnmanageManager.nameOfImportedVolume(" data-1 ", "dir/disk 1.qcow2"));
     }
 
     @Test

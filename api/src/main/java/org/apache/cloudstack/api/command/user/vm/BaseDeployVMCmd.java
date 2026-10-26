@@ -30,7 +30,6 @@ import javax.annotation.Nonnull;
 import org.apache.cloudstack.acl.RoleType;
 import org.apache.cloudstack.affinity.AffinityGroupResponse;
 import org.apache.cloudstack.api.ACL;
-import org.apache.cloudstack.api.ApiArgValidator;
 import org.apache.cloudstack.api.ApiCommandResourceType;
 import org.apache.cloudstack.api.ApiConstants;
 import org.apache.cloudstack.api.ApiConstants.IoDriverPolicy;
@@ -79,10 +78,13 @@ public abstract class BaseDeployVMCmd extends BaseAsyncCreateCustomIdCmd impleme
     @Parameter(name = ApiConstants.ZONE_ID, type = CommandType.UUID, entityType = ZoneResponse.class, required = true, description = "availability zone for the virtual machine")
     protected Long zoneId;
 
-    @Parameter(name = ApiConstants.NAME, type = CommandType.STRING, description = "host name for the virtual machine", validations = {ApiArgValidator.RFCComplianceDomainName})
+    @Parameter(name = ApiConstants.NAME, type = CommandType.STRING, description = "the name of the Instance when displayname is not given")
     protected String name;
 
-    @Parameter(name = ApiConstants.DISPLAY_NAME, type = CommandType.STRING, description = "an optional user generated name for the virtual machine")
+    @Parameter(name = ApiConstants.DISPLAY_NAME, type = CommandType.STRING, description = "the name of the Instance, unique within its account regardless of case: "
+            + "1 to 30 letters, digits and hyphens, not starting or ending with a hyphen. Without it and name, the Instance is named VM-n with the "
+            + "smallest free n. Its SSH name is its account's prefix, a hyphen and the name in lower case, which is also its hostname unless "
+            + "another Instance has that")
     protected String displayName;
 
     @Parameter(name=ApiConstants.PASSWORD, type=CommandType.STRING, description="The password of the virtual machine. If null, a random password will be generated for the VM.",

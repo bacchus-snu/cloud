@@ -19,7 +19,6 @@ package com.cloud.storage.snapshot;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +44,7 @@ import org.apache.cloudstack.api.command.user.snapshot.DeleteSnapshotPoliciesCmd
 import org.apache.cloudstack.api.command.user.snapshot.ExtractSnapshotCmd;
 import org.apache.cloudstack.api.command.user.snapshot.ListSnapshotPoliciesCmd;
 import org.apache.cloudstack.api.command.user.snapshot.ListSnapshotsCmd;
+import org.apache.cloudstack.api.command.user.snapshot.UpdateSnapshotCmd;
 import org.apache.cloudstack.api.command.user.snapshot.UpdateSnapshotPolicyCmd;
 import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.engine.subsystem.api.storage.CreateCmdResult;
@@ -133,6 +133,7 @@ import com.cloud.storage.SnapshotPolicyVO;
 import com.cloud.storage.SnapshotScheduleVO;
 import com.cloud.storage.SnapshotVO;
 import com.cloud.storage.Storage;
+import com.cloud.storage.StorageNames;
 import com.cloud.storage.StoragePoolStatus;
 import com.cloud.storage.Storage.ImageFormat;
 import com.cloud.storage.Storage.StoragePoolType;
@@ -465,6 +466,37 @@ public class SnapshotManagerImpl extends MutualExclusiveIdsManagerBase implement
             snapshotDataStoreVO.setEndOfChain(true);
             _snapshotStoreDao.update(snapshotDataStoreVO.getId(), snapshotDataStoreVO);
         }
+    }
+
+    @Override
+    @ActionEvent(eventType = EventTypes.EVENT_SNAPSHOT_UPDATE, eventDescription = "updating snapshot")
+    public Snapshot updateSnapshot(UpdateSnapshotCmd cmd) {
+        SnapshotVO snapshot = _snapshotDao.findById(cmd.getId());
+        if (snapshot == null || snapshot.getState() == Snapshot.State.Destroyed) {
+            throw new InvalidParameterValueException("Unable to find a Snapshot with the given ID");
+        }
+        _accountMgr.checkAccess(CallContext.current().getCallingAccount(), null, true, snapshot);
+        String name = cmd.getName();
+        if (name == null || !name.equals(snapshot.getName())) {
+            StorageNames.checkName(name, "snapshot");
+            snapshot.setName(name);
+            _snapshotDao.update(snapshot.getId(), snapshot);
+        }
+        return snapshot;
+    }
+
+    /**
+     * @return the name given for a new snapshot of the volume, which the name rule must admit, or else the default name, numbered on
+     *         from every snapshot the account has had of a volume of the same name
+     */
+    protected String nameOfNewSnapshot(Volume volume, String given) {
+        if (StringUtils.isNotEmpty(given)) {
+            StorageNames.checkName(given, "snapshot");
+            return given;
+        }
+        List<String> names = _snapshotDao.listByAccountAndNamePrefixIncludingRemoved(volume.getAccountId(), StorageNames.defaultSnapshotNameStem(volume.getName()))
+                .stream().map(SnapshotVO::getName).collect(Collectors.toList());
+        return StorageNames.defaultSnapshotName(volume.getName(), names);
     }
 
     @Override
@@ -2030,17 +2062,7 @@ public class SnapshotManagerImpl extends MutualExclusiveIdsManagerBase implement
         Type snapshotType = getSnapshotType(policyId);
         Account owner = _accountMgr.getAccount(volume.getAccountId());
 
-        // Determine the name for this snapshot
-        // Snapshot Name: VMInstancename + volumeName + timeString
-        String timeString = DateUtil.getDateDisplayString(DateUtil.GMT_TIMEZONE, new Date(), DateUtil.YYYYMMDD_FORMAT);
-
-        VMInstanceVO vmInstance = _vmDao.findById(volume.getInstanceId());
-        String vmDisplayName = "detached";
-        if (vmInstance != null) {
-            vmDisplayName = vmInstance.getHostName();
-        }
-        if (snapshotName == null)
-            snapshotName = vmDisplayName + "_" + volume.getName() + "_" + timeString;
+        snapshotName = nameOfNewSnapshot(volume, snapshotName);
 
         HypervisorType hypervisorType = HypervisorType.None;
         StoragePoolVO storagePool = _storagePoolDao.findById(volume.getDataStore().getId());

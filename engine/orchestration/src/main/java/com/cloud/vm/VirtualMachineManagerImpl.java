@@ -298,6 +298,7 @@ import com.cloud.utils.db.EntityManager;
 import com.cloud.utils.db.GlobalLock;
 import com.cloud.utils.db.Transaction;
 import com.cloud.utils.db.TransactionCallback;
+import com.cloud.utils.db.TransactionCallbackNoReturn;
 import com.cloud.utils.db.TransactionCallbackWithException;
 import com.cloud.utils.db.TransactionCallbackWithExceptionNoReturn;
 import com.cloud.utils.db.TransactionLegacy;
@@ -657,11 +658,25 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
         }
     }
 
-    private void allocateRootVolume(VMInstanceVO vm, VirtualMachineTemplate template, DiskOfferingInfo rootDiskOfferingInfo, Account owner, Long rootDiskSizeFinal, Volume volume, Snapshot snapshot) {
+    /**
+     * @return the name of a new ROOT volume of the Instance: the name of an Instance named under its account's prefix followed by
+     *         "-ROOT", or "ROOT-" followed by the ID of any other Instance
+     */
+    protected String rootVolumeName(VMInstanceVO vm) {
+        if (vm.getType() == VirtualMachine.Type.User && vmInstanceDetailsDao.findSshNamePrefix(vm.getId()) != null) {
+            UserVmVO userVm = _userVmDao.findById(vm.getId());
+            if (userVm != null && StringUtils.isNotBlank(userVm.getDisplayName())) {
+                return InstanceNames.rootVolumeName(userVm.getDisplayName());
+            }
+        }
+        return String.format("ROOT-%s", vm.getId());
+    }
+
+    protected void allocateRootVolume(VMInstanceVO vm, VirtualMachineTemplate template, DiskOfferingInfo rootDiskOfferingInfo, Account owner, Long rootDiskSizeFinal, Volume volume, Snapshot snapshot) {
         // Create new Volume context and inject event resource type, id and details to generate VOLUME.CREATE event for the ROOT disk.
         CallContext volumeContext = CallContext.register(CallContext.current(), ApiCommandResourceType.Volume);
         try {
-            String rootVolumeName = String.format("ROOT-%s", vm.getId());
+            String rootVolumeName = rootVolumeName(vm);
             if (template.getFormat() == ImageFormat.ISO) {
                 volumeMgr.allocateRawVolume(Type.ROOT, rootVolumeName, rootDiskOfferingInfo.getDiskOffering(), rootDiskOfferingInfo.getSize(),
                         rootDiskOfferingInfo.getMinIops(), rootDiskOfferingInfo.getMaxIops(), vm, template, owner, null, rootDiskOfferingInfo.getKmsKeyId(), true);
@@ -5575,21 +5590,28 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
 
     }
 
+    /**
+     * Removes the details of a customized offering alone, so that the Instance's other details keep their names, values and
+     * display flags.
+     */
     private void removeCustomOfferingDetails(long vmId) {
-        Map<String, String> details = vmInstanceDetailsDao.listDetailsKeyPairs(vmId);
-        details.remove(UsageEventVO.DynamicParameters.cpuNumber.name());
-        details.remove(UsageEventVO.DynamicParameters.cpuSpeed.name());
-        details.remove(UsageEventVO.DynamicParameters.memory.name());
-        List<VMInstanceDetailVO> detailList = new ArrayList<>();
-        for(Map.Entry<String, String> entry: details.entrySet()) {
-            VMInstanceDetailVO detailVO = new VMInstanceDetailVO(vmId, entry.getKey(), entry.getValue(), true);
-            detailList.add(detailVO);
-        }
-        vmInstanceDetailsDao.saveDetails(detailList);
+        Transaction.execute(new TransactionCallbackNoReturn() {
+            @Override
+            public void doInTransactionWithoutResult(TransactionStatus status) {
+                for (UsageEventVO.DynamicParameters parameter : List.of(UsageEventVO.DynamicParameters.cpuNumber, UsageEventVO.DynamicParameters.cpuSpeed,
+                        UsageEventVO.DynamicParameters.memory)) {
+                    vmInstanceDetailsDao.removeDetail(vmId, parameter.name());
+                }
+            }
+        });
     }
 
+    /**
+     * Writes the details of a customized offering alone, so that the Instance's other details keep their names, values and
+     * display flags.
+     */
     private void saveCustomOfferingDetails(long vmId, ServiceOffering serviceOffering) {
-        Map<String, String> details = vmInstanceDetailsDao.listDetailsKeyPairs(vmId);
+        Map<String, String> details = new LinkedHashMap<>();
 
         // We need to restore only the customizable parameters. If we save a parameter that is not customizable and attempt
         // to restore a VM snapshot, com.cloud.vm.UserVmManagerImpl.validateCustomParameters will fail.
@@ -5604,12 +5626,12 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
             details.put(UsageEventVO.DynamicParameters.memory.name(), serviceOffering.getRamSize().toString());
         }
 
-        List<VMInstanceDetailVO> detailList = new ArrayList<>();
-        for (Map.Entry<String, String> entry: details.entrySet()) {
-            VMInstanceDetailVO detailVO = new VMInstanceDetailVO(vmId, entry.getKey(), entry.getValue(), true);
-            detailList.add(detailVO);
-        }
-        vmInstanceDetailsDao.saveDetails(detailList);
+        Transaction.execute(new TransactionCallbackNoReturn() {
+            @Override
+            public void doInTransactionWithoutResult(TransactionStatus status) {
+                details.forEach((name, value) -> vmInstanceDetailsDao.addDetail(vmId, name, value, true));
+            }
+        });
     }
 
     @Override

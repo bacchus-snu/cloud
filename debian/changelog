@@ -1,3 +1,15 @@
+cloudstack (4.23.0.100+snucse.8) unstable; urgency=low
+
+  * Instances are named per account and reached by an SSH name the system
+    prefixes with the account; a rename moves the SSH command, not the
+    hostname inside
+  * SSH guests are edited as comma-separated lists on the instance page
+  * Destroying an instance or a volume deletes it at once, confirmed by
+    typing its name; a root-disk snapshot can start a new instance;
+    snapshots get readable default names and can be renamed
+
+ -- SNUCSE Cloud maintainers <contact@bacchus.snucse.org>  Mon, 26 Oct 2026 00:28:34 -0400
+
 cloudstack (4.23.0.100+snucse.7) unstable; urgency=low
 
   * An instance shows how to reach it: the SSH command, the account it

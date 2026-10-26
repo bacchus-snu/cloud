@@ -1200,10 +1200,19 @@ public class VirtualMachineManagerImpl extends ManagerBase implements VirtualMac
         }
     }
 
+    /**
+     * Checks that what the Instance's ROOT volume is created from at this start still exists: the snapshot it is created from, or else
+     * the Template.
+     */
     protected void checkIfTemplateNeededForCreatingVmVolumes(VMInstanceVO vm) {
         final List<VolumeVO> existingRootVolumes = _volsDao.findReadyRootVolumesByInstance(vm.getId());
         if (CollectionUtils.isNotEmpty(existingRootVolumes)) {
             return;
+        }
+        for (VolumeVO root : _volsDao.findByInstanceAndType(vm.getId(), Volume.Type.ROOT)) {
+            if (volumeMgr.snapshotToCreateFrom(root) != null) {
+                return;
+            }
         }
         final VMTemplateVO template = _templateDao.findById(vm.getTemplateId());
         if (template == null) {

@@ -928,8 +928,9 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
 
     /**
      * Names a new Instance of the owner: its name is the display name asked for, else the name asked for, else the first "VM-n"
-     * free in the account and as an SSH name, and its hostname is its SSH name unless another Instance has that. A prefix among the
-     * details, which only a root administrator passes, replaces the owner's; the details record the prefix.
+     * free in the account and as an SSH name, and its hostname is {@link InstanceNames#newHostName}, which no name chooses. A prefix
+     * among the details, which only a root administrator passes, replaces the owner's. The details record the prefix and the hostname
+     * that the guest takes: the name in lower case, or the one a root administrator passes; it does not follow later renames.
      */
     protected NewInstanceNames nameNewInstance(Account owner, String requestedName, String requestedDisplayName, Map<String, String> customParameters) {
         String prefix = customParameters.get(VmDetailConstants.SSH_NAME_PREFIX);
@@ -937,6 +938,10 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             prefix = instanceNamePrefix(owner);
         } else {
             InstanceNames.checkPrefix(prefix);
+        }
+        String guestHostName = customParameters.get(VmDetailConstants.GUEST_HOSTNAME);
+        if (StringUtils.isNotEmpty(guestHostName)) {
+            guestHostName = checkedGuestHostName(guestHostName);
         }
         Runnable release = lockInstanceNamesUnder(owner.getId(), prefix);
         boolean named = false;
@@ -946,17 +951,18 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             String name = StringUtils.isNotEmpty(requestedDisplayName) ? requestedDisplayName : requestedName;
             if (StringUtils.isEmpty(name)) {
                 name = InstanceNames.defaultName(names);
-                while (sshNameHolder(InstanceNames.hostName(prefix, name), null) != null) {
+                while (sshNameHolder(InstanceNames.checkedSshName(prefix, name), null) != null) {
                     names.add(name);
                     name = InstanceNames.defaultName(names);
                 }
             } else {
                 InstanceNames.checkName(name);
                 InstanceNames.checkNameFree(name, names);
-                checkSshNameFree(InstanceNames.hostName(prefix, name), null);
+                checkSshNameFree(InstanceNames.checkedSshName(prefix, name), null);
             }
-            String hostName = InstanceNames.freeHostName(prefix, name, this::hostNameTaken);
+            String hostName = InstanceNames.newHostName(prefix, hostNamesUnderPrefix(prefix), this::hostNameTaken);
             customParameters.put(VmDetailConstants.SSH_NAME_PREFIX, prefix);
+            customParameters.put(VmDetailConstants.GUEST_HOSTNAME, StringUtils.isNotEmpty(guestHostName) ? guestHostName : name.toLowerCase(Locale.ROOT));
             NewInstanceNames instanceNames = new NewInstanceNames(name, hostName, prefix, release);
             named = true;
             return instanceNames;
@@ -965,6 +971,18 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                 release.run();
             }
         }
+    }
+
+    /**
+     * @return the hostname that a root administrator gives the guest of a new Instance, in lower case
+     */
+    protected static String checkedGuestHostName(String given) {
+        String guestHostName = given.toLowerCase(Locale.ROOT);
+        if (!NetUtils.verifyDomainNameLabel(guestHostName, false)) {
+            throw new InvalidParameterValueException(String.format("The guest hostname %s is not a hostname: 1 to 63 letters, digits and hyphens that "
+                    + "neither start nor end with a hyphen", given));
+        }
+        return guestHostName;
     }
 
     /**
@@ -1000,7 +1018,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             }
             InstanceNames.checkNameFree(name, instanceNamesOfAccount(newAccount.getId(), vm.getId()));
             if (prefix != null) {
-                checkSshNameFree(InstanceNames.hostName(prefix, name), vm.getId());
+                checkSshNameFree(InstanceNames.checkedSshName(prefix, name), vm.getId());
             }
             NewInstanceNames instanceNames = new NewInstanceNames(name, vm.getHostName(), prefix, release);
             named = true;
@@ -1013,13 +1031,22 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
     }
 
     /**
-     * @return the template's details that an Instance created from it takes: all but the prefix of the Instance's names, which no
+     * @return the template's details that an Instance created from it takes: all but the details naming the Instance, which no
      *         template sets
      */
     protected static Map<String, String> detailsTakenFromTemplate(Map<String, String> templateDetails) {
         Map<String, String> details = templateDetails == null ? new HashMap<>() : new HashMap<>(templateDetails);
-        details.keySet().removeIf(VmDetailConstants::isSshNamePrefix);
+        details.keySet().removeIf(VmDetailConstants::isNamingDetail);
         return details;
+    }
+
+    /**
+     * @return the hostnames that Instances of any account, removed ones included, have under the prefix: a prefix belongs to one
+     *         account, and an Instance moved to another account keeps its hostname
+     */
+    protected List<String> hostNamesUnderPrefix(String prefix) {
+        return _vmInstanceDao.listByHostNamePrefixIncludingRemoved(InstanceNames.hostNameStem(prefix)).stream()
+                .map(VMInstanceVO::getHostName).filter(Objects::nonNull).collect(Collectors.toList());
     }
 
     /**
@@ -1068,7 +1095,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
     protected void checkNewInstanceName(UserVmVO vm, String namePrefix, String name) {
         InstanceNames.checkName(name);
         if (namePrefix != null) {
-            checkSshNameFree(InstanceNames.hostName(namePrefix, name), vm.getId());
+            checkSshNameFree(InstanceNames.checkedSshName(namePrefix, name), vm.getId());
         }
         InstanceNames.checkNameFree(name, instanceNamesOfAccount(vm.getAccountId(), vm.getId()));
     }
@@ -1078,7 +1105,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
      */
     protected List<String> hiddenDeployDetails(Map<String, String> customParameters) {
         List<String> hiddenDetails = new ArrayList<>();
-        for (String name : List.of(VmDetailConstants.NAME_ON_HYPERVISOR, VmDetailConstants.SSH_NAME_PREFIX)) {
+        for (String name : List.of(VmDetailConstants.NAME_ON_HYPERVISOR, VmDetailConstants.SSH_NAME_PREFIX, VmDetailConstants.GUEST_HOSTNAME)) {
             if (customParameters.containsKey(name)) {
                 hiddenDetails.add(name);
             }
@@ -3383,17 +3410,17 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                 } catch (NoTransitionException e1) {
                     logger.error("Error when transitioning state of [{}].", vm, e1);
                 }
-                // destroy associated volumes for vm in error state
-                // get all volumes in non destroyed state
-                logger.debug("Destroying associated volumes of [{}] as it was unable to be deployed.", vm);
+                logger.debug("Expunging associated volumes of [{}] as it was unable to be deployed.", vm);
                 List<VolumeVO> volumesForThisVm = _volsDao.findUsableVolumesForInstance(vm.getId());
                 for (VolumeVO volume : volumesForThisVm) {
                     if (keptVolumeId != null && volume.getId() == keptVolumeId) {
                         continue;
                     }
-                    if (volume.getState() != Volume.State.Destroy) {
-                        logger.trace("Destroying volume [{}] as its VM was unable to be deployed.", volume);
-                        volumeMgr.destroyVolume(volume);
+                    logger.trace("Expunging volume [{}] as its VM was unable to be deployed.", volume);
+                    try {
+                        volumeMgr.expungeVolumeOfFailedDeployment(volume);
+                    } catch (RuntimeException e) {
+                        logger.error("Unable to expunge volume [{}] of [{}], which was unable to be deployed; the storage cleanup removes it.", volume, vm, e);
                     }
                 }
                 String subject = String.format("Failed to deploy Instance [ID: %s]", vm.getUuid());
@@ -3616,8 +3643,17 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         if (MapUtils.isNotEmpty(cmd.getUserdataDetails())) {
             userDataDetails = cmd.getUserdataDetails().toString();
         }
-        userData = userDataManager.validateUserData(userData, cmd.getHttpMethod());
-        userData = userDataManager.validateFinalizedUserData(finalizeUserData(userData, userDataId, template));
+        if (userData != null || userDataId != null || userDataDetails != null) {
+            userData = userDataManager.validateUserData(userData, cmd.getHttpMethod());
+            userData = userDataManager.validateFinalizedUserData(finalizeUserData(userData, userDataId, template));
+            if (!changesUserData(vmInstance, userData, userDataId, userDataDetails)) {
+                userData = null;
+                userDataId = null;
+                userDataDetails = null;
+            } else if (vmInstance.getState() != State.Stopped) {
+                throw new InvalidParameterValueException("The user data of an Instance can be changed only while it is stopped");
+            }
+        }
 
         long accountId = vmInstance.getAccountId();
 
@@ -3645,7 +3681,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             if (caller != null && caller.getType() == Account.Type.ADMIN) {
                 for (final VMInstanceDetailVO detail : existingDetails) {
                     if (detail != null && detail.isDisplay() && !isExtraConfig(detail.getName())
-                            && !VmDetailConstants.isLifecycleState(detail.getName()) && !VmDetailConstants.isSshNamePrefix(detail.getName())) {
+                            && !VmDetailConstants.isLifecycleState(detail.getName()) && !VmDetailConstants.isNamingDetail(detail.getName())) {
                         vmInstanceDetailsDao.removeDetail(id, detail.getName());
                     }
                 }
@@ -3654,7 +3690,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
                     if (detail != null && !containsIgnoringCase(userDenyListedSettings, detail.getName())
                             && !containsIgnoringCase(userReadOnlySettings, detail.getName()) && detail.isDisplay()
                             && !isExtraConfig(detail.getName()) && !VmDetailConstants.isLifecycleState(detail.getName())
-                            && !VmDetailConstants.isSshNamePrefix(detail.getName())) {
+                            && !VmDetailConstants.isNamingDetail(detail.getName())) {
                         vmInstanceDetailsDao.removeDetail(id, detail.getName());
                     }
                 }
@@ -4050,6 +4086,15 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         } else {
             throw new InvalidParameterValueException(String.format("VM %s must be stopped prior to update security groups", vm.getUuid()));
         }
+    }
+
+    /**
+     * @return whether the user data given, each part null when not given, differ from the Instance's
+     */
+    protected static boolean changesUserData(UserVmVO vm, String userData, Long userDataId, String userDataDetails) {
+        return userData != null && !userData.equals(vm.getUserData())
+                || userDataId != null && !userDataId.equals(vm.getUserDataId())
+                || userDataDetails != null && !userDataDetails.equals(vm.getUserDataDetails());
     }
 
     protected void updateUserData(UserVm vm) throws ResourceUnavailableException, InsufficientCapacityException {
@@ -5137,9 +5182,9 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         }
         if (customParameters != null) {
             for (String name : customParameters.keySet()) {
-                if (VmDetailConstants.isSshNamePrefix(name) && !(VmDetailConstants.SSH_NAME_PREFIX.equals(name) && namesInstancesAfterAccount()
-                        && _accountMgr.isRootAdmin(caller.getId()))) {
-                    throw new InvalidParameterValueException(String.format("You're not allowed to set the restricted setting: %s", VmDetailConstants.SSH_NAME_PREFIX));
+                String namingDetail = VmDetailConstants.namingDetail(name);
+                if (namingDetail != null && !(namingDetail.equals(name) && namesInstancesAfterAccount() && _accountMgr.isRootAdmin(caller.getId()))) {
+                    throw new InvalidParameterValueException(String.format("You're not allowed to set the restricted setting: %s", namingDetail));
                 }
             }
         }
@@ -7591,6 +7636,10 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
         Account owner = _accountService.getActiveAccountById(cmd.getEntityOwnerId());
 
         verifyDetails(cmd.getDetails());
+        if ((cmd.getVolumeId() != null || cmd.getSnapshotId() != null)
+                && cmd.getDetails().keySet().stream().anyMatch(VmDetailConstants.ROOT_DISK_SIZE::equalsIgnoreCase)) {
+            throw new InvalidParameterValueException("rootdisksize applies to a new Instance from a template only");
+        }
 
         Long zoneId = cmd.getZoneId();
 
@@ -11125,7 +11174,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             Type type = new TypeToken<Map<String, String>>(){}.getType();
             Map<String, String> vmDetailsFromBackup = new Gson().fromJson(vmSettingsFromBackup, type);
             for (Entry<String, String> entry : vmDetailsFromBackup.entrySet()) {
-                if (!details.containsKey(entry.getKey()) && !VmDetailConstants.isSshNamePrefix(entry.getKey())) {
+                if (!details.containsKey(entry.getKey()) && !VmDetailConstants.isNamingDetail(entry.getKey())) {
                     vmVO.setDetail(entry.getKey(), entry.getValue());
                 }
             }
@@ -11442,7 +11491,7 @@ public class UserVmManagerImpl extends ManagerBase implements UserVmManager, Vir
             Type type = new com.google.common.reflect.TypeToken<Map<String, String>>(){}.getType();
             Map<String, String> vmDetailsFromBackup = new Gson().fromJson(vmSettingsFromBackup, type);
             for (Entry<String, String> entry : vmDetailsFromBackup.entrySet()) {
-                if (!detailsFromBackup.containsKey(entry.getKey()) && !VmDetailConstants.isSshNamePrefix(entry.getKey())) {
+                if (!detailsFromBackup.containsKey(entry.getKey()) && !VmDetailConstants.isNamingDetail(entry.getKey())) {
                     vmVO.setDetail(entry.getKey(), entry.getValue());
                 }
             }

@@ -2111,7 +2111,7 @@ public class TemplateManagerImpl extends ManagerBase implements TemplateManager,
 
     /**
      * @return the details a new template takes: those of its source template, of the Instance of its volume, and the ones given, which
-     *         come last; never the prefix of an Instance's names, which belongs to that Instance and its account
+     *         come last; never the details naming an Instance, which belong to that Instance and its account
      */
     protected Map<String, String> detailsOfNewTemplate(Long sourceTemplateId, VolumeVO volume, Map<String, String> givenDetails) {
         Map<String, String> details = new HashMap<String, String>();
@@ -2142,7 +2142,7 @@ public class TemplateManagerImpl extends ManagerBase implements TemplateManager,
             details.remove(VmDetailConstants.ENCRYPTED_PASSWORD); // new password will be generated during vm deployment from password enabled template
             details.putAll(givenDetails);
         }
-        details.keySet().removeIf(VmDetailConstants::isSshNamePrefix);
+        details.keySet().removeIf(VmDetailConstants::isNamingDetail);
         return details;
     }
 

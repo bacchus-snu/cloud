@@ -32,6 +32,10 @@ import com.cloud.storage.Snapshot;
 import com.cloud.storage.Storage.StoragePoolType;
 import com.cloud.storage.SnapshotPolicyVO;
 import com.cloud.storage.SnapshotVO;
+import com.cloud.storage.VolumeDetailVO;
+import com.cloud.storage.dao.VolumeDetailsDao;
+import com.cloud.vm.UserVmVO;
+import com.cloud.vm.dao.UserVmDao;
 import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeVO;
 import com.cloud.server.TaggedResourceService;
@@ -60,6 +64,8 @@ import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotDataFactory;
 import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotInfo;
 import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotResult;
 import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotService;
+import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotStrategy;
+import org.apache.cloudstack.engine.subsystem.api.storage.StorageStrategyFactory;
 import org.apache.cloudstack.framework.async.AsyncCallFuture;
 import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.SnapshotDataStoreDao;
@@ -771,5 +777,96 @@ public class SnapshotManagerImplTest {
 
         Mockito.verify(snapshotStoreDao, Mockito.never()).removeBySnapshotStore(
                 Mockito.anyLong(), Mockito.anyLong(), Mockito.any());
+    }
+
+    /** Makes the ROOT volume of Instance "web", not created yet, record the snapshot it is to be created from. */
+    private UserVmVO theRootOfWebIsToBeCreatedFrom(long snapshotId) {
+        VolumeVO root = Mockito.mock(VolumeVO.class);
+        Mockito.lenient().when(root.getState()).thenReturn(Volume.State.Allocated);
+        Mockito.lenient().when(root.getInstanceId()).thenReturn(40L);
+        Mockito.lenient().when(volumeDao.findById(30L)).thenReturn(root);
+        UserVmDao userVmDao = Mockito.mock(UserVmDao.class);
+        UserVmVO web = Mockito.mock(UserVmVO.class);
+        Mockito.lenient().when(web.getDisplayNameOrHostName()).thenReturn("web");
+        Mockito.lenient().when(userVmDao.findById(40L)).thenReturn(web);
+        snapshotManager._vmDao = userVmDao;
+        VolumeDetailsDao volumeDetailsDao = Mockito.mock(VolumeDetailsDao.class);
+        Mockito.lenient().when(volumeDetailsDao.findDetails(Volume.SNAPSHOT_TO_CREATE_FROM, String.valueOf(snapshotId), false))
+                .thenReturn(List.of(new VolumeDetailVO(30L, Volume.SNAPSHOT_TO_CREATE_FROM, String.valueOf(snapshotId), false)));
+        snapshotManager.volumeDetailsDao = volumeDetailsDao;
+        return web;
+    }
+
+    @Test
+    public void theRefusalNamesTheInstanceOnlyToACallerWhoMayAccessIt() {
+        Account caller = renamingCaller();
+        SnapshotVO snapshot = snapshotNamed(21L, "before-upgrade", Snapshot.State.BackedUp);
+        Mockito.when(snapshotDao.findById(21L)).thenReturn(snapshot);
+        UserVmVO web = theRootOfWebIsToBeCreatedFrom(21L);
+        Mockito.doThrow(new PermissionDeniedException("not yours")).when(accountManager).checkAccess(caller, null, true, web);
+
+        InvalidParameterValueException e = Assert.assertThrows(InvalidParameterValueException.class, () -> snapshotManager.deleteSnapshot(21L, null));
+
+        Assert.assertEquals("Snapshot before-upgrade is still needed to create the root disk of an Instance that has not started yet; ask an administrator",
+                e.getMessage());
+    }
+
+    @Test
+    public void aSnapshotStillNeededToCreateTheRootDiskOfAnInstanceIsNotDeleted() {
+        renamingCaller();
+        SnapshotVO snapshot = snapshotNamed(21L, "before-upgrade", Snapshot.State.BackedUp);
+        Mockito.when(snapshotDao.findById(21L)).thenReturn(snapshot);
+        theRootOfWebIsToBeCreatedFrom(21L);
+
+        InvalidParameterValueException e = Assert.assertThrows(InvalidParameterValueException.class, () -> snapshotManager.deleteSnapshot(21L, null));
+
+        Assert.assertEquals("Snapshot before-upgrade is still needed to create the root disk of Instance web", e.getMessage());
+    }
+
+    @Test
+    public void aSnapshotIsDeletedOnceTheRootDiskCreatedFromItExists() {
+        renamingCaller();
+        SnapshotVO snapshot = snapshotNamed(21L, "before-upgrade", Snapshot.State.BackedUp);
+        Mockito.when(snapshotDao.findById(21L)).thenReturn(snapshot);
+        theRootOfWebIsToBeCreatedFrom(21L);
+        StorageStrategyFactory strategies = Mockito.mock(StorageStrategyFactory.class);
+        SnapshotStrategy strategy = Mockito.mock(SnapshotStrategy.class);
+        Mockito.lenient().when(strategies.getSnapshotStrategy(snapshot, null, SnapshotStrategy.SnapshotOperation.DELETE)).thenReturn(strategy);
+        Mockito.lenient().when(strategy.deleteSnapshot(21L, null)).thenReturn(true);
+        snapshotManager._storageStrategyFactory = strategies;
+        Assert.assertThrows("the root is not created yet", InvalidParameterValueException.class, () -> snapshotManager.deleteSnapshot(21L, null));
+
+        Mockito.when(snapshotManager.volumeDetailsDao.findDetails(Volume.SNAPSHOT_TO_CREATE_FROM, "21", false)).thenReturn(List.of(
+                new VolumeDetailVO(30L, Volume.SNAPSHOT_TO_CREATE_FROM, "21", true), new VolumeDetailVO(30L, "SNAPSHOTTOCREATEFROM", "21", false)));
+        Assert.assertTrue("rows a caller could have written are not the snapshot to create the root from", snapshotManager.deleteSnapshot(21L, null));
+
+        Mockito.when(snapshotManager.volumeDetailsDao.findDetails(Volume.SNAPSHOT_TO_CREATE_FROM, "21", false)).thenReturn(new ArrayList<>());
+        Assert.assertTrue("the creation of the root removed its detail", snapshotManager.deleteSnapshot(21L, null));
+        Mockito.verify(strategy, Mockito.times(2)).deleteSnapshot(21L, null);
+    }
+
+    @Test
+    public void theRotationOfARecurringPolicyKeepsASnapshotStillNeededToCreateARootDiskAndCountsItAsKept() {
+        SnapshotVO needed = snapshotNamed(21L, "web-ROOT-snapshot-0", Snapshot.State.BackedUp);
+        SnapshotVO older = snapshotNamed(22L, "web-ROOT-snapshot-1", Snapshot.State.BackedUp);
+        SnapshotVO newer = snapshotNamed(23L, "web-ROOT-snapshot-2", Snapshot.State.BackedUp);
+        SnapshotVO newest = snapshotNamed(24L, "web-ROOT-snapshot-3", Snapshot.State.BackedUp);
+        Mockito.when(snapshotDao.findById(24L)).thenReturn(newest);
+        Mockito.when(snapshotDao.listByVolumeIdTypeNotDestroyed(5L, newest.getRecurringType())).thenReturn(new ArrayList<>(List.of(needed, older, newer, newest)));
+        SnapshotPolicyVO policy = Mockito.mock(SnapshotPolicyVO.class);
+        Mockito.when(policy.getMaxSnaps()).thenReturn(2);
+        Mockito.when(snapshotPolicyDao.findById(7L)).thenReturn(policy);
+        theRootOfWebIsToBeCreatedFrom(21L);
+        SnapshotManagerImpl manager = Mockito.spy(snapshotManager);
+        Mockito.doReturn(true).when(manager).deleteSnapshot(Mockito.anyLong(), Mockito.isNull());
+
+        try (MockedStatic<ActionEventUtils> ignored = Mockito.mockStatic(ActionEventUtils.class)) {
+            manager.postCreateRecurringSnapshotForPolicy(1L, 5L, 24L, 7L);
+        }
+
+        Mockito.verify(manager, Mockito.never()).deleteSnapshot(Mockito.eq(21L), Mockito.any());
+        Mockito.verify(manager).deleteSnapshot(22L, null);
+        Mockito.verify(manager).deleteSnapshot(23L, null);
+        Mockito.verify(manager, Mockito.never()).deleteSnapshot(Mockito.eq(24L), Mockito.any());
     }
 }

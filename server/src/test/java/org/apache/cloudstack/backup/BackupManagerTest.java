@@ -1106,6 +1106,22 @@ public class BackupManagerTest {
     }
 
     @Test
+    public void backupSettingsLeaveOutTheGuestHostnameInAnyCase() {
+        VirtualMachine vm = mock(VirtualMachine.class);
+        when(vm.getServiceOfferingId()).thenReturn(1L);
+        when(vm.getTemplateId()).thenReturn(2L);
+        when(vm.getId()).thenReturn(1L);
+        when(serviceOfferingDao.findById(1L)).thenReturn(mock(ServiceOfferingVO.class));
+        when(vmInstanceDetailsDao.listDetails(1L)).thenReturn(List.of(new VMInstanceDetailVO(1L, "keyboard", "us", true),
+                new VMInstanceDetailVO(1L, VmDetailConstants.GUEST_HOSTNAME, "web", false),
+                new VMInstanceDetailVO(1L, "GUEST.HOSTNAME", "victim", true)));
+
+        Map<String, String> details = backupManager.getBackupDetailsFromVM(vm);
+
+        assertEquals("{\"keyboard\":\"us\"}", details.get(ApiConstants.VM_SETTINGS));
+    }
+
+    @Test
     public void getDataDiskInfoListFromBackup() {
         Long size1 = 5L * 1024 * 1024 * 1024;
         Long size2 = 10L * 1024 * 1024 * 1024;

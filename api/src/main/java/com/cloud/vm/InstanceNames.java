@@ -22,16 +22,17 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import com.cloud.exception.InvalidParameterValueException;
-import com.cloud.utils.exception.CloudRuntimeException;
 
 /**
  * Names of user Instances. An account names its Instances freely, a name being unique within the account regardless of
- * case, and an Instance's SSH name is the account's prefix, a hyphen and its name in lower case. That is also the hostname
- * of a new Instance unless another Instance has it; the hostname stays when the Instance is renamed. A prefix is one or two
+ * case, and an Instance's SSH name is the account's prefix, a hyphen and its name in lower case. The hostname of a new
+ * Instance is the prefix, "-vm-" and a number the account never used before; the name chooses none of it, and it stays
+ * when the Instance is renamed. A prefix is one or two
  * hyphen-free parts: a sign-in provider's name and the encoded ID of the account's linked user, {@value #PROJECT} and a
  * project's ID, or the name of an account without a linked user, which is neither a provider's name nor {@value #PROJECT}.
  */
@@ -44,6 +45,8 @@ public final class InstanceNames {
     public static final String PROJECT = "project";
 
     private static final String SEPARATOR = "-";
+    private static final String HOST_NAME_PART = "-vm-";
+    private static final int MAX_HOST_NAME_NUMBER_DIGITS = 18;
     private static final Pattern NAME = Pattern.compile("[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?");
     private static final Pattern PREFIX_PART = Pattern.compile("[a-z][a-z0-9]*");
     private static final Pattern PLAIN_ID = Pattern.compile("[a-wyz0-9][a-z0-9]*");
@@ -198,10 +201,10 @@ public final class InstanceNames {
     }
 
     /**
-     * @return the {@link #sshName(String, String)} of a new Instance, which is its hostname unless another Instance has that
+     * @return the {@link #sshName(String, String)} of an Instance of the name under the prefix
      * @throws InvalidParameterValueException when that is longer than {@value #MAX_HOSTNAME_LENGTH} characters
      */
-    public static String hostName(String prefix, String name) {
+    public static String checkedSshName(String prefix, String name) {
         String hostName = sshName(prefix, name);
         if (hostName.length() > MAX_HOSTNAME_LENGTH) {
             throw new InvalidParameterValueException(String.format("The Instance name %s is too long: the Instances of this account have names of at most %d "
@@ -217,38 +220,44 @@ public final class InstanceNames {
         return prefix + SEPARATOR + name.toLowerCase(Locale.ROOT);
     }
 
-    public static String projectPrefix(long projectId) {
-        return PROJECT + SEPARATOR + projectId;
+    /**
+     * @return the start of the hostnames of the Instances named under the prefix
+     */
+    public static String hostNameStem(String prefix) {
+        return prefix + HOST_NAME_PART;
     }
 
     /**
+     * @param hostNamesUsed the hostnames used under the prefix, by Instances removed since or moved to another account included
      * @param taken whether another Instance has a hostname
-     * @return the hostname of a new Instance: its {@link #hostName(String, String)} when that is free, or else that followed by
-     *         "-n" for the smallest n from 1 that gives a free hostname, the name cut so that the whole stays within
-     *         {@value #MAX_HOSTNAME_LENGTH} characters
-     * @throws InvalidParameterValueException when the SSH name is longer than {@value #MAX_HOSTNAME_LENGTH} characters
+     * @return {@code <prefix>-vm-n} for n one more than the highest number among the hostnames of exactly that form, compared
+     *         regardless of case, or 0 when there is none; the next number while another Instance has the hostname
+     * @throws InvalidParameterValueException when the hostname would be longer than {@value #MAX_HOSTNAME_LENGTH} characters
      */
-    public static String freeHostName(String prefix, String name, Predicate<String> taken) {
-        String hostName = hostName(prefix, name);
-        if (!taken.test(hostName)) {
-            return hostName;
-        }
-        String slug = name.toLowerCase(Locale.ROOT);
-        for (int n = 1; ; n++) {
-            String suffix = SEPARATOR + n;
-            int room = MAX_HOSTNAME_LENGTH - prefix.length() - SEPARATOR.length() - suffix.length();
-            String cut = slug.substring(0, Math.max(0, Math.min(slug.length(), room)));
-            while (cut.endsWith(SEPARATOR)) {
-                cut = cut.substring(0, cut.length() - SEPARATOR.length());
-            }
-            String numbered = cut.isEmpty() ? prefix + suffix : prefix + SEPARATOR + cut + suffix;
-            if (numbered.length() > MAX_HOSTNAME_LENGTH) {
-                throw new CloudRuntimeException(String.format("Unable to find a free hostname for the Instance name %s under %s", name, prefix));
-            }
-            if (!taken.test(numbered)) {
-                return numbered;
+    public static String newHostName(String prefix, Collection<String> hostNamesUsed, Predicate<String> taken) {
+        String stem = hostNameStem(prefix);
+        Pattern numbered = Pattern.compile(Pattern.quote(stem) + "(0|[1-9][0-9]{0," + (MAX_HOST_NAME_NUMBER_DIGITS - 1) + "})", Pattern.CASE_INSENSITIVE);
+        long n = 0;
+        for (String hostName : hostNamesUsed) {
+            Matcher matcher = hostName == null ? null : numbered.matcher(hostName);
+            if (matcher != null && matcher.matches()) {
+                n = Math.max(n, Long.parseLong(matcher.group(1)) + 1);
             }
         }
+        for (; ; n++) {
+            String hostName = stem + n;
+            if (hostName.length() > MAX_HOSTNAME_LENGTH) {
+                throw new InvalidParameterValueException(String.format("The prefix %s leaves no room for a hostname of at most %d characters", prefix,
+                        MAX_HOSTNAME_LENGTH));
+            }
+            if (!taken.test(hostName)) {
+                return hostName;
+            }
+        }
+    }
+
+    public static String projectPrefix(long projectId) {
+        return PROJECT + SEPARATOR + projectId;
     }
 
     /**

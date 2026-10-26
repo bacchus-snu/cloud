@@ -161,6 +161,7 @@ import com.cloud.resource.ResourceState;
 import com.cloud.storage.DataStoreRole;
 import com.cloud.storage.ScopeType;
 import com.cloud.storage.Snapshot;
+import com.cloud.storage.SnapshotVO;
 import com.cloud.storage.Storage;
 import com.cloud.storage.Storage.ImageFormat;
 import com.cloud.storage.StorageManager;
@@ -643,9 +644,15 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
             throw new StorageUnavailableException(msg, -1);
         }
 
+        return createVolumeFromSnapshotOn(volume, snapshot, dataStoreMgr.getDataStore(pool.getId(), DataStoreRole.Primary));
+    }
+
+    /**
+     * Creates the volume from the snapshot on the primary store.
+     */
+    protected VolumeInfo createVolumeFromSnapshotOn(Volume volume, Snapshot snapshot, DataStore store) {
         VolumeInfo vol = volFactory.getVolume(volume.getId());
         long zoneId = volume.getDataCenterId();
-        DataStore store = dataStoreMgr.getDataStore(pool.getId(), DataStoreRole.Primary);
         DataStoreRole dataStoreRole = snapshotHelper.getDataStoreRole(snapshot, zoneId);
         SnapshotInfo snapInfo = snapshotFactory.getSnapshotWithRoleAndZone(snapshot.getId(), dataStoreRole, zoneId);
         boolean kvmSnapshotOnlyInPrimaryStorage = snapshotHelper.isKvmSnapshotOnlyInPrimaryStorage(snapshot, dataStoreRole, zoneId);
@@ -1113,6 +1120,10 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
         return diskProfile;
     }
 
+    /**
+     * A volume from a snapshot is created, like one from the Template, on the pool that its Instance's deployment chooses, since the
+     * pool decides the hosts the Instance can run on.
+     */
     private DiskProfile allocateTemplatedVolume(Type type, String name, DiskOffering offering, Long rootDisksize, Long minIops, Long maxIops, VirtualMachineTemplate template, VirtualMachine vm,
                                                 Account owner, long deviceId, String configurationId, Long kmsKeyId, Volume volume, Snapshot snapshot) {
         assert (template.getFormat() != ImageFormat.ISO) : "ISO is not a template.";
@@ -1191,13 +1202,7 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
             _resourceLimitMgr.incrementVolumeResourceCount(vm.getAccountId(), vol.isDisplayVolume(), vol.getSize(), offering);
         }
         if (snapshot != null) {
-            UserVmVO userVmVO = _userVmDao.findById(vm.getId());
-            try {
-                VolumeInfo volumeInfo = createVolumeFromSnapshot(vol, snapshot, userVmVO);
-                return toDiskProfile(volumeInfo, offering);
-            } catch (StorageUnavailableException ex) {
-                throw new CloudRuntimeException("Could not create volume from a snapshot", ex);
-            }
+            _volDetailDao.addDetail(vol.getId(), Volume.SNAPSHOT_TO_CREATE_FROM, String.valueOf(snapshot.getId()), false);
         }
         return toDiskProfile(vol, offering);
     }
@@ -1239,29 +1244,18 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
         return volumeVO;
     }
 
+    /**
+     * Sets the volume's bandwidth and IOPS limits to those of the disk offering, leaving its other details.
+     */
     @Override
     public void saveVolumeDetails(Long diskOfferingId, Long volumeId) {
-        List<VolumeDetailVO> volumeDetailsVO = new ArrayList<>();
-        DiskOfferingDetailVO bandwidthLimitDetail = _diskOfferingDetailDao.findDetail(diskOfferingId, Volume.BANDWIDTH_LIMIT_IN_MBPS);
-        if (bandwidthLimitDetail != null) {
-            volumeDetailsVO.add(new VolumeDetailVO(volumeId, Volume.BANDWIDTH_LIMIT_IN_MBPS, bandwidthLimitDetail.getValue(), false));
-        } else {
-            VolumeDetailVO bandwidthLimit = _volDetailDao.findDetail(volumeId, Volume.BANDWIDTH_LIMIT_IN_MBPS);
-            if (bandwidthLimit != null) {
-                _volDetailDao.remove(bandwidthLimit.getId());
+        for (String name : List.of(Volume.BANDWIDTH_LIMIT_IN_MBPS, Volume.IOPS_LIMIT)) {
+            DiskOfferingDetailVO offeringDetail = _diskOfferingDetailDao.findDetail(diskOfferingId, name);
+            if (offeringDetail != null) {
+                _volDetailDao.addDetail(volumeId, name, offeringDetail.getValue(), false);
+            } else {
+                _volDetailDao.removeDetail(volumeId, name);
             }
-        }
-        DiskOfferingDetailVO iopsLimitDetail = _diskOfferingDetailDao.findDetail(diskOfferingId, Volume.IOPS_LIMIT);
-        if (iopsLimitDetail != null) {
-            volumeDetailsVO.add(new VolumeDetailVO(volumeId, Volume.IOPS_LIMIT, iopsLimitDetail.getValue(), false));
-        } else {
-            VolumeDetailVO iopsLimit = _volDetailDao.findDetail(volumeId, Volume.IOPS_LIMIT);
-            if (iopsLimit != null) {
-                _volDetailDao.remove(iopsLimit.getId());
-            }
-        }
-        if (!volumeDetailsVO.isEmpty()) {
-            _volDetailDao.saveDetails(volumeDetailsVO);
         }
     }
 
@@ -1592,6 +1586,105 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
                 logger.error("Failed to expunge volume [{}] due to [{}].", expungeToString, e.getMessage());
                 logger.debug("Exception: ", e);
             }
+        }
+    }
+
+    /**
+     * The snapshot is the hidden detail named exactly {@link Volume#SNAPSHOT_TO_CREATE_FROM}: detail names compare regardless of case, and
+     * callers write displayed details.
+     */
+    private String snapshotIdToCreateFrom(Volume volume) {
+        return _volDetailDao.findDetails(volume.getId(), Volume.SNAPSHOT_TO_CREATE_FROM).stream()
+                .filter(detail -> Volume.SNAPSHOT_TO_CREATE_FROM.equals(detail.getName()) && !detail.isDisplay())
+                .map(VolumeDetailVO::getValue).findFirst().orElse(null);
+    }
+
+    @Override
+    public boolean isPendingCreationFromSnapshot(Volume volume) {
+        return snapshotIdToCreateFrom(volume) != null;
+    }
+
+    @Override
+    public Snapshot snapshotToCreateFrom(Volume volume) {
+        return checkedSnapshotToCreateFrom(volume);
+    }
+
+    private SnapshotVO checkedSnapshotToCreateFrom(Volume volume) {
+        String snapshotId = snapshotIdToCreateFrom(volume);
+        if (snapshotId == null) {
+            return null;
+        }
+        SnapshotVO snapshot = _snapshotDao.findById(Long.parseLong(snapshotId));
+        if (snapshot == null || snapshot.getState() == Snapshot.State.Destroying || snapshot.getState() == Snapshot.State.Destroyed) {
+            throw new CloudRuntimeException(String.format("The snapshot from which volume %s is to be created no longer exists", volume.getName()));
+        }
+        if (CollectionUtils.isEmpty(snapshotFactory.getSnapshots(snapshot.getId(), volume.getDataCenterId()))) {
+            throw new CloudRuntimeException(String.format("The snapshot %s from which volume %s is to be created is not available in the zone of the volume",
+                    snapshot.getName(), volume.getName()));
+        }
+        return snapshot;
+    }
+
+    @Override
+    public long leastSizeAtCreation(Volume volume) {
+        if (volume.getState() != Volume.State.Allocated && volume.getState() != Volume.State.Creating) {
+            return 0;
+        }
+        SnapshotVO snapshot = checkedSnapshotToCreateFrom(volume);
+        if (snapshot != null) {
+            return snapshot.getSize();
+        }
+        if (volume.getVolumeType() == Type.ROOT && volume.getTemplateId() != null) {
+            VMTemplateVO template = _templateDao.findByIdIncludingRemoved(volume.getTemplateId());
+            if (template != null && template.getFormat() != ImageFormat.ISO && template.getSize() != null) {
+                return template.getSize();
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Grows the volume, not created yet, to the least size it is created at, counting the growth within the account's primary storage
+     * limit before the volume is created.
+     */
+    protected void growToSizeAtCreation(VolumeVO vol) throws ResourceAllocationException {
+        long size = leastSizeAtCreation(vol);
+        long counted = vol.getSize() == null ? 0 : vol.getSize();
+        if (size <= counted) {
+            return;
+        }
+        VMInstanceVO vm = vol.getInstanceId() != null ? vmInstanceDao.findById(vol.getInstanceId()) : null;
+        if (vm == null || vm.getType() == VirtualMachine.Type.User) {
+            DiskOfferingVO diskOffering = diskOfferingDao.findByIdIncludingRemoved(vol.getDiskOfferingId());
+            List<Reserver> reservations = new ArrayList<>();
+            try {
+                _resourceLimitMgr.checkPrimaryStorageResourceLimit(_accountMgr.getActiveAccountById(vol.getAccountId()), vol.isDisplay(), size - counted,
+                        diskOffering, reservations);
+                _resourceLimitMgr.incrementVolumePrimaryStorageResourceCount(vol.getAccountId(), vol.isDisplay(), size - counted, diskOffering);
+            } finally {
+                ReservationHelper.closeAll(reservations);
+            }
+        }
+        vol.setSize(size);
+        _volsDao.update(vol.getId(), vol);
+    }
+
+    @Override
+    public void expungeVolumeOfFailedDeployment(Volume volume) {
+        if (volume.getState() != Volume.State.Destroy) {
+            destroyVolume(volume);
+        }
+        VolumeVO destroyed = _volsDao.findById(volume.getId());
+        if (destroyed == null) {
+            return;
+        }
+        try {
+            VolumeApiResult result = volService.expungeVolumeAsync(volFactory.getVolume(destroyed.getId())).get();
+            if (result.isFailed()) {
+                logger.error("Unable to expunge volume [{}] of a failed deployment due to [{}]; the storage cleanup removes it.", destroyed, result.getResult());
+            }
+        } catch (InterruptedException | ExecutionException e) {
+            logger.error("Unable to expunge volume [{}] of a failed deployment due to [{}]; the storage cleanup removes it.", destroyed, e.getMessage(), e);
         }
     }
 
@@ -2606,6 +2699,7 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
         String volToString = getReflectOnlySelectedFields(vol);
 
         VolumeVO newVol;
+        Snapshot snapshot = null;
         boolean recreate = RecreatableSystemVmEnabled.value();
         DataStore destPool = null;
         if (recreate && (dest.getStorageForDisks() == null || dest.getStorageForDisks().get(vol) == null)) {
@@ -2624,6 +2718,8 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
                 vol = setPassphraseForVolumeEncryption(vol, kmsKey, vol.getAccountId());
             }
             newVol = vol;
+            snapshot = snapshotToCreateFrom(vol);
+            growToSizeAtCreation(vol);
         } else {
             newVol = switchVolume(vol, vm);
 
@@ -2638,6 +2734,18 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
             logger.debug("Created new volume [{}] from old volume [{}].", newVolToString, volToString);
         }
         updateVolumeSize(destPool, newVol);
+        if (snapshot != null) {
+            try {
+                createVolumeFromSnapshotOn(newVol, snapshot, destPool);
+            } catch (CloudRuntimeException e) {
+                throw new StorageUnavailableException(String.format("Unable to create volume [%s] from snapshot [%s] due to [%s].", volToString, snapshot.getUuid(),
+                        e.getMessage()), destPool.getId());
+            }
+            _volDetailDao.removeDetail(newVol.getId(), Volume.SNAPSHOT_TO_CREATE_FROM);
+            newVol = _volsDao.findById(newVol.getId());
+            checkAndUpdateVolumeAccountResourceCount(vol, newVol);
+            return new Pair<>(newVol, destPool);
+        }
         VolumeInfo volume = volFactory.getVolume(newVol.getId(), destPool);
         Long templateId = newVol.getTemplateId();
         for (int i = 0; i < 2; i++) {

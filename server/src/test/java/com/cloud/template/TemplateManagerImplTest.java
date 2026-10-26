@@ -573,6 +573,23 @@ public class TemplateManagerImplTest extends TestCase {
     }
 
     @Test
+    public void aTemplateTakesNoGuestHostnameOfAnInstance() {
+        VMTemplateVO source = mock(VMTemplateVO.class);
+        when(source.getDetails()).thenReturn(new HashMap<>(Map.of("Guest.Hostname", "earlier", "videoRam", "16")));
+        when(vmTemplateDao.findById(30L)).thenReturn(source);
+        VolumeVO volume = mock(VolumeVO.class);
+        when(volume.getInstanceId()).thenReturn(7L);
+        UserVmVO vm = mock(UserVmVO.class);
+        when(vm.getDetails()).thenReturn(new HashMap<>(Map.of(VmDetailConstants.GUEST_HOSTNAME, "web", "rootDiskController", "virtio")));
+        when(_userVmDao.findById(7L)).thenReturn(vm);
+
+        Map<String, String> details = templateManager.detailsOfNewTemplate(30L, volume, new HashMap<>(Map.of("GUEST.HOSTNAME", "mallory",
+                "keyboard", "us")));
+
+        assertEquals(Map.of("videoRam", "16", "rootDiskController", "virtio", "keyboard", "us"), details);
+    }
+
+    @Test
     public void testLinkUserDataToTemplate() {
         LinkUserDataToTemplateCmd cmd = Mockito.mock(LinkUserDataToTemplateCmd.class);
         when(cmd.getTemplateId()).thenReturn(1L);

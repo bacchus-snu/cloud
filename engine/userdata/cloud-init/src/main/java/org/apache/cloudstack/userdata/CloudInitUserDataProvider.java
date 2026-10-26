@@ -20,6 +20,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -244,6 +245,42 @@ public class CloudInitUserDataProvider extends AdapterBase implements UserDataPr
         return String.format("%s\n\n%s", userData1, userData2.substring(beginIndex));
     }
 
+    /**
+     * @return the parts of the user data by content type: those of a multipart, or the user data itself
+     */
+    private List<Map.Entry<String, String>> partsOf(String userData, FormatType formatType) throws MessagingException, IOException {
+        List<Map.Entry<String, String>> parts = new ArrayList<>();
+        if (formatType != FormatType.MIME) {
+            parts.add(Map.entry(getContentType(userData, formatType), userData));
+            return parts;
+        }
+        Object content = new NoIdMimeMessage(session, new ByteArrayInputStream(userData.getBytes())).getContent();
+        if (content instanceof Multipart) {
+            Multipart multipart = (Multipart)content;
+            for (int i = 0; i < multipart.getCount(); ++i) {
+                BodyPart bodyPart = multipart.getBodyPart(i);
+                parts.add(Map.entry(getBodyPartContentType(bodyPart), getBodyPartContentAsString(bodyPart)));
+            }
+        }
+        return parts;
+    }
+
+    /**
+     * @return whether each part of the leading user data already begins the part of the same content type of the user data, as
+     *         appending the user data to the leading one leaves them; appending it again would repeat the leading parts
+     */
+    protected boolean holdsLeadingUserData(String userData, FormatType formatType, String leadingUserData, FormatType leadingFormatType) {
+        try {
+            List<Map.Entry<String, String>> parts = partsOf(userData, formatType);
+            List<Map.Entry<String, String>> leadingParts = partsOf(leadingUserData, leadingFormatType);
+            return !leadingParts.isEmpty() && leadingParts.stream().allMatch(leading -> parts.stream().anyMatch(part ->
+                    part.getKey().equalsIgnoreCase(leading.getKey()) && part.getValue().startsWith(leading.getValue())));
+        } catch (MessagingException | IOException | CloudRuntimeException e) {
+            logger.debug("Unable to tell whether the user data already holds the user data it is appended to: {}", e.getMessage());
+            return false;
+        }
+    }
+
     private void checkGzipAppend(String encodedUserData1, String encodedUserData2) {
         if (isGZipped(encodedUserData1) || isGZipped(encodedUserData2)) {
             throw new CloudRuntimeException("Gzipped user data can not be used together with other user data formats");
@@ -258,6 +295,9 @@ public class CloudInitUserDataProvider extends AdapterBase implements UserDataPr
             String userData2 = new String(Base64.decodeBase64(encodedUserData2));
             FormatType formatType1 = getUserDataFormatType(userData1, null);
             FormatType formatType2 = getUserDataFormatType(userData2, formatType1);
+            if (holdsLeadingUserData(userData2, formatType2, userData1, formatType1)) {
+                return userData2;
+            }
             if (formatType1.equals(formatType2) && List.of(FormatType.CLOUD_CONFIG, FormatType.BASH_SCRIPT).contains(formatType1)) {
                 return simpleAppendSameFormatTypeUserData(userData1, userData2);
             }

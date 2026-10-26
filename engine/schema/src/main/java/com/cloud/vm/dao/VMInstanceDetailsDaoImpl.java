@@ -57,11 +57,15 @@ public class VMInstanceDetailsDaoImpl extends ResourceDetailsDaoBase<VMInstanceD
     }
 
     /**
-     * Detail names compare regardless of case and callers write displayed details, so the prefix is the row that is hidden and named
-     * exactly as it.
+     * Detail names compare regardless of case and callers write displayed details, so a detail that names an Instance is the row that is
+     * hidden and named exactly as it.
      */
+    private static boolean isNamingRow(VMInstanceDetailVO detail, String name) {
+        return name.equals(detail.getName()) && !detail.isDisplay();
+    }
+
     private static boolean isSshNamePrefixRow(VMInstanceDetailVO detail) {
-        return VmDetailConstants.SSH_NAME_PREFIX.equals(detail.getName()) && !detail.isDisplay();
+        return isNamingRow(detail, VmDetailConstants.SSH_NAME_PREFIX);
     }
 
     @Override
@@ -91,6 +95,12 @@ public class VMInstanceDetailsDaoImpl extends ResourceDetailsDaoBase<VMInstanceD
     public List<VMInstanceDetailVO> listBySshNamePrefix(String prefix) {
         return findDetails(VmDetailConstants.SSH_NAME_PREFIX, prefix, false).stream()
                 .filter(detail -> isSshNamePrefixRow(detail) && prefix.equalsIgnoreCase(detail.getValue())).collect(Collectors.toList());
+    }
+
+    @Override
+    public String findGuestHostName(long vmId) {
+        return findDetails(vmId, VmDetailConstants.GUEST_HOSTNAME).stream().filter(detail -> isNamingRow(detail, VmDetailConstants.GUEST_HOSTNAME))
+                .map(VMInstanceDetailVO::getValue).findFirst().orElse(null);
     }
 
     @Override

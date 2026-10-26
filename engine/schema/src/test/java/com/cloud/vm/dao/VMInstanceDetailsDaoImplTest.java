@@ -183,6 +183,19 @@ public class VMInstanceDetailsDaoImplTest {
     }
 
     @Test
+    public void theGuestHostnameOfAnInstanceIsOnlyItsHiddenDetailOfExactlyThatName() {
+        List<VMInstanceDetailVO> forged = List.of(new VMInstanceDetailVO(2L, "GUEST.HOSTNAME", "victim", true),
+                new VMInstanceDetailVO(2L, "Guest.Hostname", "victim", false), new VMInstanceDetailVO(2L, VmDetailConstants.GUEST_HOSTNAME, "victim", true));
+        List<VMInstanceDetailVO> rows = new ArrayList<>(forged);
+        rows.add(new VMInstanceDetailVO(1L, VmDetailConstants.GUEST_HOSTNAME, "web", false));
+        doReturn(rows).when(vmInstanceDetailsDaoImpl).findDetails(1L, VmDetailConstants.GUEST_HOSTNAME);
+        doReturn(new ArrayList<>(forged)).when(vmInstanceDetailsDaoImpl).findDetails(2L, VmDetailConstants.GUEST_HOSTNAME);
+
+        Assert.assertEquals("web", vmInstanceDetailsDaoImpl.findGuestHostName(1L));
+        Assert.assertNull(vmInstanceDetailsDaoImpl.findGuestHostName(2L));
+    }
+
+    @Test
     public void theInstancesUnderAPrefixAreThoseWithItAsTheirHiddenDetailOfExactlyThatName() {
         List<VMInstanceDetailVO> rows = new ArrayList<>(rowsNamedAsThePrefix(1L, null));
         rows.add(new VMInstanceDetailVO(2L, VmDetailConstants.SSH_NAME_PREFIX, "OPS", false));

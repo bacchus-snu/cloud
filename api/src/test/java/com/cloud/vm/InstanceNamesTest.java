@@ -187,24 +187,24 @@ public class InstanceNamesTest {
     }
 
     @Test
-    public void theHostnameIsThePrefixAndTheNameLowerCased() {
-        assertEquals("snucse-baneling100-web-1", InstanceNames.hostName("snucse-baneling100", "Web-1"));
-        assertEquals("admin-vm-0", InstanceNames.hostName("admin", "VM-0"));
+    public void theSshNameOfANewInstanceIsThePrefixAndTheNameLowerCased() {
+        assertEquals("snucse-baneling100-web-1", InstanceNames.checkedSshName("snucse-baneling100", "Web-1"));
+        assertEquals("admin-vm-0", InstanceNames.checkedSshName("admin", "VM-0"));
     }
 
     @Test
-    public void aHostnameOfSixtyThreeCharactersIsTheLongest() {
+    public void anSshNameOfSixtyThreeCharactersIsTheLongest() {
         String prefix = "bacchus-" + repeat('p', 24);
         assertEquals(32, prefix.length());
         String name = repeat('n', 30);
-        String hostName = InstanceNames.hostName(prefix, name);
-        assertEquals(63, hostName.length());
+        String sshName = InstanceNames.checkedSshName(prefix, name);
+        assertEquals(63, sshName.length());
         assertEquals(30, InstanceNames.maxNameLength(prefix));
 
         String longerPrefix = prefix + "q";
         assertEquals(29, InstanceNames.maxNameLength(longerPrefix));
-        assertEquals(63, InstanceNames.hostName(longerPrefix, repeat('n', 29)).length());
-        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> InstanceNames.hostName(longerPrefix, name));
+        assertEquals(63, InstanceNames.checkedSshName(longerPrefix, repeat('n', 29)).length());
+        InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> InstanceNames.checkedSshName(longerPrefix, name));
         assertTrue(e.getMessage(), e.getMessage().contains(name));
         assertTrue(e.getMessage(), e.getMessage().contains(" 29 "));
     }
@@ -220,10 +220,10 @@ public class InstanceNamesTest {
     }
 
     @Test
-    public void distinctPrefixesGiveDistinctHostnames() {
-        assertNotEquals(InstanceNames.hostName("snucse-foo", "bar"), InstanceNames.hostName(InstanceNames.localPrefix("snucsefoo", List.of("snucse"), false), "bar"));
-        assertNotEquals(InstanceNames.hostName(InstanceNames.providerPrefix("snucse", "a.b"), "c"),
-                InstanceNames.hostName(InstanceNames.providerPrefix("snucse", "a"), "b-c"));
+    public void distinctPrefixesGiveDistinctSshNames() {
+        assertNotEquals(InstanceNames.checkedSshName("snucse-foo", "bar"), InstanceNames.checkedSshName(InstanceNames.localPrefix("snucsefoo", List.of("snucse"), false), "bar"));
+        assertNotEquals(InstanceNames.checkedSshName(InstanceNames.providerPrefix("snucse", "a.b"), "c"),
+                InstanceNames.checkedSshName(InstanceNames.providerPrefix("snucse", "a"), "b-c"));
     }
 
     @Test
@@ -236,7 +236,7 @@ public class InstanceNamesTest {
     @Test
     public void aProjectsPrefixIsTheReservedWordProjectAndItsId() {
         assertEquals("project-12", InstanceNames.projectPrefix(12L));
-        assertEquals("project-12-web", InstanceNames.hostName(InstanceNames.projectPrefix(12L), "Web"));
+        assertEquals("project-12-web", InstanceNames.checkedSshName(InstanceNames.projectPrefix(12L), "Web"));
     }
 
     @Test
@@ -259,44 +259,35 @@ public class InstanceNamesTest {
     }
 
     @Test
-    public void aTakenHostnameTakesTheSmallestFreeNumber() {
-        Set<String> taken = new HashSet<>();
-        assertEquals("admin-test", InstanceNames.freeHostName("admin", "Test", taken::contains));
-
-        taken.add("admin-test");
-        assertEquals("admin-test-1", InstanceNames.freeHostName("admin", "Test", taken::contains));
-
-        taken.add("admin-test-1");
-        taken.add("admin-test-2");
-        assertEquals("admin-test-3", InstanceNames.freeHostName("admin", "Test", taken::contains));
+    public void aNewHostnameIsThePrefixVmAndOneMoreThanTheHighestNumberTheAccountUsed() {
+        assertEquals("admin-vm-0", InstanceNames.newHostName("admin", List.of(), h -> false));
+        assertEquals("admin-vm-1", InstanceNames.newHostName("admin", List.of("admin-vm-0"), h -> false));
+        assertEquals("the number of a removed Instance is not used again", "admin-vm-3",
+                InstanceNames.newHostName("admin", List.of("admin-vm-0", "ADMIN-VM-2"), h -> false));
+        assertEquals("numbers compare as numbers", "admin-vm-11", InstanceNames.newHostName("admin", List.of("admin-vm-9", "admin-vm-10"), h -> false));
+        assertEquals("other hostnames do not count", "admin-vm-0", InstanceNames.newHostName("admin",
+                List.of("admin-web", "admin-vm-", "admin-vm-01", "admin-vm-1-1", "admin-vm-x", "other-vm-5", "xadmin-vm-4"), h -> false));
+        assertEquals("project-12-vm-0", InstanceNames.newHostName(InstanceNames.projectPrefix(12L), List.of(), h -> false));
+        assertEquals("admin-vm-", InstanceNames.hostNameStem("admin"));
     }
 
     @Test
-    public void aNumberedHostnameCutsTheNameToStayWithinSixtyThreeCharacters() {
-        String prefix = "bacchus-" + repeat('p', 24);
-        String name = repeat('n', 30);
-        Set<String> taken = new HashSet<>(Set.of(prefix + "-" + name));
+    public void aNewHostnameAnotherInstanceHasTakesTheNextNumber() {
+        Set<String> taken = new HashSet<>(Set.of("admin-vm-1", "admin-vm-2"));
+        assertEquals("admin-vm-3", InstanceNames.newHostName("admin", List.of("admin-vm-0"), taken::contains));
+    }
 
-        String first = InstanceNames.freeHostName(prefix, name, taken::contains);
-        assertEquals(prefix + "-" + repeat('n', 28) + "-1", first);
-        assertEquals(63, first.length());
-
-        for (int n = 1; n <= 9; n++) {
-            taken.add(prefix + "-" + repeat('n', 28) + "-" + n);
-        }
-        String tenth = InstanceNames.freeHostName(prefix, name, taken::contains);
-        assertEquals(prefix + "-" + repeat('n', 27) + "-10", tenth);
-        assertEquals(63, tenth.length());
-
-        String hyphenated = repeat('n', 27) + "-ab";
-        taken.add(prefix + "-" + hyphenated);
-        assertEquals(prefix + "-" + repeat('n', 27) + "-1", InstanceNames.freeHostName(prefix, hyphenated, taken::contains));
+    @Test
+    public void aPrefixLeavingNoRoomForAHostnameIsRefused() {
+        String prefix = "bacchus-" + repeat('p', 50);
+        assertEquals(63, InstanceNames.newHostName(prefix, List.of(), h -> false).length());
+        assertThrows(InvalidParameterValueException.class, () -> InstanceNames.newHostName(prefix, List.of(prefix + "-vm-9"), h -> false));
     }
 
     @Test
     public void aNameTooLongForItsSshNameIsStillRefused() {
         String prefix = "bacchus-" + repeat('p', 25);
-        assertThrows(InvalidParameterValueException.class, () -> InstanceNames.freeHostName(prefix, repeat('n', 30), h -> false));
+        assertThrows(InvalidParameterValueException.class, () -> InstanceNames.checkedSshName(prefix, repeat('n', 30)));
     }
 
     @Test

@@ -32,7 +32,9 @@ import java.util.stream.Stream;
 import java.lang.reflect.Field;
 
 import com.cloud.configuration.Resource;
+import com.cloud.deploy.DeployDestination;
 import com.cloud.deploy.DeploymentClusterPlanner;
+import com.cloud.event.UsageEventUtils;
 import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.StorageAccessException;
 import com.cloud.host.Host;
@@ -41,6 +43,23 @@ import com.cloud.hypervisor.Hypervisor;
 import com.cloud.offering.DiskOffering;
 import com.cloud.storage.clvm.ClvmPoolManager;
 import com.cloud.storage.ScopeType;
+import com.cloud.storage.Snapshot;
+import com.cloud.storage.SnapshotVO;
+import com.cloud.storage.VolumeDetailVO;
+import com.cloud.storage.dao.SnapshotDao;
+import com.cloud.storage.dao.VolumeDetailsDao;
+import com.cloud.exception.ResourceAllocationException;
+import com.cloud.storage.DiskOfferingVO;
+import com.cloud.storage.VMTemplateVO;
+import com.cloud.storage.dao.DiskOfferingDao;
+import com.cloud.storage.dao.VMTemplateDao;
+import com.cloud.user.AccountManager;
+import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotDataFactory;
+import org.apache.cloudstack.engine.subsystem.api.storage.SnapshotInfo;
+import org.apache.cloudstack.resourcedetail.DiskOfferingDetailVO;
+import org.apache.cloudstack.resourcedetail.dao.DiskOfferingDetailsDao;
+import com.cloud.template.VirtualMachineTemplate;
+import com.cloud.vm.DiskProfile;
 import com.cloud.storage.DataStoreRole;
 import com.cloud.storage.Storage;
 import com.cloud.storage.Volume;
@@ -61,6 +80,8 @@ import com.cloud.vm.dao.UserVmDao;
 import com.cloud.utils.Pair;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataObject;
 import org.apache.cloudstack.engine.subsystem.api.storage.DataStore;
+import org.apache.cloudstack.engine.subsystem.api.storage.DataStoreManager;
+import org.apache.cloudstack.framework.async.AsyncCallFuture;
 import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStore;
 import org.apache.cloudstack.engine.subsystem.api.storage.PrimaryDataStoreDriver;
 import org.apache.cloudstack.engine.subsystem.api.storage.VolumeDataFactory;
@@ -82,15 +103,18 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedConstruction;
+import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnitRunner;
 import org.mockito.stubbing.Answer;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.apache.cloudstack.engine.orchestration.service.VolumeOrchestrationService.VolumeAllocationAlgorithm;
 import static org.junit.Assert.assertNotNull;
@@ -1116,4 +1140,340 @@ public class VolumeOrchestratorTest {
         return null;
     }
 
+
+    private static final long SOURCE_SNAPSHOT_ID = 61L;
+    private static final long SOURCE_SIZE = 8L << 30;
+    private static final long ROOT_ID = 80L;
+
+    /** Makes a first-fit search for a pool answer a pool local to a host that the offering of the Instance cannot use. */
+    private void aFirstFitPoolOfAHostTheOfferingCannotUse() {
+        StoragePool eggnogLocal = Mockito.mock(StoragePool.class);
+        Mockito.lenient().when(eggnogLocal.getId()).thenReturn(66L);
+        Mockito.lenient().doReturn(eggnogLocal).when(volumeOrchestrator).findStoragePool(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(),
+                Mockito.any(), Mockito.any(), Mockito.any());
+    }
+
+    private void verifyNoPoolWasChosenOutsideTheDeployment() throws Exception {
+        Mockito.verify(volumeOrchestrator, Mockito.never()).findStoragePool(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(),
+                Mockito.any(), Mockito.any());
+        Mockito.verify(volumeOrchestrator, Mockito.never()).createVolumeFromSnapshot(Mockito.any(), Mockito.any(), Mockito.any());
+    }
+
+    /** The details of {@link #ROOT_ID}: the snapshot it is created from, when given, as the hidden detail of exactly that name. */
+    private VolumeDetailsDao detailsOfTheRoot(Long snapshotId) {
+        VolumeDetailsDao details = Mockito.mock(VolumeDetailsDao.class);
+        List<VolumeDetailVO> rows = new ArrayList<>(List.of(new VolumeDetailVO(ROOT_ID, Volume.SNAPSHOT_TO_CREATE_FROM, "62", true),
+                new VolumeDetailVO(ROOT_ID, Volume.SNAPSHOT_TO_CREATE_FROM.toUpperCase(), "63", false)));
+        if (snapshotId != null) {
+            rows.add(new VolumeDetailVO(ROOT_ID, Volume.SNAPSHOT_TO_CREATE_FROM, String.valueOf(snapshotId), false));
+        }
+        Mockito.lenient().when(details.findDetails(ROOT_ID, Volume.SNAPSHOT_TO_CREATE_FROM)).thenReturn(rows);
+        ReflectionTestUtils.setField(volumeOrchestrator, "_volDetailDao", details);
+        return details;
+    }
+
+    private SnapshotVO theSourceSnapshot(Snapshot.State state) {
+        SnapshotVO snapshot = Mockito.mock(SnapshotVO.class);
+        Mockito.lenient().when(snapshot.getId()).thenReturn(SOURCE_SNAPSHOT_ID);
+        Mockito.lenient().when(snapshot.getState()).thenReturn(state);
+        SnapshotDao snapshots = Mockito.mock(SnapshotDao.class);
+        Mockito.lenient().when(snapshots.findById(SOURCE_SNAPSHOT_ID)).thenReturn(snapshot);
+        ReflectionTestUtils.setField(volumeOrchestrator, "_snapshotDao", snapshots);
+        Mockito.lenient().when(snapshot.getSize()).thenReturn(SOURCE_SIZE);
+        SnapshotDataFactory snapshotsInZones = Mockito.mock(SnapshotDataFactory.class);
+        Mockito.lenient().when(snapshotsInZones.getSnapshots(SOURCE_SNAPSHOT_ID, 1L)).thenReturn(List.of(Mockito.mock(SnapshotInfo.class)));
+        ReflectionTestUtils.setField(volumeOrchestrator, "snapshotFactory", snapshotsInZones);
+        return snapshot;
+    }
+
+    private VolumeVO aRootNotCreatedYet() {
+        VolumeVO root = new VolumeVO(Volume.Type.ROOT, "web-ROOT", 1L, 2L, 3L, 4L, Storage.ProvisioningType.THIN, SOURCE_SIZE, null, null, null);
+        ReflectionTestUtils.setField(root, "id", ROOT_ID);
+        root.setTemplateId(30L);
+        return root;
+    }
+
+    @Test
+    public void aRootFromASnapshotIsAllocatedOnNoPoolAndRecordsTheSnapshotToCreateItFrom() throws Exception {
+        aFirstFitPoolOfAHostTheOfferingCannotUse();
+        VolumeDetailsDao details = detailsOfTheRoot(null);
+        ReflectionTestUtils.setField(volumeOrchestrator, "_volsDao", volumeDao);
+        Mockito.doNothing().when(volumeOrchestrator).saveVolumeDetails(Mockito.anyLong(), Mockito.anyLong());
+        VolumeVO source = Mockito.mock(VolumeVO.class);
+        Mockito.when(source.getSize()).thenReturn(SOURCE_SIZE);
+        Mockito.when(volumeDao.findByIdIncludingRemoved(70L)).thenReturn(source);
+        Mockito.when(volumeDao.persist(Mockito.any(VolumeVO.class))).thenAnswer(i -> {
+            VolumeVO persisted = i.getArgument(0);
+            ReflectionTestUtils.setField(persisted, "id", ROOT_ID);
+            return persisted;
+        });
+        Snapshot snapshot = Mockito.mock(Snapshot.class);
+        Mockito.when(snapshot.getId()).thenReturn(SOURCE_SNAPSHOT_ID);
+        Mockito.when(snapshot.getVolumeId()).thenReturn(70L);
+        DiskOffering offering = Mockito.mock(DiskOffering.class);
+        VirtualMachineTemplate template = Mockito.mock(VirtualMachineTemplate.class);
+        Mockito.when(template.getFormat()).thenReturn(Storage.ImageFormat.QCOW2);
+        Mockito.when(template.getHypervisorType()).thenReturn(Hypervisor.HypervisorType.KVM);
+        Mockito.when(template.getId()).thenReturn(30L);
+        VirtualMachine vm = Mockito.mock(VirtualMachine.class);
+        Mockito.when(vm.getId()).thenReturn(MOCK_VM_ID);
+        Mockito.when(vm.getType()).thenReturn(VirtualMachine.Type.User);
+        UserVmDao userVmDao = Mockito.mock(UserVmDao.class);
+        Mockito.when(userVmDao.findById(MOCK_VM_ID)).thenReturn(Mockito.mock(UserVmVO.class));
+        ReflectionTestUtils.setField(volumeOrchestrator, "_userVmDao", userVmDao);
+
+        List<DiskProfile> disks;
+        try (MockedStatic<UsageEventUtils> ignored = Mockito.mockStatic(UsageEventUtils.class)) {
+            disks = volumeOrchestrator.allocateTemplatedVolumes(Volume.Type.ROOT, "web-ROOT", offering, null, null, null, template, vm,
+                    Mockito.mock(Account.class), null, null, snapshot);
+        }
+
+        ArgumentCaptor<VolumeVO> persisted = ArgumentCaptor.forClass(VolumeVO.class);
+        Mockito.verify(volumeDao).persist(persisted.capture());
+        Assert.assertEquals(Volume.State.Allocated, persisted.getValue().getState());
+        Assert.assertNull(persisted.getValue().getPoolId());
+        Assert.assertEquals(SOURCE_SIZE, disks.get(0).getSize());
+        Mockito.verify(details).addDetail(ROOT_ID, Volume.SNAPSHOT_TO_CREATE_FROM, String.valueOf(SOURCE_SNAPSHOT_ID), false);
+        verifyNoPoolWasChosenOutsideTheDeployment();
+        Mockito.verifyNoInteractions(volumeService);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void aRootFromASnapshotIsCreatedOnThePoolTheDeploymentChoseAndNotOnAFirstFitPool() throws Exception {
+        aFirstFitPoolOfAHostTheOfferingCannotUse();
+        VolumeDetailsDao details = detailsOfTheRoot(SOURCE_SNAPSHOT_ID);
+        SnapshotVO snapshot = theSourceSnapshot(Snapshot.State.BackedUp);
+        ReflectionTestUtils.setField(volumeOrchestrator, "_volsDao", volumeDao);
+        VolumeVO root = aRootNotCreatedYet();
+        Mockito.when(volumeDao.findById(ROOT_ID)).thenReturn(root);
+        DiskOffering offering = Mockito.mock(DiskOffering.class);
+        Mockito.when(entityMgr.findById(DiskOffering.class, 4L)).thenReturn(offering);
+        StoragePool localPoolOfTheChosenHost = Mockito.mock(StoragePool.class);
+        Mockito.when(localPoolOfTheChosenHost.getId()).thenReturn(55L);
+        PrimaryDataStore chosenStore = Mockito.mock(PrimaryDataStore.class);
+        DataStoreManager dataStores = Mockito.mock(DataStoreManager.class);
+        Mockito.when(dataStores.getDataStore(55L, DataStoreRole.Primary)).thenReturn(chosenStore);
+        ReflectionTestUtils.setField(volumeOrchestrator, "dataStoreMgr", dataStores);
+        DeployDestination dest = Mockito.mock(DeployDestination.class);
+        Map<Volume, StoragePool> storageForDisks = new HashMap<>();
+        storageForDisks.put(root, localPoolOfTheChosenHost);
+        Mockito.when(dest.getStorageForDisks()).thenReturn(storageForDisks);
+        Mockito.doReturn(Mockito.mock(VolumeInfo.class)).when(volumeOrchestrator).createVolumeFromSnapshotOn(root, snapshot, chosenStore);
+        Method recreate = VolumeOrchestrator.class.getDeclaredMethod("recreateVolume", VolumeVO.class, VirtualMachineProfile.class, DeployDestination.class);
+        recreate.setAccessible(true);
+
+        Pair<VolumeVO, DataStore> created = (Pair<VolumeVO, DataStore>) recreate.invoke(volumeOrchestrator, root, Mockito.mock(VirtualMachineProfile.class), dest);
+
+        Assert.assertSame(chosenStore, created.second());
+        Mockito.verify(volumeOrchestrator).createVolumeFromSnapshotOn(root, snapshot, chosenStore);
+        Mockito.verify(details).removeDetail(ROOT_ID, Volume.SNAPSHOT_TO_CREATE_FROM);
+        verifyNoPoolWasChosenOutsideTheDeployment();
+        Mockito.verify(volumeService, Mockito.never()).createVolumeFromTemplateAsync(Mockito.any(), Mockito.anyLong(), Mockito.any());
+    }
+
+    @Test
+    public void theSnapshotAVolumeIsCreatedFromIsItsHiddenDetailOfExactlyThatNameAndMustStillExist() {
+        VolumeVO root = aRootNotCreatedYet();
+        detailsOfTheRoot(null);
+        Assert.assertNull("a detail a caller could have set is not the snapshot to create the volume from", volumeOrchestrator.snapshotToCreateFrom(root));
+
+        detailsOfTheRoot(SOURCE_SNAPSHOT_ID);
+        SnapshotVO snapshot = theSourceSnapshot(Snapshot.State.BackedUp);
+        Assert.assertSame(snapshot, volumeOrchestrator.snapshotToCreateFrom(root));
+
+        theSourceSnapshot(Snapshot.State.Destroyed);
+        CloudRuntimeException destroyed = Assert.assertThrows(CloudRuntimeException.class, () -> volumeOrchestrator.snapshotToCreateFrom(root));
+        Assert.assertTrue(destroyed.getMessage(), destroyed.getMessage().contains("web-ROOT") && destroyed.getMessage().contains("no longer exists"));
+
+        ReflectionTestUtils.setField(volumeOrchestrator, "_snapshotDao", Mockito.mock(SnapshotDao.class));
+        CloudRuntimeException removed = Assert.assertThrows(CloudRuntimeException.class, () -> volumeOrchestrator.snapshotToCreateFrom(root));
+        Assert.assertTrue(removed.getMessage(), removed.getMessage().contains("no longer exists"));
+    }
+
+    @Test
+    public void theVolumesOfAFailedDeploymentAreExpungedRatherThanLeftDestroyed() throws Exception {
+        ReflectionTestUtils.setField(volumeOrchestrator, "_volsDao", volumeDao);
+        Mockito.doNothing().when(volumeOrchestrator).destroyVolume(Mockito.any());
+        VolumeVO notCreated = Mockito.mock(VolumeVO.class);
+        Mockito.when(notCreated.getId()).thenReturn(81L);
+        Mockito.when(notCreated.getState()).thenReturn(Volume.State.Allocated);
+        VolumeVO created = Mockito.mock(VolumeVO.class);
+        Mockito.when(created.getId()).thenReturn(82L);
+        Mockito.when(created.getState()).thenReturn(Volume.State.Ready);
+        VolumeVO destroyed = Mockito.mock(VolumeVO.class);
+        Mockito.when(destroyed.getId()).thenReturn(83L);
+        Mockito.when(destroyed.getState()).thenReturn(Volume.State.Destroy);
+        Mockito.when(volumeDao.findById(81L)).thenReturn(null);
+        Mockito.when(volumeDao.findById(82L)).thenReturn(created);
+        Mockito.when(volumeDao.findById(83L)).thenReturn(destroyed);
+        VolumeInfo createdInfo = Mockito.mock(VolumeInfo.class);
+        VolumeInfo destroyedInfo = Mockito.mock(VolumeInfo.class);
+        Mockito.when(volumeDataFactory.getVolume(82L)).thenReturn(createdInfo);
+        Mockito.when(volumeDataFactory.getVolume(83L)).thenReturn(destroyedInfo);
+        for (VolumeInfo info : List.of(createdInfo, destroyedInfo)) {
+            AsyncCallFuture<VolumeService.VolumeApiResult> expunged = new AsyncCallFuture<>();
+            expunged.complete(new VolumeService.VolumeApiResult(info));
+            Mockito.when(volumeService.expungeVolumeAsync(info)).thenReturn(expunged);
+        }
+
+        for (VolumeVO volume : List.of(notCreated, created, destroyed)) {
+            volumeOrchestrator.expungeVolumeOfFailedDeployment(volume);
+        }
+
+        Mockito.verify(volumeOrchestrator).destroyVolume(notCreated);
+        Mockito.verify(volumeOrchestrator).destroyVolume(created);
+        Mockito.verify(volumeOrchestrator, Mockito.never()).destroyVolume(destroyed);
+        Mockito.verify(volumeService).expungeVolumeAsync(createdInfo);
+        Mockito.verify(volumeService).expungeVolumeAsync(destroyedInfo);
+        Mockito.verify(volumeService, Mockito.times(2)).expungeVolumeAsync(Mockito.any());
+    }
+
+    @Test
+    public void theSnapshotAVolumeIsCreatedFromMustBeAvailableInTheZoneOfTheVolume() {
+        VolumeVO root = aRootNotCreatedYet();
+        detailsOfTheRoot(SOURCE_SNAPSHOT_ID);
+        theSourceSnapshot(Snapshot.State.BackedUp);
+        ReflectionTestUtils.setField(volumeOrchestrator, "snapshotFactory", Mockito.mock(SnapshotDataFactory.class));
+
+        CloudRuntimeException e = Assert.assertThrows(CloudRuntimeException.class, () -> volumeOrchestrator.snapshotToCreateFrom(root));
+
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("web-ROOT") && e.getMessage().contains("not available in the zone"));
+    }
+
+    private void theTemplateOfTheRootIs(long size) {
+        VMTemplateVO template = Mockito.mock(VMTemplateVO.class);
+        Mockito.lenient().when(template.getSize()).thenReturn(size);
+        Mockito.lenient().when(template.getFormat()).thenReturn(Storage.ImageFormat.QCOW2);
+        VMTemplateDao templates = Mockito.mock(VMTemplateDao.class);
+        Mockito.lenient().when(templates.findByIdIncludingRemoved(30L)).thenReturn(template);
+        Mockito.lenient().when(templates.findById(30L)).thenReturn(template);
+        ReflectionTestUtils.setField(volumeOrchestrator, "_templateDao", templates);
+    }
+
+    @Test
+    public void aVolumeNotCreatedYetIsCreatedAtLeastAtTheSizeOfItsSnapshotOrOfItsTemplate() {
+        VolumeVO root = aRootNotCreatedYet();
+        detailsOfTheRoot(SOURCE_SNAPSHOT_ID);
+        SnapshotVO snapshot = theSourceSnapshot(Snapshot.State.BackedUp);
+        Mockito.when(snapshot.getSize()).thenReturn(10L << 30);
+        Assert.assertEquals(10L << 30, volumeOrchestrator.leastSizeAtCreation(root));
+
+        detailsOfTheRoot(null);
+        theTemplateOfTheRootIs(5L << 30);
+        Assert.assertEquals(5L << 30, volumeOrchestrator.leastSizeAtCreation(root));
+
+        VolumeVO data = new VolumeVO(Volume.Type.DATADISK, "data", 1L, 2L, 3L, 4L, Storage.ProvisioningType.THIN, 1L << 30, null, null, null);
+        Assert.assertEquals("a data volume", 0, volumeOrchestrator.leastSizeAtCreation(data));
+        VolumeVO created = aRootNotCreatedYet();
+        created.setState(Volume.State.Ready);
+        Assert.assertEquals("a volume created already", 0, volumeOrchestrator.leastSizeAtCreation(created));
+    }
+
+    private StoragePool theChosenPool() {
+        Mockito.lenient().when(entityMgr.findById(DiskOffering.class, 4L)).thenReturn(Mockito.mock(DiskOffering.class));
+        StoragePool pool = Mockito.mock(StoragePool.class);
+        Mockito.lenient().when(pool.getId()).thenReturn(55L);
+        DataStoreManager dataStores = Mockito.mock(DataStoreManager.class);
+        Mockito.lenient().when(dataStores.getDataStore(55L, DataStoreRole.Primary)).thenReturn(Mockito.mock(PrimaryDataStore.class));
+        ReflectionTestUtils.setField(volumeOrchestrator, "dataStoreMgr", dataStores);
+        return pool;
+    }
+
+    private void theLimitsOfTheAccount() {
+        AccountManager accounts = Mockito.mock(AccountManager.class);
+        Mockito.lenient().when(accounts.getActiveAccountById(3L)).thenReturn(Mockito.mock(Account.class));
+        ReflectionTestUtils.setField(volumeOrchestrator, "_accountMgr", accounts);
+        DiskOfferingDao offerings = Mockito.mock(DiskOfferingDao.class);
+        Mockito.lenient().when(offerings.findByIdIncludingRemoved(4L)).thenReturn(Mockito.mock(DiskOfferingVO.class));
+        ReflectionTestUtils.setField(volumeOrchestrator, "diskOfferingDao", offerings);
+        ReflectionTestUtils.setField(volumeOrchestrator, "_volsDao", volumeDao);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Pair<VolumeVO, DataStore> recreate(VolumeVO root, StoragePool pool) throws Throwable {
+        DeployDestination dest = Mockito.mock(DeployDestination.class);
+        Map<Volume, StoragePool> storageForDisks = new HashMap<>();
+        storageForDisks.put(root, pool);
+        Mockito.lenient().when(dest.getStorageForDisks()).thenReturn(storageForDisks);
+        Method recreate = VolumeOrchestrator.class.getDeclaredMethod("recreateVolume", VolumeVO.class, VirtualMachineProfile.class, DeployDestination.class);
+        recreate.setAccessible(true);
+        try {
+            return (Pair<VolumeVO, DataStore>) recreate.invoke(volumeOrchestrator, root, Mockito.mock(VirtualMachineProfile.class), dest);
+        } catch (InvocationTargetException e) {
+            throw e.getCause();
+        }
+    }
+
+    @Test
+    public void aRootFromASnapshotGrowingAtCreationPastTheAccountsLimitIsRefusedBeforeItIsCreated() throws Exception {
+        VolumeVO root = aRootNotCreatedYet();
+        detailsOfTheRoot(SOURCE_SNAPSHOT_ID);
+        SnapshotVO snapshot = theSourceSnapshot(Snapshot.State.BackedUp);
+        Mockito.when(snapshot.getSize()).thenReturn(10L << 30);
+        theLimitsOfTheAccount();
+        Mockito.doThrow(new ResourceAllocationException("over the primary storage limit", Resource.ResourceType.primary_storage)).when(resourceLimitMgr)
+                .checkPrimaryStorageResourceLimit(Mockito.any(), Mockito.any(), Mockito.eq(2L << 30), Mockito.any(), Mockito.anyList());
+        Mockito.lenient().doReturn(Mockito.mock(VolumeInfo.class)).when(volumeOrchestrator).createVolumeFromSnapshotOn(Mockito.any(), Mockito.any(), Mockito.any());
+        StoragePool pool = theChosenPool();
+
+        Assert.assertThrows(ResourceAllocationException.class, () -> recreate(root, pool));
+
+        Mockito.verify(volumeOrchestrator, Mockito.never()).createVolumeFromSnapshotOn(Mockito.any(), Mockito.any(), Mockito.any());
+        Mockito.verify(resourceLimitMgr, Mockito.never()).incrementVolumePrimaryStorageResourceCount(Mockito.anyLong(), Mockito.any(), Mockito.anyLong(),
+                Mockito.any());
+    }
+
+    @Test
+    public void aRootFromATemplateGrowingAtCreationPastTheAccountsLimitIsRefusedBeforeItIsCreated() throws Exception {
+        VolumeVO root = aRootNotCreatedYet();
+        root.setSize(1L << 30);
+        detailsOfTheRoot(null);
+        theTemplateOfTheRootIs(5L << 30);
+        theLimitsOfTheAccount();
+        Mockito.doThrow(new ResourceAllocationException("over the primary storage limit", Resource.ResourceType.primary_storage)).when(resourceLimitMgr)
+                .checkPrimaryStorageResourceLimit(Mockito.any(), Mockito.any(), Mockito.eq(4L << 30), Mockito.any(), Mockito.anyList());
+        StoragePool pool = theChosenPool();
+
+        Assert.assertThrows(ResourceAllocationException.class, () -> recreate(root, pool));
+
+        Mockito.verify(volumeService, Mockito.never()).createVolumeFromTemplateAsync(Mockito.any(), Mockito.anyLong(), Mockito.any());
+        Mockito.verify(volumeService, Mockito.never()).createVolumeAsync(Mockito.any(), Mockito.any());
+    }
+
+    @Test
+    public void aRootGrowingAtCreationWithinTheAccountsLimitIsCountedBeforeItIsCreated() throws Throwable {
+        VolumeVO root = aRootNotCreatedYet();
+        detailsOfTheRoot(SOURCE_SNAPSHOT_ID);
+        SnapshotVO snapshot = theSourceSnapshot(Snapshot.State.BackedUp);
+        Mockito.when(snapshot.getSize()).thenReturn(10L << 30);
+        theLimitsOfTheAccount();
+        Mockito.lenient().when(volumeDao.findById(ROOT_ID)).thenReturn(root);
+        Mockito.doReturn(Mockito.mock(VolumeInfo.class)).when(volumeOrchestrator).createVolumeFromSnapshotOn(Mockito.eq(root), Mockito.eq(snapshot), Mockito.any());
+        StoragePool pool = theChosenPool();
+
+        recreate(root, pool);
+
+        Assert.assertEquals(Long.valueOf(10L << 30), root.getSize());
+        InOrder order = Mockito.inOrder(resourceLimitMgr, volumeOrchestrator);
+        order.verify(resourceLimitMgr).checkPrimaryStorageResourceLimit(Mockito.any(), Mockito.any(), Mockito.eq(2L << 30), Mockito.any(), Mockito.anyList());
+        order.verify(resourceLimitMgr).incrementVolumePrimaryStorageResourceCount(Mockito.anyLong(), Mockito.any(), Mockito.eq(2L << 30), Mockito.any());
+        order.verify(volumeOrchestrator).createVolumeFromSnapshotOn(Mockito.eq(root), Mockito.eq(snapshot), Mockito.any());
+    }
+
+    @Test
+    public void anOfferingChangeOfARootPendingCreationFromASnapshotKeepsTheSnapshotToCreateItFrom() {
+        VolumeDetailsDao details = detailsOfTheRoot(SOURCE_SNAPSHOT_ID);
+        DiskOfferingDetailsDao offeringDetails = Mockito.mock(DiskOfferingDetailsDao.class);
+        Mockito.when(offeringDetails.findDetail(9L, Volume.BANDWIDTH_LIMIT_IN_MBPS)).thenReturn(new DiskOfferingDetailVO(9L, Volume.BANDWIDTH_LIMIT_IN_MBPS, "100",
+                false));
+        ReflectionTestUtils.setField(volumeOrchestrator, "_diskOfferingDetailDao", offeringDetails);
+
+        volumeOrchestrator.saveVolumeDetails(9L, ROOT_ID);
+
+        Mockito.verify(details).addDetail(ROOT_ID, Volume.BANDWIDTH_LIMIT_IN_MBPS, "100", false);
+        Mockito.verify(details, Mockito.never()).saveDetails(Mockito.anyList());
+        Mockito.verify(details, Mockito.never()).removeDetails(Mockito.anyLong());
+        Mockito.verify(details, Mockito.never()).removeDetail(ROOT_ID, Volume.SNAPSHOT_TO_CREATE_FROM);
+    }
 }

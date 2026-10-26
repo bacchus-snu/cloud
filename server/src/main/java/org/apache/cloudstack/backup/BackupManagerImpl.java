@@ -634,8 +634,8 @@ public class BackupManagerImpl extends ManagerBase implements BackupManager {
         List<VMInstanceDetailVO> vmDetails = vmInstanceDetailsDao.listDetails(vm.getId());
         HashMap<String, String> settings = new HashMap<>();
         for (VMInstanceDetailVO detail : vmDetails) {
-            // lifecycle state belongs to the running Instance and the prefix of its names to its account, not to its settings
-            if (!VmDetailConstants.isLifecycleState(detail.getName()) && !VmDetailConstants.isSshNamePrefix(detail.getName())) {
+            // lifecycle state belongs to the running Instance and the details naming it to it and its account, not to its settings
+            if (!VmDetailConstants.isLifecycleState(detail.getName()) && !VmDetailConstants.isNamingDetail(detail.getName())) {
                 settings.put(detail.getName(), detail.getValue());
             }
         }

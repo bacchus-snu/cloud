@@ -35,6 +35,8 @@ public interface Volume extends ControlledEntity, Identity, InternalIdentity, Ba
     // Managed storage volume parameters (specified in the compute/disk offering for PowerFlex)
     String BANDWIDTH_LIMIT_IN_MBPS = "bandwidthLimitInMbps";
     String IOPS_LIMIT = "iopsLimit";
+    // the snapshot from which a volume not created yet is created on the pool that its Instance's deployment chooses; kept by the system
+    String SNAPSHOT_TO_CREATE_FROM = "snapshotToCreateFrom";
 
     enum Type {
         UNKNOWN, ROOT, SWAP, DATADISK, ISO

@@ -58,6 +58,7 @@ import com.cloud.server.ResourceTag.ResourceObjectType;
 import com.cloud.service.dao.ServiceOfferingDetailsDao;
 import com.cloud.service.ServiceOfferingVO;
 import com.cloud.storage.VMTemplateVO;
+import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.VolumeDetailsDao;
 import com.cloud.user.Account;
@@ -208,7 +209,6 @@ public class ResourceMetaDataManagerImplTest {
         Assert.assertTrue(resourceMetaDataManager.deleteResourceMetaData("volume", ResourceObjectType.Volume, null));
 
         Mockito.verify(volumeDetailsDao).removeDetails(2L);
-        Mockito.verify(volumeDetailsDao, Mockito.never()).listDetailsKeyPairs(Mockito.anyLong());
         Mockito.verifyNoInteractions(configurationManager);
     }
 
@@ -236,6 +236,66 @@ public class ResourceMetaDataManagerImplTest {
             Assert.assertTrue(resourceMetaDataManager.addResourceMetaData("vm", ResourceObjectType.UserVm, new HashMap<>(Map.of(prefix, "admin")), false));
             Assert.assertTrue(resourceMetaDataManager.deleteResourceMetaData("vm", ResourceObjectType.UserVm, prefix));
             Mockito.verify(vmInstanceDetailsDao).removeDetail(3L, prefix);
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void onlyARootAdminSetsOrRemovesTheGuestHostnameOfAnInstanceInAnyCase() {
+        asCallerOtherThanARootAdmin();
+        resource(UserVmVO.class, ResourceObjectType.UserVm, "vm", 3L, true);
+        Mockito.when(vmInstanceDetailsDao.listDetailsKeyPairs(3L)).thenReturn(Map.of(VmDetailConstants.GUEST_HOSTNAME, "web", "keyboard", "us"));
+        try (MockedStatic<Transaction> transaction = Mockito.mockStatic(Transaction.class)) {
+            transaction.when(() -> Transaction.execute(Mockito.any(TransactionCallback.class))).thenReturn(true);
+
+            for (String key : List.of(VmDetailConstants.GUEST_HOSTNAME, "GUEST.HOSTNAME", "Guest.Hostname")) {
+                InvalidParameterValueException e = Assert.assertThrows(key, InvalidParameterValueException.class,
+                        () -> resourceMetaDataManager.addResourceMetaData("vm", ResourceObjectType.UserVm, new HashMap<>(Map.of(key, "victim")), false));
+                Assert.assertTrue(e.getMessage(), e.getMessage().contains(VmDetailConstants.GUEST_HOSTNAME));
+                Assert.assertThrows(key, InvalidParameterValueException.class, () -> resourceMetaDataManager.deleteResourceMetaData("vm",
+                        ResourceObjectType.UserVm, key));
+            }
+            Assert.assertThrows(InvalidParameterValueException.class, () -> resourceMetaDataManager.deleteResourceMetaData("vm", ResourceObjectType.UserVm,
+                    null));
+            transaction.verifyNoInteractions();
+            Mockito.verify(vmInstanceDetailsDao, Mockito.never()).removeDetail(Mockito.anyLong(), Mockito.anyString());
+            Mockito.verify(vmInstanceDetailsDao, Mockito.never()).removeDetails(Mockito.anyLong());
+
+            Mockito.when(accountManager.isRootAdmin(2L)).thenReturn(true);
+            Assert.assertTrue(resourceMetaDataManager.addResourceMetaData("vm", ResourceObjectType.UserVm,
+                    new HashMap<>(Map.of(VmDetailConstants.GUEST_HOSTNAME, "web")), false));
+            Assert.assertTrue(resourceMetaDataManager.deleteResourceMetaData("vm", ResourceObjectType.UserVm, VmDetailConstants.GUEST_HOSTNAME));
+            Mockito.verify(vmInstanceDetailsDao).removeDetail(3L, VmDetailConstants.GUEST_HOSTNAME);
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void onlyARootAdminSetsOrRemovesTheSnapshotAVolumeIsCreatedFromInAnyCase() {
+        asCallerOtherThanARootAdmin();
+        resource(VolumeVO.class, ResourceObjectType.Volume, "volume", 4L, true);
+        Mockito.lenient().when(volumeDetailsDao.listDetailsKeyPairs(4L)).thenReturn(Map.of(Volume.SNAPSHOT_TO_CREATE_FROM, "61"));
+        try (MockedStatic<Transaction> transaction = Mockito.mockStatic(Transaction.class)) {
+            transaction.when(() -> Transaction.execute(Mockito.any(TransactionCallback.class))).thenReturn(true);
+
+            for (String key : List.of(Volume.SNAPSHOT_TO_CREATE_FROM, Volume.SNAPSHOT_TO_CREATE_FROM.toUpperCase())) {
+                InvalidParameterValueException e = Assert.assertThrows(key, InvalidParameterValueException.class,
+                        () -> resourceMetaDataManager.addResourceMetaData("volume", ResourceObjectType.Volume, new HashMap<>(Map.of(key, "62")), false));
+                Assert.assertTrue(e.getMessage(), e.getMessage().contains(Volume.SNAPSHOT_TO_CREATE_FROM));
+                Assert.assertThrows(key, InvalidParameterValueException.class, () -> resourceMetaDataManager.deleteResourceMetaData("volume",
+                        ResourceObjectType.Volume, key));
+            }
+            Assert.assertThrows(InvalidParameterValueException.class, () -> resourceMetaDataManager.deleteResourceMetaData("volume",
+                    ResourceObjectType.Volume, null));
+            transaction.verifyNoInteractions();
+            Mockito.verify(volumeDetailsDao, Mockito.never()).removeDetail(Mockito.anyLong(), Mockito.anyString());
+            Mockito.verify(volumeDetailsDao, Mockito.never()).removeDetails(Mockito.anyLong());
+
+            Mockito.when(accountManager.isRootAdmin(2L)).thenReturn(true);
+            Assert.assertTrue(resourceMetaDataManager.addResourceMetaData("volume", ResourceObjectType.Volume,
+                    new HashMap<>(Map.of(Volume.SNAPSHOT_TO_CREATE_FROM, "61")), false));
+            Assert.assertTrue(resourceMetaDataManager.deleteResourceMetaData("volume", ResourceObjectType.Volume, Volume.SNAPSHOT_TO_CREATE_FROM));
+            Mockito.verify(volumeDetailsDao).removeDetail(4L, Volume.SNAPSHOT_TO_CREATE_FROM);
         }
     }
 

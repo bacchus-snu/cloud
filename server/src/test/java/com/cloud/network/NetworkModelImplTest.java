@@ -75,6 +75,13 @@ import com.cloud.vm.VirtualMachine;
 import org.apache.cloudstack.extension.Extension;
 import org.apache.cloudstack.extension.ExtensionHelper;
 import org.apache.cloudstack.framework.extensions.network.NetworkExtensionElement;
+import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
+import com.cloud.dc.dao.DataCenterDao;
+import com.cloud.domain.dao.DomainDao;
+import com.cloud.network.dao.IPAddressDao;
+import com.cloud.vm.UserVmVO;
+import com.cloud.vm.dao.VMInstanceDao;
+import com.cloud.vm.dao.VMInstanceDetailsDao;
 
 @RunWith(MockitoJUnitRunner.class)
 public class NetworkModelImplTest {
@@ -451,5 +458,57 @@ public class NetworkModelImplTest {
 
         Mockito.verify(physicalNetworkServiceProviderDao, Mockito.times(1)).listAll();
         Mockito.verify(physicalNetworkServiceProviderDao, Mockito.never()).listBy(Mockito.anyLong());
+    }
+
+    private static final long GUEST_VM_ID = 9L;
+
+    /**
+     * @return the metadata, by name, that the guest of Instance {@link #GUEST_VM_ID} is handed in a zone of the network type. The
+     *         Instance, created as "web" and renamed "Api" since, has the hostname admin-vm-0 and the guest hostname recorded at its
+     *         creation, none when null.
+     */
+    private Map<String, String> metadataOfTheGuest(String guestHostName, DataCenter.NetworkType networkType) {
+        DataCenterVO zone = mock(DataCenterVO.class);
+        when(zone.getName()).thenReturn("zone");
+        when(zone.getNetworkType()).thenReturn(networkType);
+        networkModel._dcDao = mock(DataCenterDao.class);
+        when(networkModel._dcDao.findById(1L)).thenReturn(zone);
+        networkModel._ipAddressDao = mock(IPAddressDao.class);
+        UserVmVO vm = mock(UserVmVO.class);
+        Mockito.lenient().when(vm.getDisplayName()).thenReturn("Api");
+        Mockito.lenient().when(vm.getHostName()).thenReturn("admin-vm-0");
+        networkModel._vmDao = mock(VMInstanceDao.class);
+        when(networkModel._vmDao.findById(GUEST_VM_ID)).thenReturn(vm);
+        networkModel._configDao = mock(ConfigurationDao.class);
+        networkModel._domainDao = mock(DomainDao.class);
+        networkModel.vmInstanceDetailsDao = mock(VMInstanceDetailsDao.class);
+        Mockito.lenient().when(networkModel.vmInstanceDetailsDao.findGuestHostName(GUEST_VM_ID)).thenReturn(guestHostName);
+
+        Map<String, String> metadata = new HashMap<>();
+        for (String[] item : networkModel.generateVmData(null, null, "offering", 1L, "i-2-9-VM", "admin-vm-0", GUEST_VM_ID, "uuid", "10.1.1.9", "key",
+                null, false, null)) {
+            if (NetworkModel.METATDATA_DIR.equals(item[0])) {
+                metadata.put(item[1], item[2]);
+            }
+        }
+        return metadata;
+    }
+
+    @Test
+    public void theGuestTakesTheHostnameRecordedAtTheCreationOfItsInstanceWhateverTheInstanceIsNamedNow() {
+        assertEquals("web", metadataOfTheGuest("web", DataCenter.NetworkType.Advanced).get(NetworkModel.LOCAL_HOSTNAME_FILE));
+    }
+
+    @Test
+    public void theGuestOfAnInstanceWithoutARecordedGuestHostnameTakesTheHostnameOfTheInstance() {
+        assertEquals("admin-vm-0", metadataOfTheGuest(null, DataCenter.NetworkType.Advanced).get(NetworkModel.LOCAL_HOSTNAME_FILE));
+    }
+
+    @Test
+    public void theGuestHostnameIsNotThePublicHostnameOfTheInstance() {
+        Map<String, String> metadata = metadataOfTheGuest("web", DataCenter.NetworkType.Basic);
+
+        assertEquals("web", metadata.get(NetworkModel.LOCAL_HOSTNAME_FILE));
+        assertEquals("admin-vm-0", metadata.get(NetworkModel.PUBLIC_HOSTNAME_FILE));
     }
 }

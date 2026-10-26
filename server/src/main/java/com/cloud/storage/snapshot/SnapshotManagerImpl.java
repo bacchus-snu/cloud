@@ -143,9 +143,11 @@ import com.cloud.storage.Upload;
 import com.cloud.storage.VMTemplateStorageResourceAssoc;
 import com.cloud.storage.VMTemplateVO;
 import com.cloud.storage.Volume;
+import com.cloud.storage.VolumeDetailVO;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.DiskOfferingDao;
 import com.cloud.storage.dao.SnapshotDetailsDao;
+import com.cloud.storage.dao.VolumeDetailsDao;
 import com.cloud.storage.dao.SnapshotDao;
 import com.cloud.storage.dao.SnapshotPolicyDao;
 import com.cloud.storage.dao.SnapshotScheduleDao;
@@ -194,6 +196,8 @@ public class SnapshotManagerImpl extends MutualExclusiveIdsManagerBase implement
     VMTemplateDao _templateDao;
     @Inject
     UserVmDao _vmDao;
+    @Inject
+    VolumeDetailsDao volumeDetailsDao;
     @Inject
     VolumeDao _volsDao;
     @Inject
@@ -859,7 +863,37 @@ public class SnapshotManagerImpl extends MutualExclusiveIdsManagerBase implement
         }
     }
 
-    private void postCreateRecurringSnapshotForPolicy(long userId, long volumeId, long snapshotId, long policyId) {
+    /**
+     * @return an Instance whose ROOT volume, not created yet, is to be created from the snapshot, or null when none is; the snapshot is
+     *         recorded as the hidden volume detail named exactly {@link Volume#SNAPSHOT_TO_CREATE_FROM}
+     */
+    protected UserVmVO instanceWhoseRootNeeds(long snapshotId) {
+        for (VolumeDetailVO detail : volumeDetailsDao.findDetails(Volume.SNAPSHOT_TO_CREATE_FROM, String.valueOf(snapshotId), false)) {
+            if (!Volume.SNAPSHOT_TO_CREATE_FROM.equals(detail.getName()) || detail.isDisplay()) {
+                continue;
+            }
+            VolumeVO root = _volsDao.findById(detail.getResourceId());
+            if (root == null || root.getInstanceId() == null || root.getState() != Volume.State.Allocated && root.getState() != Volume.State.Creating) {
+                continue;
+            }
+            UserVmVO vm = _vmDao.findById(root.getInstanceId());
+            if (vm != null) {
+                return vm;
+            }
+        }
+        return null;
+    }
+
+    private boolean mayAccess(Account caller, UserVmVO vm) {
+        try {
+            _accountMgr.checkAccess(caller, null, true, vm);
+            return true;
+        } catch (PermissionDeniedException e) {
+            return false;
+        }
+    }
+
+    protected void postCreateRecurringSnapshotForPolicy(long userId, long volumeId, long snapshotId, long policyId) {
         // Use count query
         SnapshotVO spstVO = _snapshotDao.findById(snapshotId);
         Type type = spstVO.getRecurringType();
@@ -870,9 +904,18 @@ public class SnapshotManagerImpl extends MutualExclusiveIdsManagerBase implement
         if (policy != null && policy.getMaxSnaps() < maxSnaps) {
             maxSnaps = policy.getMaxSnaps();
         }
-        while (snaps.size() > maxSnaps && snaps.size() > 1) {
-            SnapshotVO oldestSnapshot = snaps.get(0);
+        int kept = snaps.size();
+        for (SnapshotVO oldestSnapshot : snaps) {
+            if (kept <= maxSnaps || kept <= 1) {
+                break;
+            }
             long oldSnapId = oldestSnapshot.getId();
+            UserVmVO instanceNeedingIt = instanceWhoseRootNeeds(oldSnapId);
+            if (instanceNeedingIt != null) {
+                logger.info("Keeping snapshot {}, which the rotation of its policy would delete: it is still needed to create the root disk of Instance {}",
+                        oldestSnapshot, instanceNeedingIt);
+                continue;
+            }
             if (policy != null) {
                 logger.debug("Max snaps: {} exceeded for snapshot policy {}. Deleting oldest snapshot: {}", policy.getMaxSnaps(), policy, oldestSnapshot);
             }
@@ -881,7 +924,7 @@ public class SnapshotManagerImpl extends MutualExclusiveIdsManagerBase implement
                 ActionEventUtils.onCompletedActionEvent(User.UID_SYSTEM, oldestSnapshot.getAccountId(), EventVO.LEVEL_INFO, EventTypes.EVENT_SNAPSHOT_DELETE,
                         String.format("Successfully deleted oldest snapshot: %s", oldestSnapshot), oldSnapId, ApiCommandResourceType.Snapshot.toString(), 0);
             }
-            snaps.remove(oldestSnapshot);
+            kept--;
         }
     }
 
@@ -935,6 +978,15 @@ public class SnapshotManagerImpl extends MutualExclusiveIdsManagerBase implement
         }
 
         _accountMgr.checkAccess(caller, null, true, snapshotCheck);
+
+        UserVmVO instanceNeedingIt = instanceWhoseRootNeeds(snapshotId);
+        if (instanceNeedingIt != null) {
+            throw new InvalidParameterValueException(mayAccess(caller, instanceNeedingIt)
+                    ? String.format("Snapshot %s is still needed to create the root disk of Instance %s", snapshotCheck.getName(),
+                            instanceNeedingIt.getDisplayNameOrHostName())
+                    : String.format("Snapshot %s is still needed to create the root disk of an Instance that has not started yet; ask an administrator",
+                            snapshotCheck.getName()));
+        }
 
         SnapshotStrategy snapshotStrategy = _storageStrategyFactory.getSnapshotStrategy(snapshotCheck, zoneId, SnapshotOperation.DELETE);
         if (snapshotStrategy == null) {

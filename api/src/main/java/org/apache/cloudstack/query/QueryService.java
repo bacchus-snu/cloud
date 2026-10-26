@@ -111,7 +111,7 @@ import com.cloud.vm.VmDetailConstants;
 public interface QueryService {
 
     List<String> RootAdminOnlyVmSettings = Arrays.asList(VmDetailConstants.GUEST_CPU_MODE, VmDetailConstants.GUEST_CPU_MODEL,
-            VmDetailConstants.SSH_NAME_PREFIX);
+            VmDetailConstants.SSH_NAME_PREFIX, VmDetailConstants.GUEST_HOSTNAME);
 
     // Config keys
     ConfigKey<Boolean> AllowUserViewDestroyedVM = new ConfigKey<>("Advanced", Boolean.class, "allow.user.view.destroyed.vm", "false",

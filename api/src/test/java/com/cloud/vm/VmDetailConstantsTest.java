@@ -16,7 +16,9 @@
 // under the License.
 package com.cloud.vm;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.util.List;
@@ -37,5 +39,18 @@ public class VmDetailConstantsTest {
         assertFalse(VmDetailConstants.isLifecycleState("leasehours"));
         assertFalse(VmDetailConstants.isLifecycleState("keyboard"));
         assertFalse(VmDetailConstants.isLifecycleState(null));
+    }
+
+    @Test
+    public void theDetailsNamingAnInstanceAreNamedRegardlessOfCase() {
+        for (String name : List.of(VmDetailConstants.SSH_NAME_PREFIX, VmDetailConstants.GUEST_HOSTNAME)) {
+            for (String spelling : List.of(name, name.toUpperCase(Locale.ROOT), Character.toUpperCase(name.charAt(0)) + name.substring(1))) {
+                assertTrue(spelling, VmDetailConstants.isNamingDetail(spelling));
+                assertEquals(spelling, name, VmDetailConstants.namingDetail(spelling));
+            }
+        }
+        assertFalse(VmDetailConstants.isNamingDetail("guest.hostnames"));
+        assertFalse(VmDetailConstants.isNamingDetail("keyboard"));
+        assertNull(VmDetailConstants.namingDetail(null));
     }
 }

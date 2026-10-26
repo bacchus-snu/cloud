@@ -20,7 +20,9 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Properties;
+import java.util.regex.Pattern;
 import java.util.zip.GZIPOutputStream;
 
 import javax.mail.BodyPart;
@@ -235,5 +237,85 @@ public class CloudInitUserDataProviderTest {
         } catch (IOException e) {
             Assert.fail("Exception encountered: " + e.getMessage());
         }
+    }
+
+    /** Template user data as the deployment links it: a multipart of a boot hook and a shell script, with a fixed boundary. */
+    private static final String MANAGED_USERDATA = "Content-Type: multipart/mixed; boundary=\"==cloudstack-user-data==\"\nMIME-Version: 1.0\n\n"
+            + "--==cloudstack-user-data==\nContent-Type: text/cloud-boothook; charset=\"us-ascii\"\nMIME-Version: 1.0\n"
+            + "Content-Transfer-Encoding: 7bit\n\n#!/bin/sh\necho managed-network\n\n"
+            + "--==cloudstack-user-data==\nContent-Type: text/x-shellscript; charset=\"us-ascii\"\nMIME-Version: 1.0\n"
+            + "Content-Transfer-Encoding: 7bit\n\n#!/bin/sh\necho managed-trust\n\n"
+            + "--==cloudstack-user-data==--\n";
+
+    private static String encoded(String userData) {
+        return Base64.encodeBase64String(userData.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** @return the user data an Instance gets from a template appending the managed user data, as a deployment or an edit finalizes it */
+    private String finalizedWithTheManagedUserData(String encodedUserData) {
+        UserDataManagerImpl userDataManager = new UserDataManagerImpl();
+        userDataManager.setUserDataProviders(List.of(provider));
+        userDataManager.start();
+        return userDataManager.concatenateUserData(encoded(MANAGED_USERDATA), encodedUserData, null);
+    }
+
+    /** @return how often the text occurs in the user data, the parts of a multipart taken decoded */
+    private int occurrences(String encodedUserData, String text) throws MessagingException, IOException {
+        String userData = new String(Base64.decodeBase64(encodedUserData), StandardCharsets.UTF_8);
+        StringBuilder contents = new StringBuilder();
+        if (userData.contains("Content-Type: multipart")) {
+            MimeMultipart multipart = (MimeMultipart)new MimeMessage(session, new ByteArrayInputStream(userData.getBytes())).getContent();
+            for (int i = 0; i < multipart.getCount(); ++i) {
+                contents.append(provider.getBodyPartContentAsString(multipart.getBodyPart(i))).append('\n');
+            }
+        } else {
+            contents.append(userData);
+        }
+        return contents.toString().split(Pattern.quote(text), -1).length - 1;
+    }
+
+    @Test
+    public void anEditResendingTheStoredCloudConfigKeepsExactlyOneManagedPart() throws Exception {
+        String stored = finalizedWithTheManagedUserData(encoded("#cloud-config\npackages:\n  - htop\n"));
+        Assert.assertEquals(1, occurrences(stored, "managed-network"));
+        Assert.assertEquals(1, occurrences(stored, "managed-trust"));
+        Assert.assertEquals(1, occurrences(stored, "htop"));
+
+        String edited = finalizedWithTheManagedUserData(stored);
+
+        Assert.assertEquals(stored, edited);
+        Assert.assertEquals(1, occurrences(edited, "managed-network"));
+        Assert.assertEquals(1, occurrences(edited, "managed-trust"));
+        Assert.assertEquals(1, occurrences(edited, "htop"));
+    }
+
+    @Test
+    public void aUserShellScriptMergedIntoTheManagedOneIsKeptOnceWithItOnAnEdit() throws Exception {
+        String stored = finalizedWithTheManagedUserData(encoded("#!/bin/sh\necho mine\n"));
+        Assert.assertEquals(1, occurrences(stored, "managed-trust"));
+        Assert.assertEquals(1, occurrences(stored, "echo mine"));
+
+        String edited = finalizedWithTheManagedUserData(stored);
+
+        Assert.assertEquals(stored, edited);
+        Assert.assertEquals(1, occurrences(edited, "managed-network"));
+        Assert.assertEquals(1, occurrences(edited, "managed-trust"));
+        Assert.assertEquals(1, occurrences(edited, "echo mine"));
+    }
+
+    @Test
+    public void theManagedUserDataAloneIsNotRepeated() throws Exception {
+        String edited = finalizedWithTheManagedUserData(encoded(MANAGED_USERDATA));
+
+        Assert.assertEquals(1, occurrences(edited, "managed-network"));
+        Assert.assertEquals(1, occurrences(edited, "managed-trust"));
+    }
+
+    @Test
+    public void appendingUserDataOfTheSameFormatTwiceAddsItOnce() {
+        String once = provider.appendUserData(encoded(CLOUD_CONFIG_USERDATA), encoded(CLOUD_CONFIG_USERDATA1));
+        String twice = provider.appendUserData(encoded(CLOUD_CONFIG_USERDATA), encoded(once));
+
+        Assert.assertEquals(once, twice);
     }
 }

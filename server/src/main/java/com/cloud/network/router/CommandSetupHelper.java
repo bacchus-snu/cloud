@@ -160,6 +160,7 @@ import com.cloud.vm.dao.NicIpAliasVO;
 import com.cloud.vm.dao.NicSecondaryIpDao;
 import com.cloud.vm.dao.NicSecondaryIpVO;
 import com.cloud.vm.dao.UserVmDao;
+import com.cloud.vm.dao.VMInstanceDetailsDao;
 
 public class CommandSetupHelper {
 
@@ -196,6 +197,8 @@ public class CommandSetupHelper {
     private ServiceOfferingDao _serviceOfferingDao;
     @Inject
     private UserVmDao _userVmDao;
+    @Inject
+    private VMInstanceDetailsDao vmInstanceDetailsDao;
     @Inject
     private VpnUserDao _vpnUsersDao;
     @Inject
@@ -239,9 +242,10 @@ public class CommandSetupHelper {
 
             Host host = _hostDao.findById(vm.getHostId());
             String destHostname = VirtualMachineManager.getHypervisorHostname(host != null ? host.getName() : "");
+            String guestHostName = vmInstanceDetailsDao.findGuestHostName(vm.getId());
             VmDataCommand vmDataCommand = generateVmDataCommand(router, nic.getIPv4Address(), vm.getUserData(), vm.getUserDataDetails(), serviceOffering, zoneName,
-                    staticNatIp == null || staticNatIp.getState() != IpAddress.State.Allocated ? null : staticNatIp.getAddress().addr(), vm.getHostName(), vm.getInstanceName(),
-                    vm.getId(), vm.getUuid(), publicKey, nic.getNetworkId(), destHostname);
+                    staticNatIp == null || staticNatIp.getState() != IpAddress.State.Allocated ? null : staticNatIp.getAddress().addr(), vm.getHostName(),
+                    guestHostName != null ? guestHostName : vm.getHostName(), vm.getInstanceName(), vm.getId(), vm.getUuid(), publicKey, nic.getNetworkId(), destHostname);
 
             Domain domain = domainDao.findById(vm.getDomainId());
             if (domain != null && VirtualMachineManager.AllowExposeDomainInMetadata.valueIn(domain.getId())) {
@@ -1323,7 +1327,8 @@ public class CommandSetupHelper {
     }
 
     private VmDataCommand generateVmDataCommand(final VirtualRouter router, final String vmPrivateIpAddress, final String userData, String userDataDetails, final String serviceOffering,
-                                                final String zoneName, final String publicIpAddress, final String vmName, final String vmInstanceName, final long vmId, final String vmUuid, final String publicKey,
+                                                final String zoneName, final String publicIpAddress, final String vmName, final String guestHostName, final String vmInstanceName,
+                                                final long vmId, final String vmUuid, final String publicKey,
                                                 final long guestNetworkId, String hostname) {
         final VmDataCommand cmd = new VmDataCommand(vmPrivateIpAddress, vmName, _networkModel.getExecuteInSeqNtwkElmtCmd());
 
@@ -1338,7 +1343,7 @@ public class CommandSetupHelper {
         cmd.addVmData("metadata", "service-offering", StringUtils.unicodeEscape(serviceOffering));
         cmd.addVmData("metadata", "availability-zone", StringUtils.unicodeEscape(zoneName));
         cmd.addVmData("metadata", "local-ipv4", vmPrivateIpAddress);
-        cmd.addVmData("metadata", "local-hostname", StringUtils.unicodeEscape(vmName));
+        cmd.addVmData("metadata", "local-hostname", StringUtils.unicodeEscape(guestHostName));
 
         addUserDataDetailsToCommand(cmd, userDataDetails);
 

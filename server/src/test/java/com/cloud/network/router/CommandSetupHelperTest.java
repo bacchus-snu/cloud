@@ -30,6 +30,9 @@ import com.cloud.dc.VlanVO;
 import com.cloud.dc.dao.ASNumberDao;
 import com.cloud.dc.dao.DataCenterDao;
 import com.cloud.dc.dao.VlanDao;
+import com.cloud.domain.dao.DomainDao;
+import com.cloud.host.dao.HostDao;
+import com.cloud.network.Network;
 import com.cloud.network.NetworkModel;
 import com.cloud.network.PublicIpAddress;
 import com.cloud.network.addr.PublicIp;
@@ -44,15 +47,23 @@ import com.cloud.offering.NetworkOffering;
 import com.cloud.offerings.NetworkOfferingVO;
 import com.cloud.offerings.dao.NetworkOfferingDao;
 import com.cloud.offerings.dao.NetworkOfferingDetailsDao;
+import com.cloud.service.ServiceOfferingVO;
+import com.cloud.service.dao.ServiceOfferingDao;
+import com.cloud.user.Account;
+import com.cloud.user.User;
 import com.cloud.utils.net.Ip;
+import com.cloud.vm.DomainRouterVO;
 import com.cloud.vm.NicVO;
 import com.cloud.vm.UserVmVO;
 import com.cloud.vm.VirtualMachine;
 import com.cloud.vm.dao.NicDao;
 import com.cloud.vm.dao.NicSecondaryIpDao;
 import com.cloud.vm.dao.NicSecondaryIpVO;
+import com.cloud.vm.dao.VMInstanceDetailsDao;
+import org.apache.cloudstack.context.CallContext;
 import org.apache.cloudstack.engine.orchestration.service.NetworkOrchestrationService;
 import org.apache.cloudstack.framework.config.ConfigKey;
+import org.apache.cloudstack.framework.config.dao.ConfigurationDao;
 import org.apache.cloudstack.network.BgpPeerVO;
 import org.apache.cloudstack.network.dao.BgpPeerDetailsDao;
 import org.junit.Assert;
@@ -363,5 +374,65 @@ public class CommandSetupHelperTest {
         Assert.assertEquals("02:00:00:00:00:0a", entry.getVmMac());
         Assert.assertEquals("10.1.1.10", entry.getVmIpAddress());
         Assert.assertEquals("r-7-VM", entry.getAccessDetail(NetworkElementCommand.ROUTER_NAME));
+    }
+
+    /**
+     * @return the metadata, by name, that a virtual router hands the guest of Instance 9, whose hostname is admin-vm-0 and whose guest
+     *         hostname recorded at its creation is the given one, none when null
+     */
+    private Map<String, String> metadataBehindAVirtualRouter(String guestHostName) {
+        UserVmVO vm = Mockito.mock(UserVmVO.class);
+        when(vm.getId()).thenReturn(9L);
+        when(vm.getServiceOfferingId()).thenReturn(1L);
+        Mockito.lenient().when(vm.getHostName()).thenReturn("admin-vm-0");
+        ServiceOfferingVO offering = Mockito.mock(ServiceOfferingVO.class);
+        when(offering.getDisplayText()).thenReturn("offering");
+        ServiceOfferingDao serviceOfferingDao = Mockito.mock(ServiceOfferingDao.class);
+        when(serviceOfferingDao.findByIdIncludingRemoved(9L, 1L)).thenReturn(offering);
+        DataCenterVO zone = Mockito.mock(DataCenterVO.class);
+        when(zone.getName()).thenReturn("zone");
+        when(zone.getNetworkType()).thenReturn(DataCenter.NetworkType.Advanced);
+        when(dcDao.findById(1L)).thenReturn(zone);
+        NetworkVO network = Mockito.mock(NetworkVO.class);
+        when(network.getGuestType()).thenReturn(Network.GuestType.Isolated);
+        when(networkDao.findById(5L)).thenReturn(network);
+        NicVO nic = Mockito.mock(NicVO.class);
+        when(nic.getIPv4Address()).thenReturn("10.1.1.9");
+        when(nic.getNetworkId()).thenReturn(5L);
+        DomainRouterVO router = Mockito.mock(DomainRouterVO.class);
+        when(router.getDataCenterId()).thenReturn(1L);
+        VMInstanceDetailsDao vmInstanceDetailsDao = Mockito.mock(VMInstanceDetailsDao.class);
+        Mockito.lenient().when(vmInstanceDetailsDao.findGuestHostName(9L)).thenReturn(guestHostName);
+        ReflectionTestUtils.setField(commandSetupHelper, "_serviceOfferingDao", serviceOfferingDao);
+        ReflectionTestUtils.setField(commandSetupHelper, "_hostDao", Mockito.mock(HostDao.class));
+        ReflectionTestUtils.setField(commandSetupHelper, "_configDao", Mockito.mock(ConfigurationDao.class));
+        ReflectionTestUtils.setField(commandSetupHelper, "domainDao", Mockito.mock(DomainDao.class));
+        ReflectionTestUtils.setField(commandSetupHelper, "vmInstanceDetailsDao", vmInstanceDetailsDao);
+        Commands cmds = new Commands(Command.OnError.Stop);
+
+        CallContext.register(Mockito.mock(User.class), Mockito.mock(Account.class));
+        try {
+            commandSetupHelper.createVmDataCommand(router, vm, nic, "key", cmds);
+        } finally {
+            CallContext.unregister();
+        }
+
+        Map<String, String> metadata = new HashMap<>();
+        for (String[] item : cmds.getCommand(VmDataCommand.class).getVmData()) {
+            if ("metadata".equals(item[0])) {
+                metadata.put(item[1], item[2]);
+            }
+        }
+        return metadata;
+    }
+
+    @Test
+    public void theGuestBehindAVirtualRouterTakesTheHostnameRecordedAtTheCreationOfItsInstance() {
+        Assert.assertEquals("web", metadataBehindAVirtualRouter("web").get("local-hostname"));
+    }
+
+    @Test
+    public void theGuestBehindAVirtualRouterOfAnInstanceWithoutARecordedGuestHostnameTakesTheHostnameOfTheInstance() {
+        Assert.assertEquals("admin-vm-0", metadataBehindAVirtualRouter(null).get("local-hostname"));
     }
 }

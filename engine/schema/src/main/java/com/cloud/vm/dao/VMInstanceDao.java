@@ -98,6 +98,12 @@ public interface VMInstanceDao extends GenericDao<VMInstanceVO, Long>, StateDao<
      */
     List<VMInstanceVO> listByHostName(String hostName);
 
+    /**
+     * @return the Instances of any account, removed ones included, whose hostname starts with the prefix as the column compares,
+     *         regardless of case; a '_' of the prefix stands for any character, so callers check the hostnames they get
+     */
+    List<VMInstanceVO> listByHostNamePrefixIncludingRemoved(String hostNamePrefix);
+
     void updateProxyId(long id, Long proxyId, Date time);
 
     List<VMInstanceVO> listByHostIdTypes(long hostid, VirtualMachine.Type... types);

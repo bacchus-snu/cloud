@@ -1077,15 +1077,10 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
                 }
 
                 if (volume != null && details != null) {
-                    List<VolumeDetailVO> volumeDetailsVO = new ArrayList<VolumeDetailVO>();
-                    if (details.containsKey(Volume.BANDWIDTH_LIMIT_IN_MBPS)) {
-                        volumeDetailsVO.add(new VolumeDetailVO(volume.getId(), Volume.BANDWIDTH_LIMIT_IN_MBPS, details.get(Volume.BANDWIDTH_LIMIT_IN_MBPS), false));
-                    }
-                    if (details.containsKey(Volume.IOPS_LIMIT)) {
-                        volumeDetailsVO.add(new VolumeDetailVO(volume.getId(), Volume.IOPS_LIMIT, details.get(Volume.IOPS_LIMIT), false));
-                    }
-                    if (!volumeDetailsVO.isEmpty()) {
-                        _volsDetailsDao.saveDetails(volumeDetailsVO);
+                    for (String name : List.of(Volume.BANDWIDTH_LIMIT_IN_MBPS, Volume.IOPS_LIMIT)) {
+                        if (details.containsKey(name)) {
+                            _volsDetailsDao.addDetail(volume.getId(), name, details.get(name), false);
+                        }
                     }
                 }
 
@@ -2648,7 +2643,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
         }
     }
 
-    private void validateVolumeResizeWithSize(VolumeVO volume, long currentSize, Long newSize, boolean shrinkOk,
+    protected void validateVolumeResizeWithSize(VolumeVO volume, long currentSize, Long newSize, boolean shrinkOk,
             DiskOfferingVO existingDiskOffering, DiskOfferingVO newDiskOffering, List<Reserver> reservations) throws ResourceAllocationException {
 
         // if the caller is looking to change the size of the volume
@@ -2696,6 +2691,13 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
                     }
                 }
 
+                if (Volume.State.Allocated.equals(volume.getState())) {
+                    long leastSize = _volumeMgr.leastSizeAtCreation(volume);
+                    if (newSize < leastSize) {
+                        throw new InvalidParameterValueException(String.format("Volume %s is created at %s when its Instance first starts and cannot be made smaller "
+                                + "than that", volume.getName(), NumbersUtil.toReadableSize(leastSize)));
+                    }
+                }
                 if (volume != null && ImageFormat.QCOW2.equals(volume.getFormat()) && !Volume.State.Allocated.equals(volume.getState()) &&
                         !Arrays.asList(StoragePoolType.StorPool, StoragePoolType.Linstor).contains(volume.getPoolType())) {
                     String message = "Unable to shrink volumes of type QCOW2";
@@ -3130,6 +3132,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
         Account caller = CallContext.current().getCallingAccount();
 
         VolumeInfo volumeToAttach = getAndCheckVolumeInfo(volumeId);
+        refusePendingCreationFromSnapshot(volumeToAttach);
 
         UserVmVO vm = getAndCheckUserVmVO(vmId, volumeToAttach, allowAttachOnRestoring);
 
@@ -3346,6 +3349,16 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
         List<State> allowedStates = Arrays.asList(states);
         if (!allowedStates.contains(vm.getState())) {
             throw new InvalidParameterValueException(String.format("Please specify a VM that is on of the following states: %s.", allowedStates));
+        }
+    }
+
+    /**
+     * A volume pending creation from a snapshot is created by its Instance's first start, so it neither leaves nor joins an Instance before.
+     */
+    protected void refusePendingCreationFromSnapshot(Volume volume) {
+        if (_volumeMgr.isPendingCreationFromSnapshot(volume)) {
+            throw new InvalidParameterValueException(String.format("Volume %s is created from a snapshot when its Instance first starts; start the Instance first",
+                    volume.getName()));
         }
     }
 
@@ -3573,6 +3586,7 @@ public class VolumeApiServiceImpl extends ManagerBase implements VolumeApiServic
 
         // Permissions check
         _accountMgr.checkAccess(caller, null, true, volume);
+        refusePendingCreationFromSnapshot(volume);
 
         // Check that the volume is currently attached to a VM
         if (vmId == null) {

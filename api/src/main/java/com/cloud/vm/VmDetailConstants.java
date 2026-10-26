@@ -16,6 +16,7 @@
 // under the License.
 package com.cloud.vm;
 
+import java.util.List;
 import java.util.Set;
 
 public interface VmDetailConstants {
@@ -123,12 +124,27 @@ public interface VmDetailConstants {
 
     // the prefix of the Instance's hostname and SSH name, fixed at its creation; ADMIN only
     String SSH_NAME_PREFIX = "ssh.name.prefix";
+    // the hostname that the guest of the Instance takes, fixed at the Instance's creation; ADMIN only
+    String GUEST_HOSTNAME = "guest.hostname";
+    List<String> NAMING_DETAILS = List.of(SSH_NAME_PREFIX, GUEST_HOSTNAME);
 
     /**
      * @return whether the detail name is {@link #SSH_NAME_PREFIX} regardless of case, as detail names compare in the database
      */
     static boolean isSshNamePrefix(String name) {
         return SSH_NAME_PREFIX.equalsIgnoreCase(name);
+    }
+
+    /**
+     * @return the detail of {@link #NAMING_DETAILS} that the detail name is regardless of case, as detail names compare in the database,
+     *         or null when it is none of them
+     */
+    static String namingDetail(String name) {
+        return NAMING_DETAILS.stream().filter(detail -> detail.equalsIgnoreCase(name)).findFirst().orElse(null);
+    }
+
+    static boolean isNamingDetail(String name) {
+        return namingDetail(name) != null;
     }
 
     // Lease related

@@ -151,6 +151,7 @@ import com.cloud.vm.VirtualMachineManager;
 import com.cloud.vm.dao.NicDao;
 import com.cloud.vm.dao.NicSecondaryIpDao;
 import com.cloud.vm.dao.VMInstanceDao;
+import com.cloud.vm.dao.VMInstanceDetailsDao;
 
 public class NetworkModelImpl extends ManagerBase implements NetworkModel, Configurable {
     public static final String UNABLE_TO_USE_NETWORK = "Unable to use network with id= %s, permission denied";
@@ -207,6 +208,8 @@ public class NetworkModelImpl extends ManagerBase implements NetworkModel, Confi
     NetworkDomainDao _networkDomainDao;
     @Inject
     VMInstanceDao _vmDao;
+    @Inject
+    VMInstanceDetailsDao vmInstanceDetailsDao;
 
     @Inject
     FirewallRulesDao _firewallDao;
@@ -2913,7 +2916,8 @@ public class NetworkModelImpl extends ManagerBase implements NetworkModel, Confi
         }
         vmData.add(new String[]{METATDATA_DIR, SERVICE_OFFERING_FILE, com.cloud.utils.StringUtils.unicodeEscape(serviceOffering)});
         vmData.add(new String[]{METATDATA_DIR, AVAILABILITY_ZONE_FILE, com.cloud.utils.StringUtils.unicodeEscape(zoneName)});
-        vmData.add(new String[]{METATDATA_DIR, LOCAL_HOSTNAME_FILE, com.cloud.utils.StringUtils.unicodeEscape(vmHostName)});
+        String guestHostName = vmInstanceDetailsDao.findGuestHostName(vmId);
+        vmData.add(new String[]{METATDATA_DIR, LOCAL_HOSTNAME_FILE, com.cloud.utils.StringUtils.unicodeEscape(guestHostName != null ? guestHostName : vmHostName)});
         vmData.add(new String[]{METATDATA_DIR, LOCAL_IPV4_FILE, guestIpAddress});
 
         addUserDataDetailsToCommand(vmData, userDataDetails);

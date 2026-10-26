@@ -365,6 +365,9 @@ public interface NetworkModel {
 
     boolean getNetworkEgressDefaultPolicy(Long networkId);
 
+    /**
+     * @param vmHostName the hostname of the Instance, which its guest takes unless the Instance recorded another at its creation
+     */
     List<String[]> generateVmData(String userData, String userDataDetails, String serviceOffering, long datacenterId,
                                   String vmName, String vmHostName, long vmId, String vmUuid, String guestIpAddress, String publicKey, String password, Boolean isWindows, String hostname);
 

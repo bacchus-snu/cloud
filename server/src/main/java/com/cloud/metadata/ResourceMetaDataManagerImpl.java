@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 import javax.inject.Inject;
@@ -77,6 +78,7 @@ import com.cloud.server.ResourceMetaDataService;
 import com.cloud.server.ResourceTag.ResourceObjectType;
 import com.cloud.server.TaggedResourceService;
 import com.cloud.service.dao.ServiceOfferingDetailsDao;
+import com.cloud.storage.Volume;
 import com.cloud.storage.dao.VMTemplateDetailsDao;
 import com.cloud.storage.dao.VolumeDetailsDao;
 import com.cloud.tags.ResourceManagerUtilImpl;
@@ -211,7 +213,7 @@ public class ResourceMetaDataManagerImpl extends ManagerBase implements Resource
     @ActionEvent(eventType = EventTypes.EVENT_RESOURCE_DETAILS_CREATE, eventDescription = "creating resource meta data")
     public boolean addResourceMetaData(final String resourceId, final ResourceObjectType resourceType, final Map<String, String> details, final boolean forDisplay) {
         refuseLifecycleState(resourceType, details.keySet());
-        refuseInstanceNamePrefix(resourceType, details.keySet());
+        refuseDetailsKeptBySystem(resourceType, details.keySet());
         long id = resourceManagerUtil.getResourceId(resourceId, resourceType);
         checkCallerMayChangeDetailsOf(resourceType, id);
         checkDetailNames(resourceType, details::keySet);
@@ -241,7 +243,7 @@ public class ResourceMetaDataManagerImpl extends ManagerBase implements Resource
         long id = resourceManagerUtil.getResourceId(resourceId, resourceType);
         Collection<String> names = key != null ? Collections.singletonList(key) : namesRemovedWithEveryDetail(resourceType, id);
         refuseLifecycleState(resourceType, names);
-        refuseInstanceNamePrefix(resourceType, names);
+        refuseDetailsKeptBySystem(resourceType, names);
         checkCallerMayChangeDetailsOf(resourceType, id);
 
         DetailDaoHelper newDetailDaoHelper = new DetailDaoHelper(resourceType);
@@ -281,7 +283,7 @@ public class ResourceMetaDataManagerImpl extends ManagerBase implements Resource
      *         removes; an Instance's whole removal leaves its lifecycle state
      */
     private Collection<String> namesRemovedWithEveryDetail(ResourceObjectType resourceType, long id) {
-        if (resourceType != ResourceObjectType.UserVm && resourceType != ResourceObjectType.ServiceOffering) {
+        if (resourceType != ResourceObjectType.UserVm && resourceType != ResourceObjectType.ServiceOffering && resourceType != ResourceObjectType.Volume) {
             return Collections.emptyList();
         }
         Set<String> names = new HashSet<>(s_daoMap.get(resourceType).listDetailsKeyPairs(id).keySet());
@@ -334,12 +336,18 @@ public class ResourceMetaDataManagerImpl extends ManagerBase implements Resource
     }
 
     /**
-     * The prefix of an Instance's names is fixed at the Instance's creation; only a root administrator sets or removes it.
+     * The details naming an Instance are fixed at the Instance's creation, and the snapshot a volume not created yet is created from at
+     * its allocation; only a root administrator sets or removes them, under any case of their names.
      */
-    private void refuseInstanceNamePrefix(ResourceObjectType resourceType, Collection<String> names) {
-        if (resourceType == ResourceObjectType.UserVm && names.stream().anyMatch(VmDetailConstants::isSshNamePrefix) && !callerIsRootAdmin()) {
-            throw new InvalidParameterValueException(String.format("You're not allowed to set or remove the restricted setting: %s",
-                    VmDetailConstants.SSH_NAME_PREFIX));
+    private void refuseDetailsKeptBySystem(ResourceObjectType resourceType, Collection<String> names) {
+        String kept = null;
+        if (resourceType == ResourceObjectType.UserVm) {
+            kept = names.stream().map(VmDetailConstants::namingDetail).filter(Objects::nonNull).findFirst().orElse(null);
+        } else if (resourceType == ResourceObjectType.Volume && names.stream().anyMatch(Volume.SNAPSHOT_TO_CREATE_FROM::equalsIgnoreCase)) {
+            kept = Volume.SNAPSHOT_TO_CREATE_FROM;
+        }
+        if (kept != null && !callerIsRootAdmin()) {
+            throw new InvalidParameterValueException(String.format("You're not allowed to set or remove the restricted setting: %s", kept));
         }
     }
 

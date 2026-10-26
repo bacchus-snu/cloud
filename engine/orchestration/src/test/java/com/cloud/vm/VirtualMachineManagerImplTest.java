@@ -174,6 +174,7 @@ import com.cloud.storage.StoragePool;
 import com.cloud.storage.StoragePoolHostVO;
 import com.cloud.storage.VMTemplateVO;
 import com.cloud.storage.VMTemplateZoneVO;
+import com.cloud.storage.Snapshot;
 import com.cloud.storage.Volume;
 import com.cloud.storage.VolumeVO;
 import com.cloud.storage.dao.DiskOfferingDao;
@@ -1058,6 +1059,40 @@ public class VirtualMachineManagerImplTest {
         Mockito.when(templateDao.findById(templateId)).thenReturn(template);
         Mockito.when(templateZoneDao.findByZoneTemplate(dcId, templateId)).thenReturn(Mockito.mock(VMTemplateZoneVO.class));
         virtualMachineManagerImpl.checkIfTemplateNeededForCreatingVmVolumes(vm);
+    }
+
+    /** An Instance whose ROOT volume, not created yet, is created from a snapshot whose Template is gone; what the snapshot does is given. */
+    private VMInstanceVO anInstanceWhoseRootIsCreatedFromASnapshot(java.util.function.Consumer<VolumeOrchestrationService> snapshotOfTheRoot) {
+        long vmId = 1L;
+        VMInstanceVO vm = Mockito.mock(VMInstanceVO.class);
+        Mockito.when(vm.getId()).thenReturn(vmId);
+        Mockito.lenient().when(vm.getTemplateId()).thenReturn(30L);
+        Mockito.when(volumeDaoMock.findReadyRootVolumesByInstance(vmId)).thenReturn(new ArrayList<>());
+        VolumeVO root = Mockito.mock(VolumeVO.class);
+        Mockito.lenient().when(volumeDaoMock.findByInstanceAndType(vmId, Volume.Type.ROOT)).thenReturn(List.of(root));
+        Mockito.lenient().when(templateDao.findById(30L)).thenReturn(null);
+        VolumeOrchestrationService volumes = mock(VolumeOrchestrationService.class);
+        snapshotOfTheRoot.accept(volumes);
+        ReflectionTestUtils.setField(virtualMachineManagerImpl, "volumeMgr", volumes);
+        return vm;
+    }
+
+    @Test
+    public void anInstanceWhoseRootIsCreatedFromASnapshotNeedsNoTemplate() {
+        VMInstanceVO vm = anInstanceWhoseRootIsCreatedFromASnapshot(volumes -> Mockito.lenient().when(volumes.snapshotToCreateFrom(any()))
+                .thenReturn(Mockito.mock(Snapshot.class)));
+
+        virtualMachineManagerImpl.checkIfTemplateNeededForCreatingVmVolumes(vm);
+    }
+
+    @Test
+    public void anInstanceWhoseRootSnapshotIsGoneDoesNotStart() {
+        VMInstanceVO vm = anInstanceWhoseRootIsCreatedFromASnapshot(volumes -> Mockito.lenient().when(volumes.snapshotToCreateFrom(any()))
+                .thenThrow(new CloudRuntimeException("The snapshot from which volume web-ROOT is to be created no longer exists")));
+
+        CloudRuntimeException e = assertThrows(CloudRuntimeException.class, () -> virtualMachineManagerImpl.checkIfTemplateNeededForCreatingVmVolumes(vm));
+
+        assertTrue(e.getMessage(), e.getMessage().contains("snapshot"));
     }
 
     @Test

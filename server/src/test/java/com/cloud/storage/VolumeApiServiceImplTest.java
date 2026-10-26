@@ -3742,4 +3742,56 @@ public class VolumeApiServiceImplTest {
             CallContext.unregister();
         }
     }
+
+    /** A ROOT volume, not created yet, of Instance 40. */
+    private VolumeVO aRootNotCreatedYet() {
+        VolumeVO root = Mockito.mock(VolumeVO.class);
+        Mockito.lenient().when(root.getId()).thenReturn(2001L);
+        Mockito.lenient().when(root.getName()).thenReturn("web-ROOT");
+        Mockito.lenient().when(root.getState()).thenReturn(Volume.State.Allocated);
+        Mockito.lenient().when(root.getVolumeType()).thenReturn(Volume.Type.ROOT);
+        Mockito.lenient().when(root.getPoolId()).thenReturn(null);
+        Mockito.lenient().when(root.getInstanceId()).thenReturn(null);
+        return root;
+    }
+
+    @Test
+    public void aVolumeNotCreatedYetIsNotShrunkBelowTheSizeItIsCreatedAt() throws ResourceAllocationException {
+        VolumeVO root = aRootNotCreatedYet();
+        Mockito.when(volumeOrchestrationService.leastSizeAtCreation(root)).thenReturn(8L << 30);
+
+        try (MockedStatic<com.cloud.api.ApiDBUtils> ignored = Mockito.mockStatic(com.cloud.api.ApiDBUtils.class)) {
+            InvalidParameterValueException e = Assert.assertThrows(InvalidParameterValueException.class,
+                    () -> volumeApiServiceImpl.validateVolumeResizeWithSize(root, 10L << 30, 1L << 30, true, null, null, new ArrayList<>()));
+            Assert.assertTrue(e.getMessage(), e.getMessage().contains("web-ROOT") && e.getMessage().contains("smaller"));
+
+            volumeApiServiceImpl.validateVolumeResizeWithSize(root, 10L << 30, 8L << 30, true, null, null, new ArrayList<>());
+        }
+    }
+
+    @Test
+    public void aRootPendingCreationFromASnapshotIsNeitherDetachedNorAttached() {
+        VolumeVO root = aRootNotCreatedYet();
+        Mockito.lenient().when(root.getInstanceId()).thenReturn(40L);
+        Mockito.when(volumeDaoMock.findById(2001L)).thenReturn(root);
+        Mockito.when(volumeOrchestrationService.isPendingCreationFromSnapshot(root)).thenReturn(true);
+        DetachVolumeCmd detach = Mockito.mock(DetachVolumeCmd.class);
+        Mockito.when(detach.getId()).thenReturn(2001L);
+        Mockito.lenient().when(detach.getDeviceId()).thenReturn(null);
+        Mockito.lenient().when(detach.getVirtualMachineId()).thenReturn(null);
+
+        InvalidParameterValueException e = Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.detachVolumeFromVM(detach));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("web-ROOT") && e.getMessage().contains("start the Instance first"));
+
+        VolumeInfo detached = Mockito.mock(VolumeInfo.class);
+        Mockito.lenient().when(detached.getInstanceId()).thenReturn(null);
+        Mockito.lenient().when(detached.getName()).thenReturn("web-ROOT");
+        Mockito.lenient().when(detached.getVolumeType()).thenReturn(Volume.Type.ROOT);
+        Mockito.lenient().when(detached.getState()).thenReturn(Volume.State.Allocated);
+        Mockito.when(volumeDataFactoryMock.getVolume(2002L)).thenReturn(detached);
+        Mockito.when(volumeOrchestrationService.isPendingCreationFromSnapshot(detached)).thenReturn(true);
+
+        e = Assert.assertThrows(InvalidParameterValueException.class, () -> volumeApiServiceImpl.attachVolumeToVM(41L, 2002L, null, false, false));
+        Assert.assertTrue(e.getMessage(), e.getMessage().contains("start the Instance first"));
+    }
 }

@@ -252,4 +252,21 @@ public class VMInstanceDaoImplTest {
         org.junit.Assert.assertTrue(search.getValue().getValues().stream()
                 .anyMatch(value -> "name".equals(value.first().getColumnName()) && "admin-web".equals(value.second())));
     }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void theInstancesWithAHostnamePrefixAreListedWhateverTheirAccountAndRemovedOnesIncluded() {
+        vmInstanceDao.initHostNamePrefixSearch();
+        org.mockito.ArgumentCaptor<com.cloud.utils.db.SearchCriteria<VMInstanceVO>> search = org.mockito.ArgumentCaptor.forClass(
+                com.cloud.utils.db.SearchCriteria.class);
+        java.util.List<VMInstanceVO> instances = java.util.List.of(org.mockito.Mockito.mock(VMInstanceVO.class));
+        doReturn(instances).when(vmInstanceDao).searchIncludingRemoved(search.capture(), org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.eq(false));
+
+        org.junit.Assert.assertEquals(instances, vmInstanceDao.listByHostNamePrefixIncludingRemoved("admin-vm-"));
+
+        org.junit.Assert.assertTrue(search.getValue().getValues().stream().noneMatch(value -> "account_id".equals(value.first().getColumnName())));
+        org.junit.Assert.assertTrue(search.getValue().getValues().stream()
+                .anyMatch(value -> "name".equals(value.first().getColumnName()) && "admin-vm-%".equals(value.second())));
+    }
 }

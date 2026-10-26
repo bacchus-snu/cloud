@@ -1292,6 +1292,7 @@ public class UserVmManagerImplTest {
         Mockito.when(updateVmCommand.getUserData()).thenReturn("requestPart");
         Mockito.when(updateVmCommand.getUserdataId()).thenReturn(null);
         Mockito.when(updateVmCommand.getHttpMethod()).thenReturn(HTTPMethod.GET);
+        lenient().when(userVmVoMock.getState()).thenReturn(VirtualMachine.State.Stopped);
         stubUserDataTooLongForGetOnceMerged();
         Mockito.doReturn(Mockito.mock(UserVm.class)).when(userVmManagerImpl).updateVirtualMachine(Mockito.anyLong(), any(), any(), any(), any(), any(), any(),
                 eq("merged"), any(), any(), any(), any(), any(), any(), any(), any(), any());
@@ -1301,6 +1302,270 @@ public class UserVmManagerImplTest {
         Mockito.verify(userVmManagerImpl).updateVirtualMachine(Mockito.anyLong(), any(), any(), any(), any(), any(), any(),
                 eq("merged"), any(), any(), any(), any(), any(), any(), any(), any(), any());
         Mockito.verify(userDataManager, Mockito.never()).validateUserData(eq("merged"), any());
+    }
+
+    private static final String CURRENT_USER_DATA = "Y3VycmVudA==";
+    private static final String NEW_USER_DATA = "bmV3";
+
+    /** An Instance in the state with the user data, edited through the API with the user data given, none when null. */
+    private void anInstanceEditedWithUserData(VirtualMachine.State state, String givenUserData) throws Exception {
+        configureDoNothingForMethodsThatWeDoNotWantToTest();
+        lenient().when(_serviceOfferingDao.findById(Mockito.anyLong(), Mockito.anyLong())).thenReturn((ServiceOfferingVO) getSvcoffering(512));
+        lenient().when(userVmVoMock.getState()).thenReturn(state);
+        lenient().when(userVmVoMock.getUserData()).thenReturn(CURRENT_USER_DATA);
+        lenient().when(userVmVoMock.getUserDataId()).thenReturn(null);
+        lenient().when(updateVmCommand.getUserData()).thenReturn(givenUserData);
+        lenient().when(updateVmCommand.getUserdataId()).thenReturn(null);
+        lenient().when(updateVmCommand.getHttpMethod()).thenReturn(HTTPMethod.POST);
+        lenient().when(userDataManager.validateUserData(givenUserData, HTTPMethod.POST)).thenReturn(givenUserData);
+        lenient().when(userDataManager.validateFinalizedUserData(givenUserData)).thenReturn(givenUserData);
+        Mockito.doReturn(Mockito.mock(UserVm.class)).when(userVmManagerImpl).updateVirtualMachine(Mockito.anyLong(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    public void theUserDataOfARunningInstanceSentUnchangedIsNoChangeAndARenameAndDeleteProtectionGoThrough() throws Exception {
+        anInstanceEditedWithUserData(VirtualMachine.State.Running, CURRENT_USER_DATA);
+        when(updateVmCommand.getDisplayName()).thenReturn("web2");
+        when(updateVmCommand.getDisplayNameParameter()).thenReturn("web2");
+        when(updateVmCommand.getDeleteProtection()).thenReturn(true);
+
+        userVmManagerImpl.updateVirtualMachine(updateVmCommand);
+
+        Mockito.verify(userVmManagerImpl).updateVirtualMachine(Mockito.anyLong(), eq("web2"), any(), any(), any(), eq(true), any(), isNull(), isNull(),
+                isNull(), any(), any(), any(), any(), any(), any(), any());
+        verify(userVmManagerImpl, never()).updateUserData(any());
+    }
+
+    @Test
+    public void theUserDataOfAnInstanceThatIsNotStoppedIsNotChanged() throws Exception {
+        for (VirtualMachine.State state : new VirtualMachine.State[] {VirtualMachine.State.Running, VirtualMachine.State.Starting}) {
+            anInstanceEditedWithUserData(state, NEW_USER_DATA);
+
+            InvalidParameterValueException e = assertThrows(state.name(), InvalidParameterValueException.class,
+                    () -> userVmManagerImpl.updateVirtualMachine(updateVmCommand));
+
+            assertEquals("The user data of an Instance can be changed only while it is stopped", e.getMessage());
+        }
+        when(updateVmCommand.getUserData()).thenReturn(null);
+        when(updateVmCommand.getUserdataId()).thenReturn(5L);
+        UserDataVO registered = Mockito.mock(UserDataVO.class);
+        lenient().when(registered.getUserData()).thenReturn(CURRENT_USER_DATA);
+        when(userDataDao.findById(5L)).thenReturn(registered);
+        lenient().when(userDataManager.validateFinalizedUserData(CURRENT_USER_DATA)).thenReturn(CURRENT_USER_DATA);
+        assertThrows("another registered user data is a change", InvalidParameterValueException.class,
+                () -> userVmManagerImpl.updateVirtualMachine(updateVmCommand));
+
+        verify(userVmManagerImpl, never()).updateVirtualMachine(Mockito.anyLong(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any());
+        verify(userVmManagerImpl, never()).updateDisplayVmFlag(any(), any(), any());
+    }
+
+    @Test
+    public void theUserDataOfAStoppedInstanceIsChanged() throws Exception {
+        anInstanceEditedWithUserData(VirtualMachine.State.Stopped, NEW_USER_DATA);
+
+        userVmManagerImpl.updateVirtualMachine(updateVmCommand);
+
+        Mockito.verify(userVmManagerImpl).updateVirtualMachine(Mockito.anyLong(), any(), any(), any(), any(), any(), any(), eq(NEW_USER_DATA), any(), any(),
+                any(), any(), any(), any(), any(), any(), any());
+    }
+
+    /** @return whether the detail name is one of the details naming an Instance, regardless of case */
+    private static boolean namesAnInstance(String name) {
+        return VmDetailConstants.SSH_NAME_PREFIX.equalsIgnoreCase(name) || VmDetailConstants.GUEST_HOSTNAME.equalsIgnoreCase(name);
+    }
+
+    @Test
+    public void theGuestOfANewInstanceTakesTheNameTheInstanceIsCreatedWithLowerCased() {
+        AccountVO owner = accountNamed("admin");
+        when(accountDao.findAccountsByName("admin")).thenReturn(List.of(owner));
+        lockOfInstanceNames();
+        when(userVmDao.listByAccountId(NAMED_ACCOUNT_ID)).thenReturn(Collections.emptyList());
+        Map<String, String> named = new HashMap<>();
+        Map<String, String> unnamed = new HashMap<>();
+
+        try (UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, null, "Web", named)) {
+            assertEquals("admin-vm-0", names.getHostName());
+        }
+        try (UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, null, null, unnamed)) {
+            assertEquals("VM-0", names.getName());
+        }
+
+        assertEquals("web", named.get(VmDetailConstants.GUEST_HOSTNAME));
+        assertEquals("vm-0", unnamed.get(VmDetailConstants.GUEST_HOSTNAME));
+    }
+
+    @Test
+    public void aGuestHostnameARootAdminPassesIsTheGuestsWhenItIsAHostname() {
+        AccountVO owner = accountNamed("admin");
+        lenient().when(accountDao.findAccountsByName("admin")).thenReturn(List.of(owner));
+        lockOfInstanceNames();
+        lenient().when(userVmDao.listByAccountId(NAMED_ACCOUNT_ID)).thenReturn(Collections.emptyList());
+        Map<String, String> details = new HashMap<>(Map.of(VmDetailConstants.GUEST_HOSTNAME, "Front-1"));
+
+        userVmManagerImpl.nameNewInstance(owner, "web", null, details).close();
+
+        assertEquals("front-1", details.get(VmDetailConstants.GUEST_HOSTNAME));
+        for (String given : List.of("front_1", "-front", "f".repeat(64))) {
+            Map<String, String> invalid = new HashMap<>(Map.of(VmDetailConstants.GUEST_HOSTNAME, given));
+            InvalidParameterValueException e = assertThrows(given, InvalidParameterValueException.class,
+                    () -> userVmManagerImpl.nameNewInstance(owner, "web", null, invalid));
+            assertTrue(e.getMessage(), e.getMessage().contains(given));
+        }
+    }
+
+    @Test
+    public void theGuestHostnameIsStoredAsADetailThatIsNotDisplayed() {
+        assertEquals(new HashSet<>(List.of(VmDetailConstants.SSH_NAME_PREFIX, VmDetailConstants.GUEST_HOSTNAME)),
+                new HashSet<>(userVmManagerImpl.hiddenDeployDetails(new HashMap<>(Map.of(VmDetailConstants.SSH_NAME_PREFIX, "admin",
+                        VmDetailConstants.GUEST_HOSTNAME, "web", "keyboard", "us")))));
+    }
+
+    @Test
+    public void onlyARootAdminPassesTheGuestHostnameOfAnInstanceNamedAfterItsAccountAndNoneInAnotherCase() throws Exception {
+        java.lang.reflect.Method create = Arrays.stream(UserVmManagerImpl.class.getDeclaredMethods())
+                .filter(m -> m.getName().equals("createVirtualMachine") && m.getParameterCount() == 35).findFirst().orElseThrow();
+        create.setAccessible(true);
+        for (boolean namedAfterAccount : List.of(true, false)) {
+            for (boolean rootAdmin : List.of(false, true)) {
+                for (String key : List.of(VmDetailConstants.GUEST_HOSTNAME, "GUEST.HOSTNAME", "Guest.Hostname")) {
+                    if (namedAfterAccount && rootAdmin && VmDetailConstants.GUEST_HOSTNAME.equals(key)) {
+                        continue;
+                    }
+                    Object[] args = new Object[35];
+                    args[5] = accountNamed("admin");
+                    args[18] = callerAccount;
+                    args[24] = new HashMap<>(Map.of(key, "victim"));
+                    args[29] = false;
+                    lenient().when(accountManager.isRootAdmin(callerAccount.getId())).thenReturn(rootAdmin);
+                    if (namedAfterAccount) {
+                        CallContext.current().putContextParameter(UserVmManagerImpl.NAMES_AFTER_ACCOUNT, Boolean.TRUE);
+                    }
+                    java.lang.reflect.InvocationTargetException refused;
+                    try {
+                        refused = assertThrows(java.lang.reflect.InvocationTargetException.class, () -> create.invoke(userVmManagerImpl, args));
+                    } finally {
+                        CallContext.current().removeContextParameter(UserVmManagerImpl.NAMES_AFTER_ACCOUNT);
+                    }
+                    String what = key + (rootAdmin ? " from a root admin" : "") + (namedAfterAccount ? "" : " to a creator") + ": " + refused.getCause();
+                    assertTrue(what, refused.getCause() instanceof InvalidParameterValueException);
+                    assertTrue(refused.getCause().getMessage(), refused.getCause().getMessage().contains(VmDetailConstants.GUEST_HOSTNAME));
+                }
+            }
+        }
+    }
+
+    @Test
+    public void aUserCannotGiveOrChangeTheGuestHostnameOfAnInstanceInAnyCase() {
+        for (String key : List.of(VmDetailConstants.GUEST_HOSTNAME, "GUEST.HOSTNAME", "Guest.Hostname")) {
+            InstanceDetailTable legacy = new InstanceDetailTable();
+            legacy.put(vmId, "keyboard", "de", true);
+            InvalidParameterValueException e = assertThrows(key, InvalidParameterValueException.class, () -> updateDetailsAs(Account.Type.NORMAL, legacy,
+                    new HashMap<>(Map.of(key, "victim")), false));
+            assertTrue(e.getMessage(), e.getMessage().contains(key));
+            assertNull(legacy.get(vmId, key));
+
+            InstanceDetailTable named = new InstanceDetailTable();
+            named.put(vmId, VmDetailConstants.GUEST_HOSTNAME, "web", false);
+            assertThrows(key, InvalidParameterValueException.class, () -> updateDetailsAs(Account.Type.NORMAL, named,
+                    new HashMap<>(Map.of(key, "victim")), false));
+            assertEquals("web", named.get(vmId, VmDetailConstants.GUEST_HOSTNAME));
+        }
+    }
+
+    @Test
+    public void theDetailsAUserOrARootAdminSavesOrCleansUpKeepTheGuestHostname() throws Exception {
+        for (Account.Type type : List.of(Account.Type.NORMAL, Account.Type.ADMIN)) {
+            InstanceDetailTable table = new InstanceDetailTable();
+            table.put(vmId, "keyboard", "de", true);
+            table.put(vmId, VmDetailConstants.GUEST_HOSTNAME, "web", false);
+            updateDetailsAs(type, table, new HashMap<>(Map.of("keyboard", "us")), false);
+            assertEquals(type.name(), "us", table.get(vmId, "keyboard"));
+            assertEquals(type.name(), "web", table.get(vmId, VmDetailConstants.GUEST_HOSTNAME));
+            assertFalse(type.name(), detailOf(table, VmDetailConstants.GUEST_HOSTNAME).isDisplay());
+        }
+
+        for (Account.Type type : List.of(Account.Type.NORMAL, Account.Type.ADMIN)) {
+            InstanceDetailTable table = new InstanceDetailTable();
+            table.put(vmId, "keyboard", "de", true);
+            table.put(vmId, VmDetailConstants.GUEST_HOSTNAME, "web", false);
+            table.put(vmId, "GUEST.HOSTNAME", "shown", true);
+            updateDetailsAs(type, table, null, true);
+            assertNull(type.name(), table.get(vmId, "keyboard"));
+            assertEquals(type.name(), "web", table.get(vmId, VmDetailConstants.GUEST_HOSTNAME));
+            assertEquals(type.name(), "shown", table.get(vmId, "GUEST.HOSTNAME"));
+        }
+    }
+
+    @Test
+    public void anInstanceTakesNoGuestHostnameFromItsTemplateInAnyCase() {
+        assertEquals(Map.of("rootDiskController", "virtio"), UserVmManagerImpl.detailsTakenFromTemplate(Map.of("rootDiskController", "virtio",
+                VmDetailConstants.GUEST_HOSTNAME, "victim", "GUEST.HOSTNAME", "victim")));
+    }
+
+    @Test
+    public void aRenameLeavesTheGuestHostnameOfTheInstance() throws Exception {
+        instanceNamedUnderAPrefix("admin", "web", "web-ROOT");
+        lockOfInstanceNames();
+
+        rename("Api", null);
+
+        verifyStored("Api", null);
+        verify(vmInstanceDetailsDao, never()).addDetail(anyLong(), anyString(), any(), anyBoolean());
+        verify(vmInstanceDetailsDao, never()).removeDetail(anyLong(), anyString());
+        verify(userVmDao, never()).saveDetails(any(UserVmVO.class));
+    }
+
+    /** The Instance's template, linked to user data "templatePart" that it appends to the user data of each deployment. */
+    private VMTemplateVO aTemplateAppendingItsUserData() {
+        VMTemplateVO template = Mockito.mock(VMTemplateVO.class);
+        lenient().when(template.getUserDataId()).thenReturn(10L);
+        lenient().when(template.getUserDataOverridePolicy()).thenReturn(UserData.UserDataOverridePolicy.APPEND);
+        lenient().when(template.getExtensionId()).thenReturn(null);
+        UserDataVO templateUserData = Mockito.mock(UserDataVO.class);
+        lenient().when(templateUserData.getUserData()).thenReturn("templatePart");
+        lenient().when(userDataDao.findById(10L)).thenReturn(templateUserData);
+        lenient().when(userDataManager.validateFinalizedUserData("templatePart")).thenReturn("templatePart");
+        lenient().when(templateDao.findById(Mockito.anyLong())).thenReturn(template);
+        return template;
+    }
+
+    @Test
+    public void aRunningInstanceWithItsOwnUserDataIsRenamedWithoutUserDataFromATemplateAppendingItsOwn() throws Exception {
+        anInstanceEditedWithUserData(VirtualMachine.State.Running, null);
+        aTemplateAppendingItsUserData();
+        when(updateVmCommand.getDisplayName()).thenReturn("web2");
+        when(updateVmCommand.getDisplayNameParameter()).thenReturn("web2");
+
+        userVmManagerImpl.updateVirtualMachine(updateVmCommand);
+
+        Mockito.verify(userVmManagerImpl).updateVirtualMachine(Mockito.anyLong(), eq("web2"), any(), any(), any(), any(), any(), isNull(), isNull(),
+                isNull(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    public void anEditOfAStoppedInstanceWithoutUserDataKeepsItsUserDataFromATemplateAppendingItsOwn() throws Exception {
+        anInstanceEditedWithUserData(VirtualMachine.State.Stopped, null);
+        aTemplateAppendingItsUserData();
+
+        userVmManagerImpl.updateVirtualMachine(updateVmCommand);
+
+        Mockito.verify(userVmManagerImpl).updateVirtualMachine(Mockito.anyLong(), any(), any(), any(), any(), any(), any(), isNull(), isNull(),
+                isNull(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    public void aRootDiskSizeIsRefusedForADeploymentFromASnapshotOrAVolume() {
+        for (DeployVMCmd deployVMCmd : List.of(getDeployVMCmdFromSnapshot(), getDeployVMCmdFromVolume())) {
+            lenient().when(deployVMCmd.getDetails()).thenReturn(new HashMap<>(Map.of("rootDiskSize", "50")));
+
+            InvalidParameterValueException e = assertThrows(InvalidParameterValueException.class, () -> userVmManagerImpl.createVirtualMachine(deployVMCmd));
+
+            assertEquals("rootdisksize applies to a new Instance from a template only", e.getMessage());
+        }
+        verify(snapshotDaoMock, never()).findById(anyLong());
+        verify(volumeDataFactory, never()).getVolume(anyLong());
     }
 
     private VMTemplateVO templateWithAppendedUserData() {
@@ -5076,7 +5341,7 @@ public class UserVmManagerImplTest {
     }
 
     @Test
-    public void failedDeployFromVolumeKeepsTheVolume() throws Exception {
+    public void failedDeployFromVolumeKeepsTheVolumeAndExpungesTheOthers() throws Exception {
         UserVmVO stopped = stoppedKvmVm(VirtualMachine.State.Stopped);
         when(userVmDao.findById(MOVING_VM_ID)).thenReturn(stopped);
         PlacementVerdict verdict = approvedMoveToHostB();
@@ -5095,9 +5360,35 @@ public class UserVmManagerImplTest {
         InOrder order = Mockito.inOrder(volumeOrchestrationService, virtualMachineManager);
         order.verify(volumeOrchestrationService).detachVolumeOfFailedDeployment(MOVING_VM_ID, 201L);
         order.verify(virtualMachineManager).stateTransitTo(stopped, VirtualMachine.Event.OperationFailedToError, null);
-        verify(volumeOrchestrationService, never()).destroyVolume(kept);
-        verify(volumeOrchestrationService).destroyVolume(data);
+        verify(volumeOrchestrationService, never()).expungeVolumeOfFailedDeployment(kept);
+        verify(volumeOrchestrationService).expungeVolumeOfFailedDeployment(data);
+        verify(volumeOrchestrationService, never()).destroyVolume(any());
         verify(virtualMachineManager, never()).relocateStoppedVm(anyString(), anyList(), anyLong());
+    }
+
+    @Test
+    public void aVolumeOfAFailedDeploymentThatCannotBeExpungedNeitherHidesTheDeployErrorNorStopsTheCleanup() throws Exception {
+        UserVmVO stopped = stoppedKvmVm(VirtualMachine.State.Stopped);
+        when(userVmDao.findById(MOVING_VM_ID)).thenReturn(stopped);
+        PlacementVerdict verdict = approvedMoveToHostB();
+        when(placementService.approvedMove(any(PlacementRequest.class), eq(true), eq("approval")))
+                .thenThrow(new VolumeMoveRequiredException("The approved move has expired", 1L, verdict));
+        VolumeVO kept = mock(VolumeVO.class);
+        lenient().when(kept.getId()).thenReturn(201L);
+        VolumeVO stuck = mock(VolumeVO.class);
+        lenient().when(stuck.getId()).thenReturn(203L);
+        VolumeVO data = mock(VolumeVO.class);
+        lenient().when(data.getId()).thenReturn(204L);
+        when(volumeDaoMock.findUsableVolumesForInstance(MOVING_VM_ID)).thenReturn(Arrays.asList(kept, stuck, data));
+        doThrow(new CloudRuntimeException("the storage is unavailable")).when(volumeOrchestrationService).expungeVolumeOfFailedDeployment(stuck);
+
+        VolumeMoveRequiredException e = assertThrows(VolumeMoveRequiredException.class, () -> userVmManagerImpl.startVirtualMachine(deployFromVolumeCmd()));
+
+        assertTrue(e.getMessage(), e.getMessage().contains("expired"));
+        verify(volumeOrchestrationService).expungeVolumeOfFailedDeployment(data);
+        verify(volumeOrchestrationService, never()).expungeVolumeOfFailedDeployment(kept);
+        verify(alertManager).sendAlert(eq(AlertManager.AlertType.ALERT_TYPE_USERVM), anyLong(), any(), eq("Failed to deploy Instance [ID: moving-vm]"),
+                anyString());
     }
 
     @Test
@@ -5114,6 +5405,7 @@ public class UserVmManagerImplTest {
         assertTrue(e.getMessage(), e.getMessage().contains("expired"));
         verify(virtualMachineManager, never()).stateTransitTo(any(), eq(VirtualMachine.Event.OperationFailedToError), any());
         verify(volumeOrchestrationService, never()).destroyVolume(any());
+        verify(volumeOrchestrationService, never()).expungeVolumeOfFailedDeployment(any());
         verify(alertManager).sendAlert(eq(AlertManager.AlertType.ALERT_TYPE_USERVM), eq(1L), any(), eq("Failed to deploy Instance [ID: moving-vm]"),
                 Mockito.argThat(body -> body.contains("volume [201]") && !body.contains("host")));
     }
@@ -7281,7 +7573,7 @@ public class UserVmManagerImplTest {
         UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, null, null, details);
 
         assertEquals("VM-1", names.getName());
-        assertEquals("admin-vm-1", names.getHostName());
+        assertEquals("the hostname does not follow the name", "admin-vm-0", names.getHostName());
         assertEquals("admin", details.get(VmDetailConstants.SSH_NAME_PREFIX));
         verify(userVmManagerImpl, never()).unlockInstanceNames(lock);
         names.close();
@@ -7301,11 +7593,11 @@ public class UserVmManagerImplTest {
 
         try (UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, "Web", null, new HashMap<>())) {
             assertEquals("Web", names.getName());
-            assertEquals("admin-web", names.getHostName());
+            assertEquals("admin-vm-0", names.getHostName());
         }
         try (UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, "ignored", "Api-1", new HashMap<>())) {
             assertEquals("Api-1", names.getName());
-            assertEquals("admin-api-1", names.getHostName());
+            assertEquals("admin-vm-0", names.getHostName());
         }
     }
 
@@ -7327,7 +7619,8 @@ public class UserVmManagerImplTest {
         verify(userVmManagerImpl, times(4)).unlockInstanceNames(lock);
 
         try (UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, "n".repeat(20), null, details)) {
-            assertEquals(63, names.getHostName().length());
+            assertEquals(63, InstanceNames.sshName(names.getPrefix(), names.getName()).length());
+            assertEquals(names.getPrefix() + "-vm-0", names.getHostName());
         }
     }
 
@@ -7338,7 +7631,7 @@ public class UserVmManagerImplTest {
         when(userVmDao.listByAccountId(NAMED_ACCOUNT_ID)).thenReturn(Collections.emptyList());
         Map<String, String> details = new HashMap<>(Map.of(VmDetailConstants.SSH_NAME_PREFIX, "team"));
         try (UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, "web", null, details)) {
-            assertEquals("team-web", names.getHostName());
+            assertEquals("team-vm-0", names.getHostName());
         }
         verify(userVmManagerImpl, never()).instanceNamePrefix(any());
 
@@ -7693,7 +7986,7 @@ public class UserVmManagerImplTest {
 
         when(vmInstanceDetailsDao.listBySshNamePrefix("ops")).thenReturn(List.of(ofTheOwner, ofARemovedInstance));
         try (UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, "web", null, details)) {
-            assertEquals("ops-web", names.getHostName());
+            assertEquals("ops-vm-0", names.getHostName());
         }
     }
 
@@ -8017,56 +8310,89 @@ public class UserVmManagerImplTest {
         assertTrue(details.isEmpty());
     }
 
+    /** The hostnames used under the prefix: those of Instances of any account, removed ones included. */
+    private void hostNamesUsedUnderThePrefix(String prefix, String... hostNames) {
+        List<VMInstanceVO> instances = new ArrayList<>();
+        long id = 90L;
+        for (String hostName : hostNames) {
+            instances.add(instanceWithHostName(id++, VirtualMachine.Type.User, hostName, prefix));
+        }
+        when(vmInstanceDaoMock.listByHostNamePrefixIncludingRemoved(prefix + "-vm-")).thenReturn(instances);
+    }
+
     @Test
-    public void aHostnameThatOtherInstancesHoldWithoutBeingTheirBastionNameIsNumbered() {
+    public void twoNewInstancesTakeTheFirstTwoHostnamesWhateverTheirNames() {
         AccountVO owner = localAccountWithoutInstances("admin");
-        VMInstanceVO router = instanceWithHostName(51L, VirtualMachine.Type.DomainRouter, "admin-web", null);
-        VMInstanceVO renamed = instanceWithHostName(52L, VirtualMachine.Type.User, "admin-web-1", "admin");
-        when(vmInstanceDaoMock.listByHostName("admin-web")).thenReturn(List.of(router));
-        when(vmInstanceDaoMock.listByHostName("admin-web-1")).thenReturn(List.of(renamed));
 
         try (UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, "web", null, new HashMap<>())) {
-            assertEquals("admin-web-2", names.getHostName());
+            assertEquals("admin-vm-0", names.getHostName());
             assertEquals("admin-web", InstanceNames.sshName(names.getPrefix(), names.getName()));
         }
+        hostNamesUsedUnderThePrefix("admin", "admin-vm-0");
+        try (UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, "db", null, new HashMap<>())) {
+            assertEquals("admin-vm-1", names.getHostName());
+            assertEquals("admin-db", InstanceNames.sshName(names.getPrefix(), names.getName()));
+        }
+        verify(vmInstanceDaoMock, times(2)).listByHostNamePrefixIncludingRemoved("admin-vm-");
     }
 
     @Test
-    public void aNewInstanceTakingTheNameAnotherInstanceWasRenamedAwayFromGetsANumberedHostname() throws Exception {
-        instanceNamedUnderAPrefix("admin", "test", "test-ROOT");
-        lockOfInstanceNames();
-        rename("web", null);
-        verifyStored("web", null);
+    public void theHostnameOfARemovedInstanceIsNotUsedAgain() {
+        AccountVO owner = localAccountWithoutInstances("admin");
+        hostNamesUsedUnderThePrefix("admin", "admin-vm-0", "admin-vm-1");
 
+        try (UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, "web", null, new HashMap<>())) {
+            assertEquals("admin-vm-2", names.getHostName());
+        }
+    }
+
+    @Test
+    public void theHostnameOfAnInstanceMovedToAnotherAccountIsNotUsedAgain() {
+        AccountVO owner = localAccountWithoutInstances("admin");
+        VMInstanceVO moved = instanceWithHostName(93L, VirtualMachine.Type.User, "admin-vm-3", "ops");
+        lenient().when(moved.getAccountId()).thenReturn(77L);
+        when(vmInstanceDaoMock.listByHostNamePrefixIncludingRemoved("admin-vm-")).thenReturn(List.of(moved));
+
+        try (UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, "web", null, new HashMap<>())) {
+            assertEquals("admin-vm-4", names.getHostName());
+        }
+    }
+
+    @Test
+    public void aNameLikeAHostnameDoesNotChooseTheHostname() {
+        AccountVO owner = localAccountWithoutInstances("admin");
+
+        try (UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, "vm-7", null, new HashMap<>())) {
+            assertEquals("admin-vm-0", names.getHostName());
+            assertEquals("admin-vm-7", InstanceNames.sshName(names.getPrefix(), names.getName()));
+        }
+    }
+
+    @Test
+    public void aHostnameAnotherInstanceHasIsSkipped() {
+        AccountVO owner = localAccountWithoutInstances("admin");
+        VMInstanceVO router = instanceWithHostName(51L, VirtualMachine.Type.DomainRouter, "Admin-VM-0", null);
+        when(vmInstanceDaoMock.listByHostName("admin-vm-0")).thenReturn(List.of(router));
+
+        try (UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, "web", null, new HashMap<>())) {
+            assertEquals("admin-vm-1", names.getHostName());
+        }
+    }
+
+    @Test
+    public void theHostnameIsChosenUnderTheLockOfTheOwnersNames() {
         AccountVO owner = accountNamed("admin");
         when(accountDao.findAccountsByName("admin")).thenReturn(List.of(owner));
-        List<UserVmVO> instances = List.of(instanceNamed(vmId, "web"));
-        when(userVmDao.listByAccountId(NAMED_ACCOUNT_ID)).thenReturn(instances);
-        VMInstanceVO renamed = instanceWithHostName(vmId, VirtualMachine.Type.User, "admin-test", "admin");
-        when(vmInstanceDaoMock.listByHostName("admin-test")).thenReturn(List.of(renamed));
+        GlobalLock lock = lockOfInstanceNames();
+        lenient().when(userVmDao.listByAccountId(NAMED_ACCOUNT_ID)).thenReturn(Collections.emptyList());
 
-        try (UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, "test", null, new HashMap<>())) {
-            assertEquals("test", names.getName());
-            assertEquals("admin-test-1", names.getHostName());
-            assertEquals("admin-test", InstanceNames.sshName(names.getPrefix(), names.getName()));
+        try (UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, "web", null, new HashMap<>())) {
+            verify(userVmManagerImpl, never()).unlockInstanceNames(lock);
         }
-    }
-
-    @Test
-    public void aNumberedHostnameOfALongNameStaysWithinSixtyThreeCharacters() {
-        String prefix = "bacchus-" + "a".repeat(34);
-        signInProviders(new SignInProviderLinks.Link("bacchus", "a".repeat(34) + "@bacchus.snucse.org"), "bacchus");
-        AccountVO owner = accountNamed("a".repeat(34) + "@bacchus.snucse.org");
-        lockOfInstanceNames();
-        when(userVmDao.listByAccountId(NAMED_ACCOUNT_ID)).thenReturn(Collections.emptyList());
-        String name = "n".repeat(20);
-        VMInstanceVO holder = instanceWithHostName(53L, VirtualMachine.Type.User, prefix + "-" + name, "bacchus-other");
-        when(vmInstanceDaoMock.listByHostName(prefix + "-" + name)).thenReturn(List.of(holder));
-
-        try (UserVmManagerImpl.NewInstanceNames names = userVmManagerImpl.nameNewInstance(owner, name, null, new HashMap<>())) {
-            assertEquals(prefix + "-" + "n".repeat(18) + "-1", names.getHostName());
-            assertEquals(63, names.getHostName().length());
-        }
+        InOrder order = Mockito.inOrder(userVmManagerImpl, vmInstanceDaoMock);
+        order.verify(userVmManagerImpl).lockInstanceNames(NAMED_ACCOUNT_ID);
+        order.verify(vmInstanceDaoMock).listByHostNamePrefixIncludingRemoved("admin-vm-");
+        order.verify(userVmManagerImpl).unlockInstanceNames(lock);
     }
 
     @Test
@@ -8194,7 +8520,7 @@ public class UserVmManagerImplTest {
     }
 
     @Test
-    public void aDeploymentFromABackupTakesNoNamePrefixFromTheSettingsOfTheBackedUpInstance() throws Exception {
+    public void aDeploymentFromABackupTakesNoNamingDetailFromTheSettingsOfTheBackedUpInstance() throws Exception {
         Long backupId = 13L;
         CreateVMFromBackupCmd cmd = new CreateVMFromBackupCmd();
         cmd._accountService = accountService;
@@ -8211,7 +8537,8 @@ public class UserVmManagerImplTest {
         when(backup.getZoneId()).thenReturn(zoneId);
         when(backup.getVmId()).thenReturn(1L);
         when(backupDao.findById(backupId)).thenReturn(backup);
-        when(backup.getDetail(ApiConstants.VM_SETTINGS)).thenReturn("{\"key1\":\"value1\",\"ssh.name.prefix\":\"snucse-victim\",\"SSH.NAME.PREFIX\":\"snucse-victim\"}");
+        when(backup.getDetail(ApiConstants.VM_SETTINGS)).thenReturn("{\"key1\":\"value1\",\"ssh.name.prefix\":\"snucse-victim\",\"SSH.NAME.PREFIX\":\"snucse-victim\",\"guest.hostname\":\"victim\","
+                + "\"Guest.Hostname\":\"victim\"}");
         when(userVmDao.findByIdIncludingRemoved(1L)).thenReturn(new UserVmVO());
         VMTemplateVO template = mock(VMTemplateVO.class);
         when(template.getFormat()).thenReturn(Storage.ImageFormat.QCOW2);
@@ -8230,11 +8557,11 @@ public class UserVmManagerImplTest {
         userVmManagerImpl.allocateVMFromBackup(cmd);
 
         verify(vmVO).setDetail("key1", "value1");
-        verify(vmVO, never()).setDetail(Mockito.argThat(VmDetailConstants::isSshNamePrefix), anyString());
+        verify(vmVO, never()).setDetail(Mockito.argThat(UserVmManagerImplTest::namesAnInstance), anyString());
     }
 
     @Test
-    public void theValidationInstanceOfABackupTakesNoNamePrefixFromItsSettings() throws Exception {
+    public void theValidationInstanceOfABackupTakesNoNamingDetailFromItsSettings() throws Exception {
         long backupId = 14L;
         BackupVO backup = mock(BackupVO.class);
         when(backupDao.findById(backupId)).thenReturn(backup);
@@ -8249,7 +8576,8 @@ public class UserVmManagerImplTest {
         when(_serviceOfferingDao.findByUuid("offering-uuid")).thenReturn(mock(ServiceOfferingVO.class));
         when(backup.getDetail(ApiConstants.TEMPLATE_ID)).thenReturn("template-uuid");
         when(templateDao.findByUuidIncludingRemoved("template-uuid")).thenReturn(mock(VMTemplateVO.class));
-        when(backup.getDetail(ApiConstants.VM_SETTINGS)).thenReturn("{\"key1\":\"value1\",\"Ssh.Name.Prefix\":\"admin\",\"ssh.name.prefix\":\"admin\"}");
+        when(backup.getDetail(ApiConstants.VM_SETTINGS)).thenReturn("{\"key1\":\"value1\",\"Ssh.Name.Prefix\":\"admin\",\"ssh.name.prefix\":\"admin\",\"GUEST.HOSTNAME\":\"web\","
+                + "\"guest.hostname\":\"web\"}");
         when(backupManager.getRootDiskInfoFromBackup(backup)).thenReturn(new VmDiskInfo(mock(DiskOfferingVO.class), 10L, 1000L, 2000L));
         when(_networkDao.findByZoneIdAndAccountIdAndGuestTypeAndName(eq(zoneId), eq(Account.ACCOUNT_ID_SYSTEM), eq(Network.GuestType.Shared), anyString()))
                 .thenReturn(networkMock);
@@ -8267,7 +8595,7 @@ public class UserVmManagerImplTest {
         userVmManagerImpl.allocateVMForValidation(backupId, Hypervisor.HypervisorType.KVM);
 
         verify(vmVO).setDetail("key1", "value1");
-        verify(vmVO, never()).setDetail(Mockito.argThat(VmDetailConstants::isSshNamePrefix), anyString());
+        verify(vmVO, never()).setDetail(Mockito.argThat(UserVmManagerImplTest::namesAnInstance), anyString());
     }
 
     @Test

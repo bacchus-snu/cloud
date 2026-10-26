@@ -92,6 +92,7 @@ public class VMInstanceDaoImpl extends GenericDaoBase<VMInstanceVO, Long> implem
     protected SearchBuilder<VMInstanceVO> HostUpSearch;
     protected SearchBuilder<VMInstanceVO> InstanceNameSearch;
     protected SearchBuilder<VMInstanceVO> HostNameSearch;
+    protected SearchBuilder<VMInstanceVO> HostNamePrefixSearch;
     protected SearchBuilder<VMInstanceVO> HostNameAndZoneSearch;
     protected GenericSearchBuilder<VMInstanceVO, Long> FindIdsOfVirtualRoutersByAccount;
     protected GenericSearchBuilder<VMInstanceVO, Long> CountActiveByHost;
@@ -267,6 +268,8 @@ public class VMInstanceDaoImpl extends GenericDaoBase<VMInstanceVO, Long> implem
         HostNameSearch = createSearchBuilder();
         HostNameSearch.and("hostName", HostNameSearch.entity().getHostName(), Op.EQ);
         HostNameSearch.done();
+
+        initHostNamePrefixSearch();
 
         HostNameAndZoneSearch = createSearchBuilder();
         HostNameAndZoneSearch.and("hostName", HostNameAndZoneSearch.entity().getHostName(), Op.EQ);
@@ -562,6 +565,19 @@ public class VMInstanceDaoImpl extends GenericDaoBase<VMInstanceVO, Long> implem
         SearchCriteria<VMInstanceVO> sc = HostNameSearch.create();
         sc.setParameters("hostName", hostName);
         return findOneBy(sc);
+    }
+
+    @Override
+    public List<VMInstanceVO> listByHostNamePrefixIncludingRemoved(String hostNamePrefix) {
+        SearchCriteria<VMInstanceVO> sc = HostNamePrefixSearch.create();
+        sc.setParameters("hostName", hostNamePrefix + "%");
+        return searchIncludingRemoved(sc, null, null, false);
+    }
+
+    protected void initHostNamePrefixSearch() {
+        HostNamePrefixSearch = createSearchBuilder();
+        HostNamePrefixSearch.and("hostName", HostNamePrefixSearch.entity().getHostName(), Op.LIKE);
+        HostNamePrefixSearch.done();
     }
 
     @Override

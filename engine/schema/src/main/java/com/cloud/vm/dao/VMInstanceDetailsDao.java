@@ -44,4 +44,10 @@ public interface VMInstanceDetailsDao extends GenericDao<VMInstanceDetailVO, Lon
      *         prefix regardless of case
      */
     List<VMInstanceDetailVO> listBySshNamePrefix(String prefix);
+
+    /**
+     * @return the hostname that the guest of the Instance takes: its hidden detail named exactly
+     *         {@link com.cloud.vm.VmDetailConstants#GUEST_HOSTNAME}, or null when it has none
+     */
+    String findGuestHostName(long vmId);
 }

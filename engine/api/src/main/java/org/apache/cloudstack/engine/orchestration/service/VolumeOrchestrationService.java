@@ -206,6 +206,30 @@ public interface VolumeOrchestrationService {
      */
     void detachVolumeOfFailedDeployment(long vmId, long volumeId);
 
+    /**
+     * @return the snapshot from which the volume, not created yet, is created on the pool that its Instance's deployment chooses, as a
+     *         volume from a Template is; null when the volume is not created from a snapshot that way
+     * @throws com.cloud.utils.exception.CloudRuntimeException when that snapshot no longer exists or is not available in the volume's zone
+     */
+    Snapshot snapshotToCreateFrom(Volume volume);
+
+    /**
+     * @return whether the volume, not created yet, records a snapshot it is created from at its Instance's first start
+     */
+    boolean isPendingCreationFromSnapshot(Volume volume);
+
+    /**
+     * @return the least size that the volume, not created yet, is created at: the size of the snapshot it is created from, or of its
+     *         Template for a ROOT volume; 0 for any other volume
+     */
+    long leastSizeAtCreation(Volume volume);
+
+    /**
+     * Removes at once a volume of a deployment that failed: one not created yet is removed, and one created is destroyed and expunged from
+     * its storage, since nothing a failed deployment created is kept for recovery.
+     */
+    void expungeVolumeOfFailedDeployment(Volume volume);
+
     void revokeAccess(DataObject dataObject, Host host, DataStore dataStore);
 
     void revokeAccess(long vmId, long hostId);

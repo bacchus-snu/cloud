@@ -113,7 +113,7 @@
         </template>
         <template v-if="column.key === 'actions'">
           <div class="actions">
-            <tooltip-button :tooltip="$t('label.edit.tags')" icon="tag-outlined" buttonClass="rule-action" @onClick="() => openTagsModal(record.id)" />
+            <tooltip-button v-if="$canEditTags()" :tooltip="$t('label.edit.tags')" icon="tag-outlined" buttonClass="rule-action" @onClick="() => openTagsModal(record.id)" />
             <tooltip-button
               :tooltip="$t('label.delete')"
               type="primary"

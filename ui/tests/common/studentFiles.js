@@ -26,6 +26,7 @@ export const STUDENT_FILES = [
   'api/index.js',
   'views/AutogenView.vue',
   'views/compute/InstanceTab.vue',
+  'views/compute/SshGuestsTab.vue',
   'views/compute/DeployVM.vue',
   'views/compute/EditVM.vue',
   'views/compute/StartVirtualMachine.vue',
@@ -39,6 +40,7 @@ export const STUDENT_FILES = [
   'views/storage/TakeSnapshot.vue',
   'views/storage/RecurringSnapshotVolume.vue',
   'views/storage/FormSchedule.vue',
+  'views/storage/RenameResource.vue',
   'views/storage/ResizeVolume.vue',
   'views/storage/SnapshotZones.vue',
   'views/dashboard/UsageDashboard.vue',
@@ -72,12 +74,17 @@ export const STUDENT_FILES = [
   'components/page',
   'components/widgets',
   'store/modules/user.js',
+  'utils/confirmation.js',
+  'utils/deployImages.js',
+  'utils/guestList.js',
   'utils/guiTheme.js',
+  'utils/instanceAccess.js',
   'utils/limits.js',
   'utils/links.js',
   'utils/placement.js',
   'utils/plugins.js',
   'utils/resourceLimitRequest.js',
+  'utils/resourceName.js',
   'utils/vcpuStep.js'
 ]
 

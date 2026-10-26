@@ -31,6 +31,7 @@ jest.mock('@/store', () => ({
 jest.mock('@/vue-app', () => ({ vueProps: { $localStorage: { set: jest.fn(), get: jest.fn(() => null) }, $config: {} } }))
 
 const en = JSON.parse(fs.readFileSync(path.join(__dirname, '../../../../public/locales/en.json'), 'utf8'))
+const ko = JSON.parse(fs.readFileSync(path.join(__dirname, '../../../../public/locales/ko_KR.json'), 'utf8'))
 const GiB = 1024 * 1024 * 1024
 
 const vm = { id: 'vm-1', name: 'lab', zoneid: 'z-1', account: 'student', domainid: 'd-1', templateid: 't-current' }
@@ -62,15 +63,15 @@ const answer = (command, params = {}) => {
   }
 }
 
-const open = async (without = []) => {
+const open = async (without = [], { features = {}, locale = 'en' } = {}) => {
   const apis = Object.fromEntries(minimalUser.apis.filter(name => !without.includes(name)).map(name => [name, {
     params: name === 'restoreVirtualMachine' ? ['diskofferingid', 'rootdisksize', 'expunge'].map(param => ({ name: param, description: param })) : []
   }]))
   global.allowedApis = apis
-  const store = common.createMockStore({ user: { apis, info: { roletype: 'User', domainid: 'd-1', account: 'student', accountid: 'acc-1' }, features: {} } })
+  const store = common.createMockStore({ user: { apis, info: { roletype: 'User', domainid: 'd-1', account: 'student', accountid: 'acc-1' }, features } })
   const wrapper = common.createFactory(ReinstallVm, {
     store,
-    i18n: common.createMockI18n('en', { en }),
+    i18n: common.createMockI18n(locale, { en, ko_KR: ko }),
     props: { resource: vm },
     provide: { parentFetchData: jest.fn() },
     mocks: { $config: {}, $pollJob: jest.fn(), $notifyError: jest.fn() },
@@ -187,5 +188,92 @@ describe('ReinstallVm root disk size', () => {
     expect(getAPI.mock.calls.map(call => call[0])).not.toContain('listAccounts')
     expect(sizeInput(wrapper).props('maxDiskSize')).toBeNull()
     expect(sizeInput(wrapper).props('minDiskSize')).toBe(10)
+  })
+})
+
+describe('ReinstallVm when the cloud deletes a volume at once', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    state = { capabilities: { rootdisksizemin: 10, rootdisksizedefault: 20 }, remaining: 77, currentGiB: 5, rootGiB: 50 }
+    getAPI.mockImplementation((command, params) => command in global.allowedApis
+      ? Promise.resolve(answer(command, params))
+      : Promise.reject(Object.assign(new Error(command + ' is not available'), { response: { status: 432, headers: {} } })))
+  })
+
+  const warning = (wrapper) => wrapper.find('.ant-alert').text()
+
+  it('says that the current root disk is replaced and deleted at once and cannot be recovered', async () => {
+    state.capabilities = { ...state.capabilities, expungeondestroy: true }
+    const wrapper = await open()
+    expect(warning(wrapper)).toContain(en['message.reinstall.vm.now'])
+    expect(en['message.reinstall.vm.now']).toMatch(/deleted at once/)
+    expect(en['message.reinstall.vm.now']).toMatch(/cannot be recovered/)
+    expect(warning(wrapper)).toContain(en['message.reinstall.vm'])
+  })
+
+  it('says nothing more when the server keeps replaced disks or does not say', async () => {
+    for (const capabilities of [{}, { expungeondestroy: false }]) {
+      state.capabilities = { rootdisksizemin: 10, ...capabilities }
+      const wrapper = await open()
+      expect(warning(wrapper)).toContain(en['message.reinstall.vm'])
+      expect(warning(wrapper)).not.toContain(en['message.reinstall.vm.now'])
+    }
+  })
+
+  it('goes by what the server says, and by the session when the server cannot be asked', async () => {
+    state.capabilities = { expungeondestroy: false }
+    const stale = await open([], { features: { expungeondestroy: true } })
+    expect(warning(stale)).not.toContain(en['message.reinstall.vm.now'])
+
+    getAPI.mockImplementation((command, params) => command === 'listCapabilities'
+      ? Promise.reject(new Error('down'))
+      : Promise.resolve(answer(command, params)))
+    const fallback = await open([], { features: { expungeondestroy: true } })
+    expect(warning(fallback)).toContain(en['message.reinstall.vm.now'])
+  })
+
+  const expungeSwitch = (wrapper) => wrapper.findAll('.ant-form-item').find(item => item.text().includes(en['label.expunge']))
+  const reinstall = async (wrapper) => {
+    postAPI.mockImplementation(() => Promise.resolve({ restorevmresponse: { jobid: 'job-1' } }))
+    wrapper.vm.handleSubmit()
+    await flushPromises()
+    return postAPI.mock.calls[0][1]
+  }
+
+  it('shows no expunge switch and sends no expunge parameter, since the replaced disk goes at once', async () => {
+    state.capabilities = { ...state.capabilities, expungeondestroy: true }
+    const wrapper = await open()
+    expect(expungeSwitch(wrapper)).toBeUndefined()
+    const params = await reinstall(wrapper)
+    expect(params).toMatchObject({ virtualmachineid: 'vm-1' })
+    expect(params).not.toHaveProperty('expunge')
+  })
+
+  it('keeps the expunge switch and its parameter while the server keeps replaced disks or does not say', async () => {
+    for (const capabilities of [{}, { expungeondestroy: false }]) {
+      jest.clearAllMocks()
+      state.capabilities = { rootdisksizemin: 10, ...capabilities }
+      const wrapper = await open()
+      expect(expungeSwitch(wrapper)).toBeDefined()
+      await wrapper.setData({ expungeDisk: true })
+      const params = await reinstall(wrapper)
+      expect(params.expunge).toBe(true)
+    }
+  })
+
+  it('goes by the session for the switch when the server cannot be asked', async () => {
+    getAPI.mockImplementation((command, params) => command === 'listCapabilities'
+      ? Promise.reject(new Error('down'))
+      : Promise.resolve(answer(command, params)))
+    const wrapper = await open([], { features: { expungeondestroy: true } })
+    expect(expungeSwitch(wrapper)).toBeUndefined()
+  })
+
+  it('is worded in Korean', async () => {
+    state.capabilities = { expungeondestroy: true }
+    const wrapper = await open([], { locale: 'ko_KR' })
+    expect(ko['message.reinstall.vm.now']).toBeTruthy()
+    expect(ko['message.reinstall.vm.now']).not.toBe(en['message.reinstall.vm.now'])
+    expect(warning(wrapper)).toContain(ko['message.reinstall.vm.now'])
   })
 })

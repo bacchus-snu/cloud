@@ -24,6 +24,7 @@ import store from '@/store'
 import { sourceToken } from '@/utils/request'
 import { toLocalDate, toLocaleDate } from '@/utils/date'
 import { docHelpUrl, isHidden } from '@/utils/uiConfig'
+import { canEditTags } from '@/utils/resourceTags'
 
 export const pollJobPlugin = {
   install (app) {
@@ -343,6 +344,10 @@ export const configUtilPlugin = {
 
     app.config.globalProperties.$isHidden = function (area, key) {
       return isHidden(area, key, this.$store?.getters?.userInfo?.roletype, this.$config)
+    }
+
+    app.config.globalProperties.$canEditTags = function () {
+      return canEditTags(this.$store?.getters?.userInfo?.roletype)
     }
   }
 }

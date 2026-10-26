@@ -144,6 +144,7 @@
 import { ref, reactive, toRaw } from 'vue'
 import { postAPI } from '@/api'
 import { mixinForm } from '@/utils/mixin'
+import { resourceNameRule } from '@/utils/resourceName'
 import ResourceIcon from '@/components/view/ResourceIcon'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
 import InfiniteScrollSelect from '@/components/widgets/InfiniteScrollSelect.vue'
@@ -212,7 +213,7 @@ export default {
       })
       this.rules = reactive({
         url: [{ required: true, message: this.$t('message.error.required.input') }],
-        name: [{ required: true, message: this.$t('message.error.volume.name') }],
+        name: [{ required: true, message: this.$t('message.error.volume.name') }, resourceNameRule(() => this.$t('message.error.resource.name.rule'), { optional: true })],
         zoneId: [{ required: true, message: this.$t('message.error.select') }],
         format: [{ required: true, message: this.$t('message.error.select') }]
       })

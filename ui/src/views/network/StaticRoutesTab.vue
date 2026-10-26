@@ -44,7 +44,7 @@
           <router-link :to="{ path: '/privategw/' + record.vpcgatewayid }" >{{ text }}</router-link>
         </template>
         <template v-if="column.key === 'actions'">
-          <tooltip-button :tooltip="$t('label.edit.tags')" icon="tag-outlined" @onClick="() => openTagsModal(record)" />
+          <tooltip-button v-if="$canEditTags()" :tooltip="$t('label.edit.tags')" icon="tag-outlined" @onClick="() => openTagsModal(record)" />
           <tooltip-button
             :tooltip="$t('label.delete')"
             :disabled="!('deleteStaticRoute' in $store.getters.apis)"

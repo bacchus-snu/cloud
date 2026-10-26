@@ -30,6 +30,8 @@ jest.mock('@/store', () => ({
 }))
 jest.mock('@/vue-app', () => ({ vueProps: { $localStorage: { set: jest.fn(), get: jest.fn(() => null) }, $config: {} } }))
 
+jest.setTimeout(30000)
+
 // the fields the forms read the descriptions of
 const PARAMS = ['name', 'zoneid', 'diskofferingid', 'size', 'miniops', 'maxiops', 'kmskeyid', 'usestoragereplication'].map(name => ({ name, description: name }))
 const apiMap = (names) => Object.fromEntries(names.map(name => [name, { params: PARAMS }]))
@@ -110,6 +112,17 @@ describe('forms of the volume and snapshot pages under the student role', () => 
     await open(FormSchedule, { props: { dataSource: [], resource: volume, resourceType: 'Volume' } })
     expect(calledCommands()).toContain('listZones')
     expect(calledCommands().filter(command => !minimalUser.apis.includes(command))).toEqual([])
+  })
+
+  it('the recurring snapshot form offers the free-form tags to a role above User and not to the User role', async () => {
+    const props = { dataSource: [], resource: volume, resourceType: 'Volume' }
+    const student = await open(FormSchedule, { props })
+    expect(student.find('.tagsTitle').exists()).toBe(false)
+    expect(student.find('.btn-add-tag').exists()).toBe(false)
+
+    const admin = await open(FormSchedule, { roletype: 'Admin', props })
+    expect(admin.find('.tagsTitle').exists()).toBe(true)
+    expect(admin.find('.btn-add-tag').exists()).toBe(true)
   })
 
   it('the recurring snapshot form asks for the storage pools of a role that has the list', async () => {

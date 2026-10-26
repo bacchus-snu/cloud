@@ -17,9 +17,10 @@
 
 import fs from 'fs'
 import path from 'path'
-import { flushPromises } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises } from '@vue/test-utils'
 
 import common from '../../../common'
+import eventBus from '@/config/eventBus'
 import { getAPI } from '@/api'
 import ActionButton from '@/components/view/ActionButton'
 import DetailsTab from '@/components/view/DetailsTab'
@@ -36,6 +37,11 @@ const mockEmptyAnswer = { listresourceiconresponse: { icon: [] }, listaccountsre
 jest.mock('@/api', () => ({ getAPI: jest.fn(() => Promise.resolve(mockEmptyAnswer)), postAPI: jest.fn(() => Promise.resolve({})), callAPI: jest.fn() }))
 jest.mock('@/store', () => ({ getters: { features: {}, apis: {}, userInfo: {}, zones: [], project: {} } }))
 jest.mock('@/vue-app', () => ({ vueProps: { $localStorage: { set: jest.fn(), get: jest.fn(() => null) }, $config: {} } }))
+
+enableAutoUnmount(afterEach)
+afterEach(() => {
+  getAPI.mockImplementation(() => Promise.resolve(mockEmptyAnswer))
+})
 
 const uiRoot = path.resolve(__dirname, '../../../..')
 // the fork's default config with the deployment's data, which the fixture mirrors
@@ -76,16 +82,16 @@ const vmRouter = async () => {
 }
 
 const stubs = ['DetailsTab', 'StatsTab', 'EventsTab', 'DetailSettings', 'CreateVolume', 'NicsTab', 'GPUTab', 'ResourceSchedules',
-  'ListResourceTable', 'SecurityGroupSelection', 'AnnotationsTab', 'VolumesTab']
+  'ListResourceTable', 'SecurityGroupSelection', 'AnnotationsTab', 'VolumesTab', 'SshGuestsTab']
 
-const mountInstanceTab = async (apis) => {
+const mountInstanceTab = async (apis, config = deployedConfig) => {
   const router = await vmRouter()
   const wrapper = common.createFactory(InstanceTab, {
     router,
     i18n,
     store: storeWith(apis),
     props: { resource: gpuVm, loading: false },
-    mocks: { $config: deployedConfig, parentFetchData: jest.fn() },
+    mocks: { $config: config, parentFetchData: jest.fn() },
     provide: { parentFetchData: jest.fn() },
     stubs: Object.fromEntries(stubs.map(name => [name, true]))
   })
@@ -148,6 +154,23 @@ describe('instance page for the minimal user role', () => {
     expect(card.text()).toContain('2 x')
     expect(card.text()).toContain('A100-SXM4-40GB')
     expect(card.html()).not.toContain('/gpucard/')
+  })
+
+  it('instance view has the SSH guests tab where the config names a bastion host and the role can edit tags', async () => {
+    const withTags = ['listTags', 'createTags', 'deleteTags']
+    const user = await mountInstanceTab(apiMap(minimalUser.apis))
+    expect(tabKeys(user)).toContain('label.ssh.guests')
+    expect(tabKeys(user).indexOf('label.ssh.guests')).toBe(tabKeys(user).indexOf('label.details') + 1)
+
+    const withoutHost = await mountInstanceTab(apiMap(minimalUser.apis), { ...deployedConfig, instanceAccess: {} })
+    expect(tabKeys(withoutHost)).not.toContain('label.ssh.guests')
+    const withoutConfig = await mountInstanceTab(apiMap(minimalUser.apis), { ...deployedConfig, instanceAccess: undefined })
+    expect(tabKeys(withoutConfig)).not.toContain('label.ssh.guests')
+
+    for (const missing of withTags) {
+      const apis = apiMap(minimalUser.apis.filter(name => name !== missing))
+      expect(tabKeys(await mountInstanceTab(apis))).not.toContain('label.ssh.guests')
+    }
   })
 
   it('the card shows the memory in GiB', async () => {
@@ -294,5 +317,67 @@ describe('the instance card tells how to reach the instance', () => {
       return router
     }
     expect(shown(await cardFor({ route: volumeRoute }))).toEqual({ ssh: null, account: null })
+  })
+
+  it('names the instance by its sshname when the server gives one, and by its name for an older instance', async () => {
+    const scheme = await cardFor({ resource: { ...debianVm, name: 'i-2-34-VM', displayname: 'VM-0', sshname: 'VM-0' } })
+    expect(shown(scheme).ssh).toBe('ssh -p 2222 baneling100:vm-0@cloud.snucse.org')
+    expect(scheme.find('.name').text()).toBe('VM-0')
+    const older = await cardFor({ resource: { ...debianVm, displayname: 'My VM', sshname: undefined } })
+    expect(shown(older).ssh).toBe('ssh -p 2222 baneling100:my-vm@cloud.snucse.org')
+    expect(older.find('.name').text()).toBe('My VM')
+  })
+})
+
+describe('the tags on the instance card', () => {
+  const tagged = { ...gpuVm, account: 'student', domainid: 'd-1', tags: [{ key: 'ssh.account.foo', value: 'alice' }] }
+
+  const cardAs = async (roletype) => {
+    const router = common.createMockRouter([{ name: 'vm', path: '/vm/:id', meta: { name: 'vm', resourceType: 'UserVm' }, component: {} },
+      { path: '/:catchAll(.*)', redirect: '/exception/404' }])
+    router.push('/vm/vm-1')
+    await router.isReady()
+    const store = common.createMockStore({ user: { apis: apiMap(minimalUser.apis), info: { roletype, domainid: 'd-1', account: 'student' }, features: {} } })
+    const card = common.createFactory(InfoCard, { router, i18n, store, props: { resource: tagged, loading: false }, mocks: { $config: deployedConfig } })
+    await flushPromises()
+    return card
+  }
+
+  it('are listed for every role, and the controls that add and remove them are for a role above User only', async () => {
+    const student = await cardAs('User')
+    expect(student.text()).toContain('ssh.account.foo = alice')
+    expect(student.find('.btn-add-tag').exists()).toBe(false)
+    expect(student.find('.ant-tag-close-icon').exists()).toBe(false)
+
+    for (const roletype of ['Admin', 'DomainAdmin']) {
+      const other = await cardAs(roletype)
+      expect(other.text()).toContain('ssh.account.foo = alice')
+      expect(other.find('.btn-add-tag').exists()).toBe(true)
+      expect(other.find('.ant-tag-close-icon').exists()).toBe(true)
+    }
+  })
+
+  it('are read again when the tags of this instance changed elsewhere on the page, and not for another instance', async () => {
+    const card = await cardAs('User')
+    const reads = () => getAPI.mock.calls.filter(call => call[0] === 'listTags').length
+    getAPI.mockImplementation(() => Promise.resolve({ listtagsresponse: { tag: [{ key: 'ssh.account.foo', value: 'alice,bob' }] } }))
+    const before = reads()
+
+    eventBus.emit('resource-tags-changed', 'another-vm')
+    await flushPromises()
+    expect(reads()).toBe(before)
+    expect(card.text()).toContain('ssh.account.foo = alice')
+    expect(card.text()).not.toContain('alice,bob')
+
+    eventBus.emit('resource-tags-changed', 'vm-1')
+    await flushPromises()
+    expect(getAPI).toHaveBeenLastCalledWith('listTags', expect.objectContaining({ resourceid: 'vm-1', resourcetype: 'UserVm' }))
+    expect(reads()).toBe(before + 1)
+    expect(card.text()).toContain('ssh.account.foo = alice,bob')
+
+    card.unmount()
+    eventBus.emit('resource-tags-changed', 'vm-1')
+    await flushPromises()
+    expect(reads()).toBe(before + 1)
   })
 })

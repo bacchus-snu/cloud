@@ -25,8 +25,8 @@
           </template>
         </a-alert>
       </div>
-      <a-form :model="form" layout="vertical">
-        <a-form-item :label="$t('label.name.optional')" name="name">
+      <a-form ref="formRef" :model="form" :rules="rules" layout="vertical">
+        <a-form-item :label="$t('label.name.optional')" name="name" :extra="$t('message.instance.name.default')">
           <a-input v-model:value="form.name" />
         </a-form-item>
         <a-form-item v-if="resource.isbackupvmexpunged" name="preserveIpAddresses" style="margin-top: 8px">
@@ -68,7 +68,7 @@ import { getAPI, postAPI } from '@/api'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
 import eventBus from '@/config/eventBus'
 import store from '@/store'
-import { accessNotice } from '@/utils/instanceAccess'
+import { accessNotice, instanceNameParams, instanceNameRule } from '@/utils/instanceAccess'
 
 import DeployVMFromBackup from '@/components/view/DeployVMFromBackup'
 
@@ -89,6 +89,9 @@ export default {
         name: '',
         quickRestore: false,
         preserveIpAddresses: false
+      },
+      rules: {
+        name: [instanceNameRule(() => this.$t('message.error.instance.name.rule'))]
       }
     }
   },
@@ -205,14 +208,14 @@ export default {
     handleSubmit (e) {
       console.log('submit')
       e.preventDefault()
+      this.$refs.formRef.validate().then(this.createInstance, () => {})
+    },
+    createInstance () {
       const args = {}
       args.zoneid = this.resource.zoneid
       args.backupid = this.resource.id
 
-      if (this.form.name) {
-        args.name = this.form.name
-        args.displayname = this.form.name
-      }
+      Object.assign(args, instanceNameParams(this.form.name))
       args.quickRestore = this.form.quickRestore
       if (this.form.preserveIpAddresses) {
         args.preserveip = this.form.preserveIpAddresses
@@ -248,10 +251,8 @@ export default {
         })
       }).catch(error => {
         this.$notifyError(error)
-        this.loading.deploy = false
       }).finally(() => {
         this.form.stayonpage = false
-        this.loading.deploy = false
       })
       this.$emit('close-action')
     }

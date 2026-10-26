@@ -62,6 +62,7 @@
 <script>
 import { ref, reactive, toRaw } from 'vue'
 import { getAPI, postAPI } from '@/api'
+import { resourceNameRule } from '@/utils/resourceName'
 
 export default {
   name: 'CreateSnapshotFromVMSnapshot',
@@ -86,7 +87,7 @@ export default {
       this.formRef = ref()
       this.form = reactive({})
       this.rules = reactive({
-        name: [{ required: true, message: this.$t('message.error.name') }],
+        name: [{ required: true, message: this.$t('message.error.name') }, resourceNameRule(() => this.$t('message.error.resource.name.rule'), { optional: true })],
         volumeid: [{ required: true, message: this.$t('message.error.select') }]
       })
     },

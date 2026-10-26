@@ -52,6 +52,8 @@ const open = async (props = {}, locale = 'en') => {
 
 const destroyed = () => postAPI.mock.calls.filter(call => call[0] === 'destroyVirtualMachine').map(call => call[1])
 const checkbox = (wrapper) => wrapper.find('.keep-root-volume input[type="checkbox"]')
+// the name of the Instance, or the number of the selected ones, is typed before anything is destroyed
+const confirm = (wrapper, text = 'lab') => wrapper.find('.confirm-input input').setValue(text)
 
 describe('DestroyVM keeps the root disk', () => {
   beforeEach(() => {
@@ -74,6 +76,7 @@ describe('DestroyVM keeps the root disk', () => {
     expect(checkbox(wrapper).element.checked).toBe(true)
     expect(wrapper.find('.keep-root-volume').text()).toContain('Keep the root disk')
 
+    await confirm(wrapper)
     await wrapper.vm.handleSubmit({ preventDefault () {} })
     await flushPromises()
     expect(destroyed()).toEqual([{ id: 'vm-1', keeprootvolume: true }])
@@ -81,6 +84,7 @@ describe('DestroyVM keeps the root disk', () => {
     // and the user's choice is sent as it stands, also when it is off
     const second = await open()
     await checkbox(second).setValue(false)
+    await confirm(second)
     await second.vm.handleSubmit({ preventDefault () {} })
     await flushPromises()
     expect(destroyed()[1]).toEqual({ id: 'vm-1', keeprootvolume: false })
@@ -90,6 +94,7 @@ describe('DestroyVM keeps the root disk', () => {
     capability = { keeprootvolumedefault: false }
     const wrapper = await open()
     expect(checkbox(wrapper).element.checked).toBe(false)
+    await confirm(wrapper)
     await wrapper.vm.handleSubmit({ preventDefault () {} })
     await flushPromises()
     expect(destroyed()).toEqual([{ id: 'vm-1', keeprootvolume: false }])
@@ -100,6 +105,7 @@ describe('DestroyVM keeps the root disk', () => {
       ? Promise.reject(new Error('no'))
       : Promise.resolve({ listvolumesresponse: { volume: [] } }))
     const wrapper = await open()
+    await confirm(wrapper)
     await wrapper.vm.handleSubmit({ preventDefault () {} })
     await flushPromises()
     expect(destroyed()).toEqual([{ id: 'vm-1' }])
@@ -119,6 +125,7 @@ describe('DestroyVM keeps the root disk', () => {
     })
     expect(checkbox(wrapper).element.checked).toBe(true)
     await checkbox(wrapper).setValue(false)
+    await confirm(wrapper, '2')
     await wrapper.vm.handleSubmit({ preventDefault () {} })
     await flushPromises()
     expect(destroyed().map(params => [params.id, params.keeprootvolume])).toEqual([['vm-1', false], ['vm-2', false]])

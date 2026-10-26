@@ -362,7 +362,7 @@
                 </template>
               </a-step>
               <a-step
-                v-if="zoneSelected && !isTemplateHypervisorExternal && (imageType === 'templateid' || imageType === 'volumeid')"
+                v-if="zoneSelected && !isTemplateHypervisorExternal && ['templateid', 'volumeid', 'snapshotid'].includes(imageType)"
                 :title="$t('label.placement')"
                 :status="zoneSelected ? 'process' : 'wait'">
                 <template #description>
@@ -796,7 +796,7 @@
                 <template #description v-if="zoneSelected">
                   <div style="margin-top: 15px">
                     {{ $t('message.vm.review.launch') }}
-                    <a-form-item :label="$t('label.name.optional')" name="name" ref="name">
+                    <a-form-item :label="$t('label.name.optional')" name="name" ref="name" :extra="$t('message.instance.name.default')">
                       <a-input v-model:value="form.name" />
                     </a-form-item>
                     <a-form-item :label="$t('label.group.optional')" name="group" ref="group" v-if="'listInstanceGroups' in $store.getters.apis">
@@ -934,8 +934,9 @@ import DeployInstanceBackupSelection from '@views/compute/wizard/DeployInstanceB
 import PlacementStep from '@views/compute/wizard/PlacementStep'
 import PlacementMoveModal from '@views/compute/wizard/PlacementMoveModal'
 import { SET_LEASE_API } from '@/utils/lease'
-import { accessNotice } from '@/utils/instanceAccess'
-import { checkPlacement, fetchCapabilities, isMoveRequired, placementAction, vcpuMinimum, vcpuStep } from '@/utils/placement'
+import { accessNotice, instanceNameParams, instanceNameRule } from '@/utils/instanceAccess'
+import { checkPlacement, fetchCapabilities, isMoveRequired, placementAction, snapshotPlacementRequest, vcpuMinimum, vcpuStep } from '@/utils/placement'
+import { deployableSnapshots, deployableVolumes } from '@/utils/deployImages'
 import { gpuRemaining, limitTagsOf, loadQuota, remainingLimit, remainingStorage } from '@/utils/limits'
 
 export default {
@@ -1216,7 +1217,7 @@ export default {
     capacityOfferingId () {
       return this.serviceOffering && this.serviceOffering.id && !this.serviceOffering.gpucardname ? this.serviceOffering.id : ''
     },
-    // the combination as checkPlacement takes it, for a new Instance from a Template or from a detached volume
+    // the combination as checkPlacement takes it, for a new Instance from a Template, a snapshot or a detached volume
     placementRequest () {
       const offering = this.serviceOffering
       if (!this.zoneId || !offering || !offering.id) {
@@ -1233,6 +1234,13 @@ export default {
         if (dataDisks) {
           request.datadisksizes = dataDisks
         }
+      } else if (this.imageType === 'snapshotid' && this.form.snapshotid) {
+        Object.assign(request, snapshotPlacementRequest({
+          snapshotid: this.form.snapshotid,
+          serviceofferingid: offering.id,
+          zoneid: this.zoneId,
+          datadisksizes: this.dataDiskSizes
+        }))
       } else if (this.imageType === 'volumeid' && this.form.volumeid) {
         request.volumeid = this.form.volumeid
       } else {
@@ -1250,7 +1258,7 @@ export default {
     },
     // the sizes of the data disks the Instance is created with, in GiB, as one list
     dataDiskSizes () {
-      if (this.imageType !== 'templateid' || !this.diskOffering || !this.diskOffering.id) {
+      if (!['templateid', 'snapshotid'].includes(this.imageType) || !this.diskOffering || !this.diskOffering.id) {
         return null
       }
       const size = this.diskOffering.iscustomized ? Number(this.form.size) : Number(this.diskOffering.disksize)
@@ -1853,7 +1861,8 @@ export default {
       this.rules = reactive({
         zoneid: [{ required: true, message: `${this.$t('message.error.select')}` }],
         hypervisor: [{ required: true, message: `${this.$t('message.error.select')}` }],
-        leaseduration: [this.naturalNumberRule]
+        leaseduration: [this.naturalNumberRule],
+        name: [instanceNameRule(() => this.$t('message.error.instance.name.rule'))]
       })
 
       if (this.zoneSelected) {
@@ -2473,7 +2482,7 @@ export default {
 
         if (this.osDiskShown && this.rootDiskSizeToSend > 0) {
           deployVmData.rootdisksize = this.rootDiskSizeToSend
-        } else if (this.rootDiskSizeFixed > 0 && !this.template?.deployasis) {
+        } else if (this.rootDiskSizeFixed > 0 && !this.template?.deployasis && !['volumeid', 'snapshotid'].includes(this.imageType)) {
           deployVmData.rootdisksize = this.rootDiskSizeFixed
         }
 
@@ -2568,10 +2577,7 @@ export default {
           deployVmData.userdataid = values.userdataid
         }
 
-        if (values.name) {
-          deployVmData.name = values.name
-          deployVmData.displayname = values.name
-        }
+        Object.assign(deployVmData, instanceNameParams(values.name))
         if (values.group) {
           deployVmData.group = values.group
         }
@@ -2934,15 +2940,8 @@ export default {
 
       return new Promise((resolve, reject) => {
         getAPI('listVolumes', args).then((response) => {
-          let count = 0
-          const volumes = []
-          response.listvolumesresponse.volume.forEach(volume => {
-            if (!volume.virtualmachineid) {
-              count += 1
-              volumes.push({ ...volume, displaytext: volume.name })
-            }
-          })
-          resolve({ listvolumesresponse: { count, volume: volumes.slice(pageStart, pageEnd) } })
+          const volumes = deployableVolumes(response.listvolumesresponse.volume).map(volume => ({ ...volume, displaytext: volume.name }))
+          resolve({ listvolumesresponse: { count: volumes.length, volume: volumes.slice(pageStart, pageEnd) } })
         }).catch((reason) => {
           // ToDo: Handle errors
           reject(reason)
@@ -2962,6 +2961,7 @@ export default {
       args.account = store.getters.project?.id ? null : this.owner.account
       args.domainid = store.getters.project?.id ? null : this.owner.domainid
       args.projectid = store.getters.project?.id || this.owner.projectid
+      args.id = this.querySnapshotId
       const pageSize = args.pageSize ? args.pageSize : 10
       const pageStart = (args.page ? args.page - 1 : 0) * pageSize
       const pageEnd = pageSize * (pageStart + 1)
@@ -2974,15 +2974,8 @@ export default {
 
       return new Promise((resolve, reject) => {
         getAPI('listSnapshots', args).then((response) => {
-          let count = 0
-          const snapshots = []
-          response.listsnapshotsresponse.snapshot.forEach(snapshot => {
-            if (snapshot.volumetype === 'ROOT') {
-              count += 1
-              snapshots.push({ ...snapshot, displaytext: snapshot.name })
-            }
-          })
-          resolve({ listsnapshotsresponse: { count, snapshot: snapshots.slice(pageStart, pageEnd) } })
+          const snapshots = deployableSnapshots(response.listsnapshotsresponse.snapshot).map(snapshot => ({ ...snapshot, displaytext: snapshot.name }))
+          resolve({ listsnapshotsresponse: { count: snapshots.length, snapshot: snapshots.slice(pageStart, pageEnd) } })
         }).catch((reason) => {
           // ToDo: Handle errors
           reject(reason)
@@ -3164,6 +3157,9 @@ export default {
           snapshots[snapshotFilters[idx]] = _.isEmpty(resItem.listsnapshotsresponse) ? { count: 0, snapshot: [] } : resItem.listsnapshotsresponse
           this.options.snapshots = { ...snapshots }
         })
+        if (this.querySnapshotId && !this.form.snapshotid && Object.values(this.options.snapshots).some(entry => entry.snapshot.some(snapshot => snapshot.id === this.querySnapshotId))) {
+          this.updateFieldValueForSnapshot(this.querySnapshotId)
+        }
       }).catch((reason) => {
         console.log(reason)
       }).finally(() => {
@@ -3267,7 +3263,7 @@ export default {
       this.form.isoid = undefined
       this.resetTemplatesList()
       this.resetIsosList()
-      this.imageType = this.queryIsoId ? 'isoid' : this.queryVolumeId ? 'volumeid' : 'templateid'
+      this.imageType = this.queryIsoId ? 'isoid' : this.queryVolumeId ? 'volumeid' : this.querySnapshotId ? 'snapshotid' : 'templateid'
       this.form.backupofferingid = undefined
       this.selectedBackupOffering = null
       this.fetchZoneOptions()

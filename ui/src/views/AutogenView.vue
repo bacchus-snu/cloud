@@ -269,16 +269,11 @@
             </div>
             <br v-if="currentAction.paramFields.length > 0" />
              </span>
-           <div v-if="currentAction.requireNameConfirmation && !(currentAction.groupAction && selectedRowKeys.length > 0)" style="margin-bottom: 5px">
-            <a-form-item>
-                <a-input v-model:value="actionConfirmText" :placeholder="resource.name" />
-            </a-form-item>
-            <a-alert type="info">
-              <template #message>
-                <div v-html="$t('label.delete.confirmation')"></div>
-              </template>
-            </a-alert>
-           </div>
+           <confirm-input
+            v-if="currentAction.requireNameConfirmation"
+            v-model:value="actionConfirmText"
+            :mode="confirmCount > 0 ? 'count' : 'name'"
+            :expected="confirmCount > 0 ? confirmCount : confirmationName(resource)" />
            <a-form
             :ref="formRef"
             :model="form"
@@ -641,10 +636,14 @@ import BulkActionProgress from '@/components/view/BulkActionProgress'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
 import DetailsInput from '@/components/widgets/DetailsInput'
 import AdvisoriesView from '@/components/view/AdvisoriesView'
+import ConfirmInput from '@/components/widgets/ConfirmInput'
+import { CAPABILITY_WAIT_MS, fetchCapabilitiesWithin } from '@/utils/placement'
+import { confirmationName, matchesConfirmation, matchesCount } from '@/utils/confirmation'
 
 export default {
   name: 'Resource',
   components: {
+    ConfirmInput,
     Breadcrumb,
     ResourceView,
     ListView,
@@ -914,14 +913,21 @@ export default {
       }
       return 'self'
     },
+    // the number of the selected resources an action on a selection is confirmed by; 0 when it is confirmed by a name
+    confirmCount () {
+      return !this.dataView && this.currentAction?.groupAction && this.selectedRowKeys.length > 0 ? this.selectedRowKeys.length : 0
+    },
     isSubmitDisabled () {
-      if (this.currentAction?.requireNameConfirmation && !(this.currentAction.groupAction && this.selectedRowKeys.length > 0)) {
-        return this.actionConfirmText.trim() !== this.resource?.name?.trim()
+      if (!this.currentAction?.requireNameConfirmation) {
+        return false
       }
-      return false
+      return this.confirmCount > 0
+        ? !matchesCount(this.actionConfirmText, this.confirmCount)
+        : !matchesConfirmation(this.actionConfirmText, confirmationName(this.resource))
     }
   },
   methods: {
+    confirmationName,
     getStyle () {
       if (['snapshot', 'vmsnapshot', 'publicip'].includes(this.$route.name)) {
         return 'table-cell'
@@ -1381,6 +1387,13 @@ export default {
       this.setModalWidthByScreen()
     },
     execAction (action, isGroupAction) {
+      if (action.freshCapabilities && 'listCapabilities' in store.getters.apis) {
+        fetchCapabilitiesWithin(CAPABILITY_WAIT_MS).then(capabilities => this.openAction(action, isGroupAction, capabilities))
+        return
+      }
+      this.openAction(action, isGroupAction)
+    },
+    openAction (action, isGroupAction, capabilities = {}) {
       if (action.navigate) {
         this.$router.push(action.navigate(action.resource))
         return
@@ -1424,15 +1437,16 @@ export default {
       })
       this.currentAction.paramFields = []
       this.currentAction.paramFilters = []
+      const features = { ...this.$store.getters.features, ...capabilities }
       if ('message' in action) {
         if (typeof action.message === 'function') {
-          action.messageString = action.message(action.resource)
+          action.messageString = action.message(action.resource, features)
         } else {
           action.messageString = action.message
         }
         action.messageString = Array.isArray(action.messageString) ? this.$t(...action.messageString) : this.$t(action.messageString)
       }
-      this.getArgs(action, isGroupAction, paramFields)
+      this.getArgs(action, isGroupAction, paramFields, action.freshCapabilities ? { ...this.$store.getters, features } : this.$store.getters)
       this.getFilters(action, isGroupAction, paramFields)
       this.getFirstIndexFocus()
 
@@ -1447,17 +1461,22 @@ export default {
           this.listUuidOpts(param, this.currentAction.paramFilters[param.name])
         }
       }
+      for (const [name, makeRules] of Object.entries(action.fieldRules || {})) {
+        if (this.rules[name]) {
+          this.rules[name].push(...makeRules(this))
+        }
+      }
       this.actionLoading = false
       if (action.dataView && listIconForFillValues.includes(action.icon)) {
         this.fillEditFormFieldValues()
       }
     },
-    getArgs (action, isGroupAction, paramFields) {
+    getArgs (action, isGroupAction, paramFields, getters) {
       const self = this
       if ('args' in action) {
         var args = action.args
         if (typeof action.args === 'function') {
-          args = action.args(action.resource, this.$store.getters, isGroupAction)
+          args = action.args(action.resource, getters, isGroupAction)
         }
         if (args.length > 0) {
           this.currentAction.paramFields = args.map(function (arg) {
@@ -1716,11 +1735,7 @@ export default {
     handleSubmit (e) {
       if (this.actionLoading) return
 
-      if (this.currentAction?.requireNameConfirmation && !(this.currentAction.groupAction && this.selectedRowKeys.length > 0)) {
-        if (this.actionConfirmText.trim() !== this.resource?.name?.trim()) {
-          return
-        }
-      }
+      if (this.isSubmitDisabled) return
       this.promises = []
       if (!this.dataView && this.currentAction.groupAction && this.selectedRowKeys.length > 0) {
         if (this.selectedRowKeys.length > 0) {

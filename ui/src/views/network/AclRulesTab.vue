@@ -115,7 +115,7 @@
                 :tooltip="$t('label.move.to.bottom')"
                 icon="vertical-align-bottom-outlined"
                 @onClick="() => moveRuleToBottom(element)" />
-              <tooltip-button :tooltip="$t('label.tags')" icon="tag-outlined" @onClick="() => openTagsModal(element)" />
+              <tooltip-button v-if="$canEditTags()" :tooltip="$t('label.tags')" icon="tag-outlined" @onClick="() => openTagsModal(element)" />
               <tooltip-button :tooltip="$t('label.edit')" icon="edit-outlined" @onClick="() => openEditRuleModal(element)" />
               <tooltip-button
                 :tooltip="$t('label.delete')"

@@ -204,4 +204,88 @@ describe('deploy wizard: how to reach the new instance', () => {
     expect(text()).toContain('Xy7kq2Lp')
     expect(text()).toContain('ssh -p 2222 baneling100:my-vm@cloud.snucse.org')
   })
+
+  it('tells the command by the sshname of an instance that has one, whatever its hostname', async () => {
+    mountDialog()
+    const wrapper = await mountWizard()
+    const succeed = await deploy(wrapper)
+    await succeed({ ...instance, name: 'i-2-34-VM', displayname: 'VM-0', sshname: 'VM-0' })
+    expect(text()).toContain('ssh -p 2222 baneling100:vm-0@cloud.snucse.org')
+    expect(text()).not.toContain('i-2-34-vm')
+  })
+})
+
+describe('deploy wizard: the name of the new instance', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    jest.spyOn(console, 'log').mockImplementation(() => {})
+    jest.spyOn(console, 'warn').mockImplementation(() => {})
+    getAPI.mockImplementation((command) => command in (global.allowedApis || {})
+      ? Promise.resolve(answers(command))
+      : Promise.reject(Object.assign(new Error(command + ' is not available'), { response: { status: 432, headers: {} } })))
+  })
+
+  afterEach(() => {
+    mounted.splice(0).forEach(wrapper => wrapper.unmount())
+    jest.restoreAllMocks()
+    global.allowedApis = undefined
+    document.body.innerHTML = ''
+  })
+
+  it('is optional, and when given follows the visible-name rule, which the message of the field states', async () => {
+    const wrapper = await mountWizard()
+    const [rule] = wrapper.vm.rules.name
+    for (const fine of [undefined, null, '', 'a', 'VM-0', 'Lab-1', 'x'.repeat(30)]) {
+      await expect(rule.validator({}, fine)).resolves.toBeUndefined()
+    }
+    for (const bad of ['my vm', '-a', 'a-', 'x'.repeat(31), 'a_b', 'a.b', '인스턴스']) {
+      await expect(rule.validator({}, bad)).rejects.toBe(en['message.error.instance.name.rule'])
+    }
+  })
+
+  it('says under the field that an empty name gets VM-0, VM-1 and so on', async () => {
+    const wrapper = await mountWizard()
+    await wrapper.setData({ zoneSelected: true })
+    await flushPromises()
+    expect(wrapper.find('.ant-form-item-extra').exists()).toBe(true)
+    expect(wrapper.text()).toContain(en['message.instance.name.default'])
+  })
+
+  describe('what the submit posts', () => {
+    const submit = async (wrapper, form = {}) => {
+      await wrapper.setData({ zoneSelected: true })
+      Object.assign(wrapper.vm.form, { zoneid: 'z-1', hypervisor: 'KVM', templateid: 't-1', computeofferingid: 'so-1', startvm: true, stayonpage: true, ...form })
+      wrapper.vm.handleSubmit()
+      await flushPromises()
+      await flushPromises()
+    }
+    const posted = () => postAPI.mock.calls.filter(call => call[0] === 'deployVirtualMachine').map(call => call[1])
+
+    beforeEach(() => {
+      postAPI.mockImplementation(() => Promise.resolve({ deployvirtualmachineresponse: { jobid: 'job-1' } }))
+    })
+
+    it('is the visible name as displayname, and never as name', async () => {
+      const wrapper = await mountWizard()
+      await submit(wrapper, { name: 'my-vm' })
+      expect(posted()).toHaveLength(1)
+      expect(posted()[0]).toMatchObject({ zoneid: 'z-1', templateid: 't-1', serviceofferingid: 'so-1', displayname: 'my-vm' })
+      expect(posted()[0]).not.toHaveProperty('name')
+    })
+
+    it('is no name of either kind when none was given, so that the server picks one', async () => {
+      const wrapper = await mountWizard()
+      await submit(wrapper, { name: '' })
+      expect(posted()).toHaveLength(1)
+      expect(posted()[0]).not.toHaveProperty('name')
+      expect(posted()[0]).not.toHaveProperty('displayname')
+    })
+
+    it('is nothing when the name breaks the rule: the form says so and no request leaves', async () => {
+      const wrapper = await mountWizard()
+      await submit(wrapper, { name: 'my vm' })
+      expect(posted()).toHaveLength(0)
+      expect(wrapper.find('.ant-form-item-explain-error').text()).toBe(en['message.error.instance.name.rule'])
+    })
+  })
 })

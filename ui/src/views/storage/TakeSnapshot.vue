@@ -31,7 +31,7 @@
         layout="vertical"
         @finish="handleSubmit"
        >
-        <a-form-item :label="$t('label.name')" name="name" ref="name">
+        <a-form-item :label="$t('label.name.optional')" name="name" ref="name" :extra="$t('message.snapshot.name.default')">
           <a-input
             v-model:value="form.name"
             :placeholder="apiParams.name.description"
@@ -105,36 +105,38 @@
         <a-form-item :label="$t('label.quiescevm')" name="quiescevm" ref="quiescevm" v-if="quiescevm && hypervisorSupportsQuiesceVm">
           <a-switch v-model:checked="form.quiescevm" />
         </a-form-item>
-        <a-divider/>
-        <div class="tagsTitle">{{ $t('label.tags') }}</div>
-        <div>
-          <div v-for="(tag, index) in tags" :key="index">
-            <a-tag :key="index" :closable="true">
-              {{ tag.key }} = {{ tag.value }}
+        <template v-if="$canEditTags()">
+          <a-divider/>
+          <div class="tagsTitle">{{ $t('label.tags') }}</div>
+          <div>
+            <div v-for="(tag, index) in tags" :key="index">
+              <a-tag :key="index" :closable="true">
+                {{ tag.key }} = {{ tag.value }}
+              </a-tag>
+            </div>
+            <div v-if="inputVisible">
+              <a-input-group
+                type="text"
+                size="small"
+                @blur="handleInputConfirm"
+                @keyup.enter="handleInputConfirm"
+                compact>
+                <a-input ref="input" :value="inputKey" @change="handleKeyChange" style="width: 100px; text-align: center" :placeholder="$t('label.key')" />
+                <a-input
+                  class="tag-disabled-input"
+                  style=" width: 30px; border-left: 0; pointer-events: none; text-align: center"
+                  placeholder="="
+                  disabled />
+                <a-input :value="inputValue" @change="handleValueChange" style="width: 100px; text-align: center; border-left: 0" :placeholder="$t('label.value')" />
+                <tooltip-button :tooltip="$t('label.ok')" icon="check-outlined" size="small" @onClick="handleInputConfirm" />
+                <tooltip-button :tooltip="$t('label.cancel')" icon="close-outlined" size="small" @onClick="inputVisible=false" />
+              </a-input-group>
+            </div>
+            <a-tag v-else @click="showInput" class="btn-add-tag" style="borderStyle: dashed;">
+              <plus-outlined /> {{ $t('label.new.tag') }}
             </a-tag>
           </div>
-          <div v-if="inputVisible">
-            <a-input-group
-              type="text"
-              size="small"
-              @blur="handleInputConfirm"
-              @keyup.enter="handleInputConfirm"
-              compact>
-              <a-input ref="input" :value="inputKey" @change="handleKeyChange" style="width: 100px; text-align: center" :placeholder="$t('label.key')" />
-              <a-input
-                class="tag-disabled-input"
-                style=" width: 30px; border-left: 0; pointer-events: none; text-align: center"
-                placeholder="="
-                disabled />
-              <a-input :value="inputValue" @change="handleValueChange" style="width: 100px; text-align: center; border-left: 0" :placeholder="$t('label.value')" />
-              <tooltip-button :tooltip="$t('label.ok')" icon="check-outlined" size="small" @onClick="handleInputConfirm" />
-              <tooltip-button :tooltip="$t('label.cancel')" icon="close-outlined" size="small" @onClick="inputVisible=false" />
-            </a-input-group>
-          </div>
-          <a-tag v-else @click="showInput" class="btn-add-tag" style="borderStyle: dashed;">
-            <plus-outlined /> {{ $t('label.new.tag') }}
-          </a-tag>
-        </div>
+        </template>
         <div :span="24" class="action-button">
           <a-button
             :loading="actionLoading"
@@ -160,6 +162,7 @@ import { ref, reactive, toRaw } from 'vue'
 import { getAPI, postAPI } from '@/api'
 import { isAdmin } from '@/role'
 import { mixinForm } from '@/utils/mixin'
+import { resourceNameRule } from '@/utils/resourceName'
 import TooltipButton from '@/components/widgets/TooltipButton'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
 import ResourceIcon from '@/components/view/ResourceIcon'
@@ -229,7 +232,9 @@ export default {
         asyncbackup: undefined,
         quiescevm: false
       })
-      this.rules = reactive({})
+      this.rules = reactive({
+        name: [resourceNameRule(() => this.$t('message.error.resource.name.rule'), { optional: true })]
+      })
     },
     fetchData () {
       this.fetchZoneData()

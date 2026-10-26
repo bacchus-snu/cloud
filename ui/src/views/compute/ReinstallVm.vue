@@ -23,6 +23,7 @@
     <a-alert type="warning" show-icon>
       <template #message>
         <span style="margin-bottom: 5px" v-html="$t('message.reinstall.vm')" />
+        <p v-if="expungeOnDestroy" class="reinstall-now">{{ $t('message.reinstall.vm.now') }}</p>
       </template>
     </a-alert>
     <os-based-image-selection
@@ -110,7 +111,7 @@
         style="margin-top: 10px;"
       />
     </a-form-item>
-    <a-form-item>
+    <a-form-item v-if="!expungeOnDestroy">
       <template #label>
         <tooltip-label
           :title="$t('label.expunge')"
@@ -246,6 +247,11 @@ export default {
     },
     showAllCategoryForModernImageSelection () {
       return this.$config.showAllCategoryForModernImageSelection
+    },
+    expungeOnDestroy () {
+      return typeof this.capabilities.expungeondestroy === 'boolean'
+        ? this.capabilities.expungeondestroy
+        : this.$store.getters.features?.expungeondestroy === true
     }
   },
   methods: {
@@ -325,7 +331,9 @@ export default {
       if (this.overrideDiskSize && this.overrideRootDiskSize) {
         params.rootdisksize = this.overrideRootDiskSize
       }
-      params.expunge = this.expungeDisk
+      if (!this.expungeOnDestroy) {
+        params.expunge = this.expungeDisk
+      }
       postAPI('restoreVirtualMachine', params).then(response => {
         this.$pollJob({
           jobId: response.restorevmresponse.jobid,

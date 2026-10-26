@@ -71,7 +71,8 @@ describe('strings that students see', () => {
 
   // the term of the student docs for what the server calls an Instance
   describe('the term for an Instance', () => {
-    const VM = /(?<![A-Za-z])VM(?![A-Za-z])/
+    // VM-0, VM-1 ... are the names an instance gets when its owner gives none, not the abbreviation
+    const VM = /(?<![A-Za-z])VM(?![A-Za-z]|-\d)/
     // a virtual machine of the platform itself, which keeps its name
     const SYSTEM_VM = /(시스템|콘솔 프록시|2차 스토리지|LB|라우터) VM/
     // strings whose English names an Instance but whose Korean names such a machine

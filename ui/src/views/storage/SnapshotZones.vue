@@ -182,32 +182,32 @@
     </a-modal>
 
     <a-modal
-      :title="selectedItems.length > 0 && showTable ? $t(message.title) : $t('label.action.delete.snapshot')"
+      :title="bulkDelete ? $t(message.title) : $t('label.action.delete.snapshot')"
       :visible="showDeleteSnapshot"
       :closable="true"
       :maskClosable="false"
       :footer="null"
       :width="showTable ? modalWidth : '30vw'"
-      @ok="selectedItems.length > 0 ? deleteSnapshots() : deleteSnapshot(currentRecord)"
+      @ok="submitDelete"
       @cancel="onCloseModal"
       :ok-button-props="getOkProps()"
       :cancel-button-props="getCancelProps()"
       :confirmLoading="deleteLoading"
       centered>
-      <div v-ctrl-enter="deleteSnapshot">
-        <div v-if="selectedRowKeys.length > 0">
+      <div v-ctrl-enter="submitDelete">
+        <div v-if="bulkDelete">
           <a-alert type="error">
             <template #message>
               <exclamation-circle-outlined style="color: red; fontSize: 30px; display: inline-flex" />
-              <span style="padding-left: 5px" v-html="`<b>` + $t('label.items.selected.count', { count: selectedRowKeys.length }) + `. </b>`" />
+              <span style="padding-left: 5px" v-html="`<b>` + $t('label.items.selected.count', { count: selectedItems.length }) + `. </b>`" />
               <span v-html="$t(message.confirmMessage)" />
             </template>
           </a-alert>
         </div>
-        <a-alert v-else :message="$t('message.action.delete.snapshot')" type="warning" />
+        <a-alert v-else :message="$t(copyDeleteMessage)" type="warning" />
         <br />
         <a-table
-          v-if="selectedRowKeys.length > 0 && showTable"
+          v-if="bulkDelete"
           size="middle"
           :columns="selectedColumns"
           :dataSource="selectedItems"
@@ -215,10 +215,14 @@
           :pagination="true"
           style="overflow-y: auto">
         </a-table>
+        <confirm-input
+          v-model:value="confirmText"
+          :mode="bulkDelete ? 'count' : 'name'"
+          :expected="bulkDelete ? selectedItems.length : confirmationName(resource)" />
         <a-spin :spinning="deleteLoading">
           <div :span="24" class="action-button">
             <a-button @click="onCloseModal">{{ $t('label.cancel') }}</a-button>
-            <a-button type="primary" ref="submit" @click="deleteSnapshot">{{ $t('label.ok') }}</a-button>
+            <a-button type="primary" ref="submit" :disabled="!confirmed" @click="submitDelete">{{ $t('label.ok') }}</a-button>
           </div>
         </a-spin>
       </div>
@@ -242,7 +246,9 @@ import TooltipButton from '@/components/widgets/TooltipButton'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
 import BulkActionProgress from '@/components/view/BulkActionProgress'
 import Status from '@/components/widgets/Status'
+import ConfirmInput from '@/components/widgets/ConfirmInput'
 import eventBus from '@/config/eventBus'
+import { confirmationName, matchesConfirmation, matchesCount } from '@/utils/confirmation'
 
 export default {
   name: 'SnapshotZones',
@@ -252,7 +258,8 @@ export default {
     OsLogo,
     ResourceIcon,
     BulkActionProgress,
-    Status
+    Status,
+    ConfirmInput
   },
   props: {
     resource: {
@@ -293,7 +300,8 @@ export default {
         confirmMessage: this.$t('label.confirm.delete.snapshot.zones')
       },
       modalWidth: '30vw',
-      showTable: false
+      showTable: false,
+      confirmText: ''
     }
   },
   beforeCreate () {
@@ -338,6 +346,17 @@ export default {
     }
   },
   computed: {
+    bulkDelete () {
+      return this.selectedItems.length > 0 && this.showTable
+    },
+    confirmed () {
+      return this.bulkDelete
+        ? matchesCount(this.confirmText, this.selectedItems.length)
+        : matchesConfirmation(this.confirmText, confirmationName(this.resource))
+    },
+    copyDeleteMessage () {
+      return this.dataSource.length > 1 ? 'message.action.delete.snapshot.copy' : 'message.action.delete.snapshot'
+    },
     isCopySnapshotSubmitDisabled () {
       return this.form.storageid.length === 0 && this.form.zoneid.length === 0
     },
@@ -472,6 +491,15 @@ export default {
         this.deleteSnapshot(snapshot)
       }
     },
+    confirmationName,
+    submitDelete () {
+      if (!this.confirmed) return
+      if (this.bulkDelete) {
+        this.deleteSnapshots()
+      } else {
+        this.deleteSnapshot(this.currentRecord)
+      }
+    },
     deleteSnapshot (snapshot) {
       if (!snapshot.id) {
         snapshot = this.currentRecord
@@ -564,6 +592,7 @@ export default {
     },
     onShowDeleteModal (record) {
       this.forcedDelete = false
+      this.confirmText = ''
       this.currentRecord = record
       this.showDeleteSnapshot = true
       if (this.showConfirmationAction) {

@@ -156,7 +156,7 @@ describe('deploy wizard API guards', () => {
     expect(withAffinity.html()).toContain('label.affinity.groups')
   })
 
-  it('wizard offers Template and Volume images only', async () => {
+  it('wizard offers Template, Volume and Snapshot images, and Snapshot only while the deployment does not hide it', async () => {
     const typesFor = (apis, config) => {
       const store = common.createMockStore({ user: { apis: apiMap(apis), info: { roletype: 'User' }, features: {} } })
       const wrapper = common.createFactory(OsBasedImageSelection, {
@@ -175,9 +175,12 @@ describe('deploy wizard API guards', () => {
       return wrapper.findAll('.ant-radio-button-wrapper input').map(input => input.element.value)
     }
 
-    expect(typesFor(minimalUser.apis, deployedConfig)).toEqual(['templateid', 'volumeid'])
+    expect(typesFor(minimalUser.apis, deployedConfig)).toEqual(['templateid', 'volumeid', 'snapshotid'])
     // a list the role cannot call removes its type; the snapshot type is the config's to hide
     expect(typesFor([...minimalUser.apis, 'listIsos'], { ...deployedConfig, hidden: {} })).toEqual(['templateid', 'isoid', 'volumeid', 'snapshotid'])
-    expect(typesFor(minimalUser.apis.filter(api => api !== 'listVolumes'), deployedConfig)).toEqual(['templateid'])
+    const hiding = { ...deployedConfig, hidden: { User: { deploy: ['imagetype.snapshotid'] } } }
+    expect(typesFor(minimalUser.apis, hiding)).toEqual(['templateid', 'volumeid'])
+    expect(typesFor(minimalUser.apis.filter(api => api !== 'listSnapshots'), deployedConfig)).toEqual(['templateid', 'volumeid'])
+    expect(typesFor(minimalUser.apis.filter(api => api !== 'listVolumes'), deployedConfig)).toEqual(['templateid', 'snapshotid'])
   })
 })

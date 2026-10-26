@@ -231,6 +231,7 @@
 import { ref, reactive, toRaw } from 'vue'
 import { getAPI, postAPI } from '@/api'
 import { mixinForm } from '@/utils/mixin'
+import { resourceNameRule } from '@/utils/resourceName'
 import { isAdmin } from '@/role'
 import ResourceIcon from '@/components/view/ResourceIcon'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
@@ -330,8 +331,11 @@ export default {
         this.rules.virtualmachineid = [{ required: true, message: this.$t('message.error.select') }]
         this.rules.deviceid = [{ required: true, message: this.$t('message.error.select') }]
       }
-      if (!this.createVolumeFromSnapshot) {
-        this.rules.name = [{ required: true, message: this.$t('message.error.volume.name') }]
+      const nameRule = resourceNameRule(() => this.$t('message.error.resource.name.rule'), { optional: true })
+      if (this.createVolumeFromSnapshot) {
+        this.rules.name = [nameRule]
+      } else {
+        this.rules.name = [{ required: true, message: this.$t('message.error.volume.name') }, nameRule]
         this.rules.diskofferingid = [{ required: true, message: this.$t('message.error.select') }]
       }
     },

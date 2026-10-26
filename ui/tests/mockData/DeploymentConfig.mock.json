@@ -11,7 +11,11 @@
       "opensuse": "opensuse",
       "arch": "arch",
       "alpine": "alpine"
-    }
+    },
+    "guestPatterns": [
+      "[a-z][a-z0-9]{1,19}",
+      "[a-z0-9._-]+@bacchus\\.snucse\\.org"
+    ]
   },
   "docHelpMappings": {
     "adminguide/virtual_machines.html": "instance.html",
@@ -48,7 +52,6 @@
         "vpc"
       ],
       "deploy": [
-        "imagetype.snapshotid",
         "dynamicscalingenabled",
         "keyboard"
       ],

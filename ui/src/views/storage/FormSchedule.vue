@@ -206,36 +206,38 @@
               </a-form-item>
             </a-col>
           </a-row>
-          <a-divider/>
-          <div class="tagsTitle">{{ $t('label.tags') }}</div>
-          <div>
-            <div v-for="(tag, index) in tags" :key="index">
-              <a-tag :key="index" :closable="'deleteTags' in $store.getters.apis" @close="() => handleDeleteTag(tag)">
-                {{ tag.key }} = {{ tag.value }}
+          <template v-if="$canEditTags()">
+            <a-divider/>
+            <div class="tagsTitle">{{ $t('label.tags') }}</div>
+            <div>
+              <div v-for="(tag, index) in tags" :key="index">
+                <a-tag :key="index" :closable="'deleteTags' in $store.getters.apis" @close="() => handleDeleteTag(tag)">
+                  {{ tag.key }} = {{ tag.value }}
+                </a-tag>
+              </div>
+              <div v-if="inputVisible">
+                <a-input-group
+                  type="text"
+                  size="small"
+                  @blur="handleInputConfirm"
+                  @keyup.enter="handleInputConfirm"
+                  compact>
+                  <a-input ref="input" :value="inputKey" @change="handleKeyChange" style="width: 100px; text-align: center" :placeholder="$t('label.key')" />
+                  <a-input
+                    class="tag-disabled-input"
+                    style=" width: 30px; border-left: 0; pointer-events: none; text-align: center"
+                    placeholder="="
+                    disabled />
+                  <a-input :value="inputValue" @change="handleValueChange" style="width: 100px; text-align: center; border-left: 0" :placeholder="$t('label.value')" />
+                  <tooltip-button :tooltip="$t('label.ok')" icon="check-outlined" size="small" @onClick="handleInputConfirm" />
+                  <tooltip-button :tooltip="$t('label.cancel')" icon="close-outlined" size="small" @onClick="inputVisible=false" />
+                </a-input-group>
+              </div>
+              <a-tag v-else @click="showInput" class="btn-add-tag" style="borderStyle: dashed;">
+                <plus-outlined /> {{ $t('label.new.tag') }}
               </a-tag>
             </div>
-            <div v-if="inputVisible">
-              <a-input-group
-                type="text"
-                size="small"
-                @blur="handleInputConfirm"
-                @keyup.enter="handleInputConfirm"
-                compact>
-                <a-input ref="input" :value="inputKey" @change="handleKeyChange" style="width: 100px; text-align: center" :placeholder="$t('label.key')" />
-                <a-input
-                  class="tag-disabled-input"
-                  style=" width: 30px; border-left: 0; pointer-events: none; text-align: center"
-                  placeholder="="
-                  disabled />
-                <a-input :value="inputValue" @change="handleValueChange" style="width: 100px; text-align: center; border-left: 0" :placeholder="$t('label.value')" />
-                <tooltip-button :tooltip="$t('label.ok')" icon="check-outlined" size="small" @onClick="handleInputConfirm" />
-                <tooltip-button :tooltip="$t('label.cancel')" icon="close-outlined" size="small" @onClick="inputVisible=false" />
-              </a-input-group>
-            </div>
-            <a-tag v-else @click="showInput" class="btn-add-tag" style="borderStyle: dashed;">
-              <plus-outlined /> {{ $t('label.new.tag') }}
-            </a-tag>
-          </div>
+          </template>
           <div :span="24" class="action-button">
             <a-button
               :loading="actionLoading"

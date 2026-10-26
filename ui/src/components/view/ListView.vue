@@ -102,7 +102,7 @@
           </span>
           <span v-if="record.hasannotations">
             <span v-if="record.id">
-              <router-link :to="{ path: $route.path + '/' + record.id }">{{ text }}</router-link>
+              <router-link :to="{ path: $route.path + '/' + record.id }">{{ nameText(record, text) }}</router-link>
               <router-link :to="{ path: $route.path + '/' + record.id, query: { tab: 'comments' } }"><message-filled
                   style="padding-left: 10px"
                   size="small"
@@ -161,7 +161,7 @@
             >{{ $t(text.toLowerCase()) }}</router-link>
           </span>
           <span v-else>
-            <router-link :to="{ path: $route.path + '/' + encodeURIComponent(record.id) }" v-if="record.id">{{ text }}</router-link>
+            <router-link :to="{ path: $route.path + '/' + encodeURIComponent(record.id) }" v-if="record.id">{{ nameText(record, text) }}</router-link>
             <router-link :to="{ path: $route.path + '/' + record.name }" v-else>{{ text }}</router-link>
             <span v-if="['guestnetwork','vpc'].includes($route.path.split('/')[1]) && record.restartrequired && !record.vpcid">
               &nbsp;
@@ -1204,6 +1204,9 @@ export default {
     }
   },
   methods: {
+    nameText (record, text) {
+      return ['vm', 'vnfapp'].includes(this.$route.path.split('/')[1]) && record.displayname ? record.displayname : text
+    },
     isTungstenPath () {
       return ['/tungstennetworkroutertable', '/tungstenpolicy', '/tungsteninterfaceroutertable',
         '/tungstenpolicyset', '/tungstenroutingpolicy', '/firewallrule', '/tungstenfirewallpolicy'].includes(this.$route.path)

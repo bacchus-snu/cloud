@@ -702,7 +702,7 @@
                 <template #description v-if="zoneSelected">
                   <div style="margin-top: 15px">
                     {{ $t('message.vm.review.launch') }}
-                    <a-form-item :label="$t('label.name.optional')" name="name" ref="name">
+                    <a-form-item :label="$t('label.name.optional')" name="name" ref="name" :extra="$t('message.instance.name.default')">
                       <a-input v-model:value="form.name" />
                     </a-form-item>
                     <a-form-item :label="$t('label.group.optional')" name="group" ref="group">
@@ -778,7 +778,7 @@
 <script>
 import { ref, reactive, toRaw, nextTick } from 'vue'
 import { getAPI, postAPI } from '@/api'
-import { accessNotice } from '@/utils/instanceAccess'
+import { accessNotice, instanceNameParams, instanceNameRule } from '@/utils/instanceAccess'
 import _ from 'lodash'
 import { mixin, mixinDevice } from '@/utils/mixin.js'
 import store from '@/store'
@@ -1479,7 +1479,8 @@ export default {
       this.form = reactive({})
       this.rules = reactive({
         zoneid: [{ required: true, message: `${this.$t('message.error.select')}` }],
-        hypervisor: [{ required: true, message: `${this.$t('message.error.select')}` }]
+        hypervisor: [{ required: true, message: `${this.$t('message.error.select')}` }],
+        name: [instanceNameRule(() => this.$t('message.error.instance.name.rule'))]
       })
 
       if (this.zoneSelected) {
@@ -1976,10 +1977,7 @@ export default {
         // step 7: select ssh key pair
         deployVmData.keypairs = this.sshKeyPairs.join(',')
 
-        if (values.name) {
-          deployVmData.name = values.name
-          deployVmData.displayname = values.name
-        }
+        Object.assign(deployVmData, instanceNameParams(values.name))
         if (values.group) {
           deployVmData.group = values.group
         }

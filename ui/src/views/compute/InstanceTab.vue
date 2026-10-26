@@ -25,6 +25,9 @@
       <a-tab-pane :tab="$t('label.details')" key="details">
         <DetailsTab :resource="dataResource" :loading="loading" />
       </a-tab-pane>
+      <a-tab-pane :tab="$t('label.ssh.guests')" key="sshguests" v-if="sshGuestsShown">
+        <SshGuestsTab :resource="dataResource" />
+      </a-tab-pane>
       <a-tab-pane :tab="$t('label.metrics')" key="stats" v-if="'listVirtualMachinesUsageHistory' in $store.getters.apis">
         <StatsTab :resource="resource"/>
       </a-tab-pane>
@@ -168,6 +171,7 @@ import AnnotationsTab from '@/components/view/AnnotationsTab'
 import VolumesTab from '@/components/view/VolumesTab.vue'
 import SecurityGroupSelection from '@views/compute/wizard/SecurityGroupSelection'
 import GPUTab from '@/components/view/GPUTab.vue'
+import SshGuestsTab from '@/views/compute/SshGuestsTab.vue'
 
 export default {
   name: 'InstanceTab',
@@ -180,6 +184,7 @@ export default {
     CreateVolume,
     NicsTab,
     GPUTab,
+    SshGuestsTab,
     ResourceSchedules,
     ListResourceTable,
     SecurityGroupSelection,
@@ -242,6 +247,10 @@ export default {
     this.setCurrentTab()
   },
   computed: {
+    sshGuestsShown () {
+      const apis = this.$store.getters.apis
+      return !!this.$config?.instanceAccess?.sshHost && ['listTags', 'createTags', 'deleteTags'].every(api => api in apis)
+    },
     attachedIsos () {
       if (this.vm.isos && this.vm.isos.length > 0) {
         return [...this.vm.isos].sort((a, b) => (a.deviceseq || 0) - (b.deviceseq || 0))

@@ -30,7 +30,7 @@
           <span v-html="$t('message.restart.vm.to.update.settings')" />
         </template>
       </a-alert>
-      <a-form-item name="name" ref="name">
+      <a-form-item name="name" ref="name" v-if="canEditHostname">
         <template #label>
           <tooltip-label :title="$t('label.name')" :tooltip="apiParams.name.description"/>
         </template>
@@ -42,7 +42,8 @@
         <template #label>
           <tooltip-label :title="$t('label.displayname')" :tooltip="apiParams.displayname.description"/>
         </template>
-        <a-input v-model:value="form.displayname" />
+        <a-input v-model:value="form.displayname" v-focus="!canEditHostname" />
+        <div class="instance-rename-help" v-if="resource.sshname" v-html="$t('message.instance.rename.ssh')" />
       </a-form-item>
       <a-form-item name="ostypeid" ref="ostypeid" v-if="'listOsTypes' in $store.getters.apis">
         <template #label>
@@ -169,6 +170,7 @@ import { ref, reactive, toRaw } from 'vue'
 import { getAPI, postAPI } from '@/api'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
 import { SET_LEASE_API } from '@/utils/lease'
+import { isValidVisibleName } from '@/utils/instanceAccess'
 
 export default {
   name: 'EditVM',
@@ -217,6 +219,9 @@ export default {
     }
   },
   computed: {
+    canEditHostname () {
+      return this.$store.getters.userInfo?.roletype === 'Admin'
+    },
     extraConfigEnabled () {
       return this.$store.getters.features.additionalconfigenabled
     },
@@ -253,7 +258,8 @@ export default {
         extraconfig: this.combinedExtraConfig
       })
       this.rules = reactive({
-        leaseduration: [this.naturalNumberRule]
+        leaseduration: [this.naturalNumberRule],
+        displayname: [{ validator: this.validateDisplayName }]
       })
       this.showLeaseOptions = this.isLeaseEditable
     },
@@ -421,8 +427,12 @@ export default {
         const values = toRaw(this.form)
         const params = {}
         params.id = this.resource.id
-        params.name = values.name
-        params.displayname = values.displayname
+        if (this.canEditHostname && values.name !== this.resource.name) {
+          params.name = values.name
+        }
+        if (values.displayname !== this.resource.displayname) {
+          params.displayname = values.displayname
+        }
         params.ostypeid = values.ostypeid
         if (this.securityGroupsEnabled && Array.isArray(values.securitygroupids) && values.securitygroupids.length > 0) {
           params.securitygroupids = values.securitygroupids
@@ -457,7 +467,7 @@ export default {
 
         postAPI('updateVirtualMachine', params).then(json => {
           this.$message.success({
-            content: `${this.$t('label.action.edit.instance')} - ${values.name}`,
+            content: `${this.$t('label.action.edit.instance')} - ${values.displayname || values.name}`,
             duration: 2
           })
           this.$emit('refresh-data')
@@ -481,6 +491,13 @@ export default {
         this.form.leaseexpiryaction = this.leaseexpiryaction
       }
     },
+    // a name given before the rule existed stays as it is until it is changed
+    async validateDisplayName (rule, value) {
+      if (value !== this.resource.displayname && !isValidVisibleName(value)) {
+        return Promise.reject(this.$t('message.error.instance.name.rule'))
+      }
+      return Promise.resolve()
+    },
     async validateNumber (rule, value) {
       if (value && (isNaN(value) || value <= 0)) {
         return Promise.reject(this.$t('message.error.number'))
@@ -492,6 +509,12 @@ export default {
 </script>
 
 <style scoped lang="less">
+.instance-rename-help {
+  margin-top: 4px;
+  opacity: 0.65;
+  font-size: 12px;
+}
+
 .form-layout {
   width: 80vw;
 

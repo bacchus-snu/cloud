@@ -172,6 +172,7 @@ import { ref, reactive, toRaw } from 'vue'
 import { getAPI } from '@/api'
 import { axios } from '../../utils/request'
 import { mixinForm } from '@/utils/mixin'
+import { resourceNameRule } from '@/utils/resourceName'
 import { probeSsvmCert } from '@/utils/ssvmProbe'
 import ResourceIcon from '@/components/view/ResourceIcon'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
@@ -249,7 +250,7 @@ export default {
       })
       this.rules = reactive({
         file: [{ required: true, message: this.$t('message.error.required.input') }],
-        name: [{ required: true, message: this.$t('message.error.volume.name') }],
+        name: [{ required: true, message: this.$t('message.error.volume.name') }, resourceNameRule(() => this.$t('message.error.resource.name.rule'), { optional: true })],
         zoneId: [{ required: true, message: this.$t('message.error.select') }]
       })
     },

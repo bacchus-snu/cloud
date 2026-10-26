@@ -33,6 +33,22 @@ export function fetchCapabilities (domainid) {
   return getAPI('listCapabilities', domainid ? { domainid } : {}).then(json => json.listcapabilitiesresponse.capability || {})
 }
 
+export const CAPABILITY_WAIT_MS = 2000
+
+/** The capabilities, or nothing when the server fails or does not answer within the wait. */
+export function fetchCapabilitiesWithin (waitMs, domainid) {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve({}), waitMs)
+    fetchCapabilities(domainid).then(capabilities => {
+      clearTimeout(timer)
+      resolve(capabilities)
+    }, () => {
+      clearTimeout(timer)
+      resolve({})
+    })
+  })
+}
+
 /** Whether the server says the caller may ask for the automatic migration of a volume. */
 export function automigrateAllowed (features) {
   return !!features && features.automigrateallowed === true
@@ -73,6 +89,18 @@ export function isMoveRequired (failure) {
   return Object.values(data || {}).some(body => body && Number(body.cserrorcode) === VOLUME_MOVE_REQUIRED)
 }
 
+/** The checkPlacement combination of a new Instance whose root disk is made from a snapshot: judged as a new Instance, never as a move. */
+export function snapshotPlacementRequest ({ snapshotid, serviceofferingid, zoneid, datadisksizes }) {
+  const request = { snapshotid, serviceofferingid }
+  if (zoneid) {
+    request.zoneid = zoneid
+  }
+  if (datadisksizes) {
+    request.datadisksizes = datadisksizes
+  }
+  return request
+}
+
 /** The kind of a checkPlacement request, or null while the request lacks what the server needs. */
 export function placementKind (request) {
   const r = request || {}
@@ -84,6 +112,9 @@ export function placementKind (request) {
   }
   if (r.volumeid && r.serviceofferingid) {
     return 'deploy-from-volume'
+  }
+  if (r.snapshotid && r.serviceofferingid) {
+    return 'deploy-from-snapshot'
   }
   if (r.templateid && r.serviceofferingid && r.zoneid) {
     return 'deploy'

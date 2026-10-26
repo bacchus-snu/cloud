@@ -1005,7 +1005,7 @@
               <div class="title">{{ $t('label.tags') }}</div>
               <div>
                 <template v-for="(tag, index) in tags" :key="index">
-                  <a-tag :closable="isAdminOrOwner() && 'deleteTags' in $store.getters.apis" @close="() => handleDeleteTag(tag)">
+                  <a-tag :closable="$canEditTags() && isAdminOrOwner() && 'deleteTags' in $store.getters.apis" @close="() => handleDeleteTag(tag)">
                     {{ tag.key }} = {{ tag.value }}
                   </a-tag>
                 </template>
@@ -1032,7 +1032,7 @@
                   @click="showInput"
                   class="btn-add-tag"
                   style="borderStyle: dashed;"
-                  v-else-if="isAdminOrOwner() && 'createTags' in $store.getters.apis">
+                  v-else-if="$canEditTags() && isAdminOrOwner() && 'createTags' in $store.getters.apis">
                   <plus-outlined  /> {{ $t('label.new.tag') }}
                 </a-tag>
               </div>
@@ -1065,7 +1065,7 @@ import ImageDeployInstanceButton from '@/components/view/ImageDeployInstanceButt
 import LeaseCountdown from '@/components/view/LeaseCountdown'
 import { isHourLease, remainingLeaseDaysText } from '@/utils/lease'
 import { showCpuSpeed } from '@/utils/uiConfig'
-import { sshCommand, loginAccount } from '@/utils/instanceAccess'
+import { sshCommand, sshTarget, loginAccount } from '@/utils/instanceAccess'
 import { FileTextOutlined } from '@ant-design/icons-vue'
 
 export default {
@@ -1163,7 +1163,11 @@ export default {
     eventBus.on('handle-close', (showModal) => {
       this.showUploadModal(showModal)
     })
+    eventBus.on('resource-tags-changed', this.onResourceTagsChanged)
     this.updateResourceAdditionalData()
+  },
+  beforeUnmount () {
+    eventBus.off('resource-tags-changed', this.onResourceTagsChanged)
   },
   computed: {
     cpuSpeedShown () {
@@ -1174,7 +1178,7 @@ export default {
     },
     sshCommandText () {
       return this.isExistingInstance
-        ? sshCommand(this.$config?.instanceAccess, this.$store.getters.userInfo?.username, this.resource.name)
+        ? sshCommand(this.$config?.instanceAccess, this.$store.getters.userInfo?.username, sshTarget(this.resource))
         : null
     },
     loginAccountName () {
@@ -1356,6 +1360,11 @@ export default {
         }
         this.$emit('change-resource', this.newResource)
       })
+    },
+    onResourceTagsChanged (resourceId) {
+      if (resourceId && resourceId === this.resource?.id && this.tagsSupportingResourceTypes.includes(this.resourceType)) {
+        this.getTags()
+      }
     },
     getTags () {
       if (!('listTags' in this.$store.getters.apis) || !this.resource || !this.resource.id) {

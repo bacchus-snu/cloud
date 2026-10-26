@@ -753,7 +753,7 @@
                 <template #description v-if="zoneSelected">
                   <div style="margin-top: 15px">
                     {{ $t('message.vm.review.launch') }}
-                    <a-form-item :label="$t('label.name.optional')" name="name" ref="name">
+                    <a-form-item :label="$t('label.name.optional')" name="name" ref="name" :extra="$t('message.instance.name.default')">
                       <a-input v-model:value="form.name" />
                     </a-form-item>
                     <a-form-item :label="$t('label.group.optional')" name="group" ref="group">
@@ -866,6 +866,7 @@ import UserDataSelection from '@views/compute/wizard/UserDataSelection'
 import SecurityGroupSelection from '@views/compute/wizard/SecurityGroupSelection'
 import VnfNicsSelection from '@views/compute/wizard/VnfNicsSelection.vue'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
+import { instanceNameParams, instanceNameRule } from '@/utils/instanceAccess'
 import InstanceNicsNetworkSelectListView from '@/components/view/InstanceNicsNetworkSelectListView.vue'
 
 export default {
@@ -1565,7 +1566,8 @@ export default {
       this.form = reactive({})
       this.rules = reactive({
         zoneid: [{ required: true, message: `${this.$t('message.error.select')}` }],
-        hypervisor: [{ required: true, message: `${this.$t('message.error.select')}` }]
+        hypervisor: [{ required: true, message: `${this.$t('message.error.select')}` }],
+        name: [instanceNameRule(() => this.$t('message.error.instance.name.rule'))]
       })
 
       if (this.zoneSelected) {
@@ -2319,10 +2321,7 @@ export default {
           createVnfAppData.userdataid = values.userdataid
         }
 
-        if (values.name) {
-          createVnfAppData.name = values.name
-          createVnfAppData.displayname = values.name
-        }
+        Object.assign(createVnfAppData, instanceNameParams(values.name))
         if (values.group) {
           createVnfAppData.group = values.group
         }

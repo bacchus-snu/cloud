@@ -15,12 +15,42 @@
 // specific language governing permissions and limitations
 // under the License.
 
-export function sshCommand (access, username, instanceName) {
+// The bastion target of an instance: the name the server gives for it under the per-account naming scheme, else its name.
+export function sshTarget (vm) {
+  return vm?.sshname || vm?.name || undefined
+}
+
+// `account` is the VM-local account a guest enters as; the owner leaves it out and gets the instance's login account.
+export function sshCommand (access, username, instanceName, account) {
   if (!access?.sshHost || !username || !instanceName) {
     return null
   }
   const port = access.sshPort ? `-p ${access.sshPort} ` : ''
-  return `ssh ${port}${username}:${String(instanceName).toLowerCase()}@${access.sshHost}`
+  const local = account ? `:${account}` : ''
+  return `ssh ${port}${username}:${String(instanceName).toLowerCase()}${local}@${access.sshHost}`
+}
+
+export function guestSshCommand (access, vm, account) {
+  return account ? sshCommand(access, '<ID>', sshTarget(vm), account) : null
+}
+
+// A new instance is named by its visible name alone; the server picks the hostname.
+export function instanceNameParams (name) {
+  return name ? { displayname: name } : {}
+}
+
+export const VISIBLE_NAME_MAX = 30
+
+export function isValidVisibleName (name) {
+  return typeof name === 'string' && name.length <= VISIBLE_NAME_MAX && /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(name)
+}
+
+// The message is a function so that it is read in the language of the moment the name is checked. An empty name passes
+// because the name of a new instance is optional.
+export function instanceNameRule (message) {
+  return {
+    validator: async (rule, value) => value && !isValidVisibleName(value) ? Promise.reject(message()) : Promise.resolve()
+  }
 }
 
 // A template belongs to the family named by its name in lower case up to the first dash.
@@ -35,7 +65,7 @@ export function loginAccount (access, templateName) {
 
 // What the instance access dialog shows for a newly created instance, or null when there is nothing to show.
 export function accessNotice (access, username, vm) {
-  const command = sshCommand(access, username, vm?.name)
+  const command = sshCommand(access, username, sshTarget(vm))
   if (!command && !vm?.password) {
     return null
   }

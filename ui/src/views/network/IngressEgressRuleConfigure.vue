@@ -143,7 +143,7 @@
           <div v-else>{{ text }}</div>
         </template>
         <template v-if="column.key === 'actions'">
-          <tooltip-button :tooltip="$t('label.edit.tags')" icon="tag-outlined" buttonClass="rule-action" @onClick="() => openTagsModal(record)" />
+          <tooltip-button v-if="$canEditTags()" :tooltip="$t('label.edit.tags')" icon="tag-outlined" buttonClass="rule-action" @onClick="() => openTagsModal(record)" />
           <a-popconfirm
             :title="$t('label.delete') + '?'"
             @confirm="handleDeleteRule(record)"

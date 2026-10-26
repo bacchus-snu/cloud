@@ -176,7 +176,7 @@
         <template v-if="column.key === 'actions'">
           <div class="actions">
             <tooltip-button :tooltip="$t('label.edit')" icon="edit-outlined" @onClick="() => openEditRuleModal(record)" />
-            <tooltip-button :tooltip="$t('label.edit.tags')" :disabled="!('updateLoadBalancerRule' in $store.getters.apis)" icon="tag-outlined" @onClick="() => openTagsModal(record.id)" />
+            <tooltip-button v-if="$canEditTags()" :tooltip="$t('label.edit.tags')" :disabled="!('updateLoadBalancerRule' in $store.getters.apis)" icon="tag-outlined" @onClick="() => openTagsModal(record.id)" />
             <a-popconfirm
               :title="$t('label.delete') + '?'"
               @confirm="handleDeleteRule(record)"

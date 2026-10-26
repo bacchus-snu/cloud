@@ -58,6 +58,8 @@
     "scaleVirtualMachine",
     "startVirtualMachine",
     "stopVirtualMachine",
-    "updateVirtualMachine"
+    "updateSnapshot",
+    "updateVirtualMachine",
+    "updateVolume"
   ]
 }

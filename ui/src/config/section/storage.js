@@ -19,6 +19,8 @@ import { shallowRef, defineAsyncComponent } from 'vue'
 import store from '@/store'
 import { isZoneCreated } from '@/utils/zone'
 import { isAdmin } from '@/role'
+import { canDeployFromSnapshot, canDeployFromVolume } from '@/utils/deployImages'
+import { resourceNameRule } from '@/utils/resourceName'
 
 export default {
   name: 'storage',
@@ -147,7 +149,7 @@ export default {
           icon: 'rocket-outlined',
           label: 'label.action.deploy.from.volume',
           dataView: true,
-          show: (record) => { return record.state === 'Ready' && !record.virtualmachineid && !!record.templateid },
+          show: (record) => { return canDeployFromVolume(record) },
           navigate: (record) => { return { path: '/action/deployVirtualMachine', query: { volumeid: record.id, zoneid: record.zoneid } } }
         },
         {
@@ -163,7 +165,11 @@ export default {
           icon: 'edit-outlined',
           label: 'label.edit',
           dataView: true,
+          show: (record, store) => { return store.userInfo.roletype !== 'User' },
           args: ['name', 'deleteprotection'],
+          fieldRules: {
+            name: (vm) => [resourceNameRule(() => vm.$t('message.error.resource.name.rule'), { optional: true, unchanged: vm.resource?.name })]
+          },
           mapping: {
             account: {
               value: (record) => { return record.account }
@@ -172,6 +178,15 @@ export default {
               value: (record) => { return record.domainid }
             }
           }
+        },
+        {
+          api: 'updateVolume',
+          icon: 'form-outlined',
+          label: 'label.rename',
+          dataView: true,
+          show: (record) => { return !['Destroy', 'Destroyed', 'Expunging', 'Expunged'].includes(record.state) },
+          popup: true,
+          component: shallowRef(defineAsyncComponent(() => import('@/views/storage/RenameResource.vue')))
         },
         {
           api: 'createSnapshot',
@@ -299,15 +314,18 @@ export default {
           message: 'message.action.recover.volume',
           dataView: true,
           show: (record, store) => {
-            return (['Admin', 'DomainAdmin'].includes(store.userInfo.roletype) || store.features.allowuserexpungerecovervolume) && record.state === 'Destroy'
+            return !store.features.expungeondestroy &&
+              (['Admin', 'DomainAdmin'].includes(store.userInfo.roletype) || store.features.allowuserexpungerecovervolume) && record.state === 'Destroy'
           }
         },
         {
           api: 'deleteVolume',
           icon: 'delete-outlined',
           label: 'label.action.delete.volume',
-          message: 'message.action.delete.volume',
+          message: (record, features) => { return features.expungeondestroy ? 'message.action.delete.volume.now' : 'message.action.delete.volume' },
+          freshCapabilities: true,
           dataView: true,
+          requireNameConfirmation: true,
           show: (record, store) => {
             return ['Expunging', 'Expunged', 'UploadError'].includes(record.state) ||
                 ['Allocated', 'Uploaded'].includes(record.state) && !record.virtualmachineid ||
@@ -321,10 +339,12 @@ export default {
           api: 'destroyVolume',
           icon: 'delete-outlined',
           label: 'label.action.destroy.volume',
-          message: 'message.action.destroy.volume',
+          message: (record, features) => { return features.expungeondestroy ? 'message.action.destroy.volume.now' : 'message.action.destroy.volume' },
+          freshCapabilities: true,
           dataView: true,
+          requireNameConfirmation: true,
           args: (record, store) => {
-            return (['Admin'].includes(store.userInfo.roletype) || store.features.allowuserexpungerecovervolume)
+            return !store.features.expungeondestroy && (['Admin'].includes(store.userInfo.roletype) || store.features.allowuserexpungerecovervolume)
               ? ['expunge'] : []
           },
           show: (record, store) => {
@@ -414,6 +434,23 @@ export default {
           component: shallowRef(defineAsyncComponent(() => import('@/views/storage/CreateVolume.vue')))
         },
         {
+          api: 'deployVirtualMachine',
+          icon: 'rocket-outlined',
+          label: 'label.action.deploy.from.snapshot',
+          dataView: true,
+          show: (record) => { return canDeployFromSnapshot(record) },
+          navigate: (record) => { return { path: '/action/deployVirtualMachine', query: { snapshotid: record.id, zoneid: record.zoneid } } }
+        },
+        {
+          api: 'updateSnapshot',
+          icon: 'form-outlined',
+          label: 'label.rename',
+          dataView: true,
+          show: (record) => { return record.state !== 'Destroyed' },
+          popup: true,
+          component: shallowRef(defineAsyncComponent(() => import('@/views/storage/RenameResource.vue')))
+        },
+        {
           api: 'revertSnapshot',
           icon: 'sync-outlined',
           label: 'label.action.revert.snapshot',
@@ -447,6 +484,7 @@ export default {
           label: 'label.action.delete.snapshot',
           message: 'message.action.delete.snapshot',
           dataView: true,
+          requireNameConfirmation: true,
           show: (record) => { return record.state !== 'Destroyed' },
           groupAction: true,
           popup: true,

@@ -20,7 +20,8 @@
     <div v-if="selectedRowKeys.length === 0">
       <a-alert type="warning">
         <template #message>
-          <span v-html="resource.backupofferingid ? $t('message.action.destroy.instance.with.backups') : $t('message.action.destroy.instance')"></span>
+          <span v-if="expungeOnDestroy" class="destroy-now">{{ destroyNotes.join(' ') }}</span>
+          <span v-else v-html="resource.backupofferingid ? $t('message.action.destroy.instance.with.backups') : $t('message.action.destroy.instance')"></span>
         </template>
       </a-alert>
       <br/>
@@ -34,7 +35,7 @@
           <a-form-item
             name="expunge"
             ref="expunge"
-            v-if="'expungeVirtualMachine' in $store.getters.apis && ($store.getters.userInfo.roletype === 'Admin' || $store.getters.features.allowuserexpungerecovervm)">
+            v-if="!expungeOnDestroy && 'expungeVirtualMachine' in $store.getters.apis && ($store.getters.userInfo.roletype === 'Admin' || $store.getters.features.allowuserexpungerecovervm)">
             <template #label>
               <tooltip-label :title="$t('label.expunge')" :tooltip="apiParams.expunge.description"/>
             </template>
@@ -68,9 +69,11 @@
             <p class="keep-root-volume-hint">{{ $t('message.keep.root.disk') }}</p>
           </a-form-item>
 
+          <confirm-input v-model:value="confirmText" mode="name" :expected="confirmationName(resource)" />
+
           <div :span="24" class="action-button">
             <a-button @click="closeAction">{{ $t('label.cancel') }}</a-button>
-            <a-button :loading="loading" ref="submit" type="primary" @click="handleSubmit">{{ $t('label.ok') }}</a-button>
+            <a-button :loading="loading" :disabled="!confirmed" ref="submit" type="primary" @click="handleSubmit">{{ $t('label.ok') }}</a-button>
           </div>
         </a-form>
       </a-spin>
@@ -82,7 +85,8 @@
             <message-outlined type="exclamation-circle" style="color: red; fontSize: 30px; display: inline-flex" />
             <template #message>
               <span style="padding-left: 5px" v-html="`<b>` + $t('label.items.selected.count', { count: selectedRowKeys.length }) + `. </b>`" />
-              <span v-html="$t(action.currentAction.message)" />
+              <span v-if="expungeOnDestroy" class="destroy-now">{{ destroyNotes.join(' ') }}</span>
+              <span v-else v-html="$t(action.currentAction.message)" />
             </template>
           </a-alert>
         </div>
@@ -120,7 +124,7 @@
                 <span v-else v-html="$t('label.volume.empty')" />
               </template>
             </a-table>
-            <a-form-item v-if="$store.getters.userInfo.roletype === 'Admin' || $store.getters.features.allowuserexpungerecovervm">
+            <a-form-item v-if="!expungeOnDestroy && ($store.getters.userInfo.roletype === 'Admin' || $store.getters.features.allowuserexpungerecovervm)">
               <template #label>
                 <tooltip-label :title="$t('label.expunge')" :tooltip="apiParams.expunge.description"/>
               </template>
@@ -130,12 +134,13 @@
               <a-checkbox v-model:checked="keepRoot">{{ $t('label.keep.root.disk') }}</a-checkbox>
               <p class="keep-root-volume-hint">{{ $t('message.keep.root.disk') }}</p>
             </a-form-item>
+            <confirm-input v-model:value="confirmText" mode="count" :expected="selectedRowKeys.length" />
           </a-form>
         </div>
 
         <div :span="24" class="action-button">
           <a-button @click="closeAction">{{ $t('label.cancel') }}</a-button>
-          <a-button :loading="loading" ref="submit" type="primary" @click="handleSubmit">{{ $t('label.ok') }}</a-button>
+          <a-button :loading="loading" :disabled="!confirmed" ref="submit" type="primary" @click="handleSubmit">{{ $t('label.ok') }}</a-button>
         </div>
       </div>
     </div>
@@ -153,13 +158,16 @@ import { ref, reactive, toRaw } from 'vue'
 import { getAPI, postAPI } from '@/api'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
 import BulkActionProgress from '@/components/view/BulkActionProgress'
+import ConfirmInput from '@/components/widgets/ConfirmInput'
 import { fetchCapabilities } from '@/utils/placement'
+import { confirmationName, matchesConfirmation, matchesCount } from '@/utils/confirmation'
 
 export default {
   name: 'DestroyVM',
   components: {
     TooltipLabel,
-    BulkActionProgress
+    BulkActionProgress,
+    ConfirmInput
   },
   props: {
     resource: {
@@ -196,7 +204,35 @@ export default {
       modalInfo: {},
       expunge: false,
       // whether the root disk stays as a volume; null until the operator's default is known, and then it is not sent
-      keepRoot: null
+      keepRoot: null,
+      capabilities: {},
+      confirmText: ''
+    }
+  },
+  computed: {
+    // when set, destroying deletes the Instance at once and there is no destroyed state to recover or expunge from
+    expungeOnDestroy () {
+      return typeof this.capabilities.expungeondestroy === 'boolean'
+        ? this.capabilities.expungeondestroy
+        : this.$store.getters.features?.expungeondestroy === true
+    },
+    destroyNotes () {
+      const notes = [this.$t('message.action.destroy.instance.now')]
+      if (this.keepRoot === true) {
+        notes.push(this.$t('message.action.destroy.instance.now.keeproot'))
+      } else if (this.keepRoot === false) {
+        notes.push(this.$t('message.action.destroy.instance.now.root'))
+      }
+      const instances = this.selectedRowKeys.length === 0 ? [this.resource] : this.selectedItems
+      if (instances.some(instance => instance.backupofferingid)) {
+        notes.push(this.$t('message.action.destroy.instance.now.backups'))
+      }
+      return notes
+    },
+    confirmed () {
+      return this.selectedRowKeys.length > 0
+        ? matchesCount(this.confirmText, this.selectedRowKeys.length)
+        : matchesConfirmation(this.confirmText, confirmationName(this.resource))
     }
   },
   beforeCreate () {
@@ -212,8 +248,10 @@ export default {
     this.fetchKeepRootDefault()
   },
   methods: {
+    confirmationName,
     fetchKeepRootDefault () {
       fetchCapabilities(this.selectedRowKeys.length === 0 ? this.resource.domainid : undefined).then(capabilities => {
+        this.capabilities = capabilities
         if (typeof capabilities.keeprootvolumedefault === 'boolean') {
           this.keepRoot = capabilities.keeprootvolumedefault
         }
@@ -273,8 +311,8 @@ export default {
       this.closeAction()
     },
     handleSubmit (e) {
-      e.preventDefault()
-      if (this.loading) return
+      if (e?.preventDefault) e.preventDefault()
+      if (this.loading || !this.confirmed) return
       if (this.selectedRowKeys.length > 0) {
         this.destroyGroupVMs()
       } else {
@@ -303,7 +341,7 @@ export default {
               catchMessage: this.$t('error.fetching.async.job.result'),
               successMessage: `${this.$t('message.success.delete.vm')} ${this.resource.name}`,
               successMethod: () => {
-                if (this.$route.path.includes('/vm/') && values.expunge) {
+                if (this.$route.path.includes('/vm/') && (values.expunge || this.expungeOnDestroy)) {
                   this.$router.go(-1)
                 } else {
                   this.parentFetchData()

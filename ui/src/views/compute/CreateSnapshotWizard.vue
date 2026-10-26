@@ -47,9 +47,9 @@
             </a-select-option>
           </a-select>
         </a-form-item>
-        <a-form-item name="name" ref="name">
+        <a-form-item name="name" ref="name" :extra="$t('message.snapshot.name.default')">
           <template #label>
-            <tooltip-label :title="$t('label.name')" :tooltip="apiParams.name.description"/>
+            <tooltip-label :title="$t('label.name.optional')" :tooltip="apiParams.name.description"/>
           </template>
           <a-input
             v-model:value="form.name"
@@ -80,6 +80,7 @@
 import { ref, reactive, toRaw } from 'vue'
 import { getAPI, postAPI } from '@/api'
 import { mixinForm } from '@/utils/mixin'
+import { resourceNameRule } from '@/utils/resourceName'
 import TooltipLabel from '@/components/widgets/TooltipLabel'
 
 export default {
@@ -115,7 +116,8 @@ export default {
       this.formRef = ref()
       this.form = reactive({})
       this.rules = reactive({
-        volumeid: [{ required: true, message: this.$t('message.error.select') }]
+        volumeid: [{ required: true, message: this.$t('message.error.select') }],
+        name: [resourceNameRule(() => this.$t('message.error.resource.name.rule'), { optional: true })]
       })
     },
     fetchData () {
@@ -140,7 +142,9 @@ export default {
         const values = this.handleRemoveFields(formRaw)
         const params = {}
         params.volumeid = values.volumeid
-        params.name = values.name
+        if (values.name) {
+          params.name = values.name
+        }
         params.asyncbackup = false
         if (values.asyncbackup) {
           params.asyncbackup = values.asyncbackup

@@ -1,4 +1,12 @@
+cloudstack (4.23.0.100+snucse.10) unstable; urgency=low
+
+  * Security update build: packages and the management image pick up the
+    Debian and Ubuntu security updates current at build time
+
+ -- SNUCSE Cloud maintainers <contact@bacchus.snucse.org>  Fri, 20 Nov 2026 09:20:00 +0900
+
 cloudstack (4.23.0.100+snucse.9) unstable; urgency=low
+
 
   * Students see an instance by one name; its hostname is internal and
     the guest's own hostname is the name it was created with

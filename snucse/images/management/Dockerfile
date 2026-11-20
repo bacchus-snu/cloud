@@ -13,6 +13,7 @@ RUN --mount=type=bind,source=debs,target=/tmp/debs \
 	set -eux \
 	&& test -n "${DEB_VERSION}" \
 	&& apt-get update \
+	&& apt-get upgrade -y --no-install-recommends \
 	&& apt-get install -y --no-install-recommends \
 		"/tmp/debs/cloudstack-common_${DEB_VERSION}_all.deb" \
 		"/tmp/debs/cloudstack-management_${DEB_VERSION}_all.deb" \

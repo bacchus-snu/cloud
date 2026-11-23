@@ -1,3 +1,9 @@
+cloudstack (4.23.0.100+snucse.11) unstable; urgency=medium
+
+  * Calculate cgroup v2 CPU weights from total host CPUs.
+
+ -- SNUCSE Cloud maintainers <contact@bacchus.snucse.org>  Mon, 23 Nov 2026 17:10:06 +0900
+
 cloudstack (4.23.0.100+snucse.10) unstable; urgency=low
 
   * Security update build: packages and the management image pick up the

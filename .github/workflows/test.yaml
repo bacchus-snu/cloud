@@ -38,3 +38,11 @@ jobs:
 
       - name: Test
         run: mvn -B -pl "$MODULES" test
+
+      - name: Upload KVM agent plugin
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: kvm-agent-plugin
+          path: plugins/hypervisors/kvm/target/cloud-plugin-hypervisor-kvm-*.jar
+          if-no-files-found: error
+          retention-days: 7
